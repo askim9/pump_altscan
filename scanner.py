@@ -874,6 +874,19 @@ def run_scan():
     tickers = get_all_tickers()
     if not tickers:
         send_telegram("⚠️ Scanner Error: Gagal ambil data Bitget")
+        def send_telegram(msg):
+    if not BOT_TOKEN or not CHAT_ID:
+        log.error("BOT_TOKEN atau CHAT_ID tidak diset")
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
+        r = requests.post(url, data=payload, timeout=15)
+        log.info(f"Telegram response: {r.status_code} - {r.text}")
+        return r.status_code == 200
+    except Exception as e:
+        log.error(f"Telegram error: {e}")
+        return False
         return
     log.info(f"Total ticker: {len(tickers)}")
     candidates = build_candidate_list(tickers)
