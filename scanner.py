@@ -247,15 +247,16 @@ def safe_get(url, params=None, timeout=12):
 
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
+        log.error("BOT_TOKEN atau CHAT_ID tidak diset")
         return False
     try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-            timeout=15,
-        )
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
+        r = requests.post(url, data=payload, timeout=15)
+        log.info(f"Telegram response: {r.status_code} - {r.text}")
         return r.status_code == 200
-    except:
+    except Exception as e:
+        log.error(f"Telegram error: {e}")
         return False
 
 def utc_now():  return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -429,7 +430,6 @@ def calc_macd(candles, fast=12, slow=26, signal=9):
             ema_val = alpha * closes[i] + (1 - alpha) * ema_val
         return ema_val
     macd_line = ema(fast, -1) - ema(slow, -1)
-    # hitung signal line sebagai EMA dari MACD line selama signal periode
     macd_vals = [ema(fast, i) - ema(slow, i) for i in range(-signal, 0)]
     signal_line = sum(macd_vals) / signal
     hist = macd_line - signal_line
@@ -445,100 +445,64 @@ def get_ath_distance(symbol, cur_price):
 
 # ==================== FUNGSI UNTUK FIBONACCI TARGET ====================
 def find_swing_low_high(candles_1h, lookback=48):
-    """
-    Mencari swing low dan swing high dalam lookback candle terakhir.
-    Mengembalikan (swing_low, swing_high).
-    """
     if len(candles_1h) < lookback:
         lookback = len(candles_1h)
     recent = candles_1h[-lookback:]
-    
-    # Cari indeks low terendah dan high tertinggi
     low_idx = min(range(len(recent)), key=lambda i: recent[i]["low"])
     high_idx = max(range(len(recent)), key=lambda i: recent[i]["high"])
-    
-    # Untuk uptrend, low seharusnya terjadi sebelum high
     if low_idx < high_idx:
         swing_low = recent[low_idx]["low"]
         swing_high = recent[high_idx]["high"]
     else:
-        # Jika high terjadi lebih dulu, gunakan low dan high absolut (sederhana)
         swing_low = min(c["low"] for c in recent)
         swing_high = max(c["high"] for c in recent)
-    
     return swing_low, swing_high
 
 def calc_fib_targets(entry, candles_1h):
-    """
-    Menghitung target take profit berdasarkan Fibonacci extension
-    dari swing terdekat.
-    """
     swing_low, swing_high = find_swing_low_high(candles_1h)
     fib_range = swing_high - swing_low
-    
     if fib_range <= 0:
-        # Fallback jika range tidak valid
         return entry * 1.08, entry * 1.15
-    
-    # Level Fibonacci extension umum
-    t1 = swing_low + fib_range * 1.272   # target 1
-    t2 = swing_low + fib_range * 1.618   # target 2
-    
-    # Pastikan target di atas entry
+    t1 = swing_low + fib_range * 1.272
+    t2 = swing_low + fib_range * 1.618
     if t1 < entry:
         t1 = entry * 1.08
     if t2 < t1:
         t2 = t1 * 1.08
-    
     return round(t1, 8), round(t2, 8)
 
 # ==================== FUNGSI ENTRY BARU ====================
 def get_support_levels(candles_1h):
-    """Mengembalikan level support terbaik: low 3h, VWAP, EMA20"""
     cur = candles_1h[-1]["close"]
     supports = []
-    
     low_3h = min(c["low"] for c in candles_1h[-3:])
     supports.append(low_3h)
-    
     if len(candles_1h) >= 24:
         vwap, _ = calc_vwap_zone(candles_1h[-24:]) if 'calc_vwap_zone' in globals() else (calc_vwap(candles_1h), None)
         if isinstance(vwap, (int, float)) and vwap < cur:
             supports.append(vwap)
-    
     if len(candles_1h) >= 20:
         closes = [c["close"] for c in candles_1h[-20:]]
         ema20 = sum(closes) / 20
         if ema20 < cur:
             supports.append(ema20)
-    
     valid = [s for s in supports if s < cur]
     if valid:
-        return max(valid)  # support tertinggi di bawah harga
+        return max(valid)
     else:
-        return cur * 0.985  # fallback 1.5% di bawah
+        return cur * 0.985
 
 def calc_entry(candles_1h, candles_15m):
     cur = candles_1h[-1]["close"]
     support = get_support_levels(candles_1h)
-    
-    # Entry di support (tanpa offset) – yang paling mungkin terisi
     entry = support
-    
-    # Rentang entry untuk rekomendasi (support s/d support+0.3%)
     entry_range = (support, support * (1 + CONFIG["entry_range_above"]))
-    
-    # Stop loss di bawah support terdekat (low 5h)
     low_5h = min(c["low"] for c in candles_1h[-5:])
     sl = min(entry * 0.98, low_5h * 0.995)
-    
-    # Target Fibonacci
     t1, t2 = calc_fib_targets(entry, candles_1h)
-    
     risk = entry - sl
     reward = t1 - entry
     rr = round(reward / risk, 1) if risk > 0 else 0
-    
     return {
         "cur": cur,
         "entry": round(entry, 8),
@@ -553,7 +517,6 @@ def calc_entry(candles_1h, candles_15m):
     }
 
 def calc_vwap_zone(candles):
-    """Untuk kompatibilitas, ambil VWAP saja."""
     vwap = calc_vwap(candles)
     return vwap, None
 
@@ -576,7 +539,6 @@ def master_score(symbol, ticker):
     if vol_24h < CONFIG["min_vol_24h"]:
         return None
 
-    # Funding gate
     funding = get_funding(symbol)
     save_funding_snapshot(symbol, funding)
     fstats = get_funding_stats(symbol, funding)
@@ -587,7 +549,6 @@ def master_score(symbol, ticker):
         log.info(f"  {symbol}: Funding tidak cukup negatif")
         return None
 
-    # Indikator teknikal
     bbw, bb_pct = calc_bbw(c1h)
     if len(c1h) >= 2:
         price_chg = (c1h[-1]["close"] - c1h[-2]["close"]) / c1h[-2]["close"] * 100
@@ -606,14 +567,12 @@ def master_score(symbol, ticker):
         bos_up = detect_bos_up(c1h)
         higher_low = higher_low_detected(c1h)
 
-    # Volume ratio 24h
     if len(c1h) >= 24:
         avg_vol_24h = sum(c["volume_usd"] for c in c1h[-24:]) / 24
         vol_ratio = c1h[-1]["volume_usd"] / avg_vol_24h if avg_vol_24h > 0 else 0
     else:
         vol_ratio = 0
 
-    # Volume acceleration (volume 1h vs 3h)
     if len(c1h) >= 4:
         vol_1h = c1h[-1]["volume_usd"]
         vol_3h = sum(c["volume_usd"] for c in c1h[-4:-1]) / 3
@@ -621,14 +580,11 @@ def master_score(symbol, ticker):
     else:
         vol_accel = 0
 
-    # MACD histogram
     macd_hist = calc_macd(c1h)
 
-    # Hitung skor
     score = 0
     signals = []
 
-    # Utama
     if bbw >= 0.12:
         score += CONFIG["score_bbw_12"]
         signals.append(f"BBW {bbw:.2f}% (ekstrem)")
@@ -670,7 +626,6 @@ def master_score(symbol, ticker):
         score += CONFIG["score_atr_10"]
         signals.append(f"ATR {atr_pct:.2f}% (volatilitas sedang)")
 
-    # Funding tambahan
     if fstats["neg_pct"] >= 70:
         score += CONFIG["score_funding_neg_pct"]
         signals.append(f"Funding negatif {fstats['neg_pct']:.0f}%")
@@ -681,7 +636,6 @@ def master_score(symbol, ticker):
         score += CONFIG["score_basis"]
         signals.append(f"Basis {fstats['basis']:.2f}% (diskonto)")
 
-    # Rank & ATH
     rank = get_rank(symbol)
     if rank >= 200:
         score += CONFIG["score_lowcap"]
@@ -691,7 +645,6 @@ def master_score(symbol, ticker):
         score += CONFIG["score_ath_dist"]
         signals.append("Deep from ATH")
 
-    # Tambahan baru
     if vol_ratio > CONFIG["vol_ratio_threshold"]:
         score += CONFIG["score_vol_ratio_24h"]
         signals.append(f"Volume ratio {vol_ratio:.1f}x (tinggi)")
@@ -704,17 +657,13 @@ def master_score(symbol, ticker):
         score += CONFIG["score_macd_pos"]
         signals.append("MACD histogram positif")
 
-    # Tipe pump
     pump_type = "unknown"
     if above_vwap_rate > CONFIG["above_vwap_rate_min"] and bb_pct > 0.4 and rsi > 45:
         pump_type = "Momentum Breakout (Tipe A)"
     elif above_vwap_rate < 0.2 and fstats["cumulative"] < CONFIG["squeeze_funding_cumul"] and higher_low:
         pump_type = "Short Squeeze (Tipe B)"
 
-    # Entry
     entry_data = calc_entry(c1h, c15m)
-
-    # Hitung potensi gain dari T1
     potential_gain_t1 = (entry_data["t1"] - price_now) / price_now * 100
     potential_gain_t2 = (entry_data["t2"] - price_now) / price_now * 100
 
@@ -874,19 +823,6 @@ def run_scan():
     tickers = get_all_tickers()
     if not tickers:
         send_telegram("⚠️ Scanner Error: Gagal ambil data Bitget")
-        def send_telegram(msg):
-    if not BOT_TOKEN or not CHAT_ID:
-        log.error("BOT_TOKEN atau CHAT_ID tidak diset")
-        return False
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
-        r = requests.post(url, data=payload, timeout=15)
-        log.info(f"Telegram response: {r.status_code} - {r.text}")
-        return r.status_code == 200
-    except Exception as e:
-        log.error(f"Telegram error: {e}")
-        return False
         return
     log.info(f"Total ticker: {len(tickers)}")
     candidates = build_candidate_list(tickers)
