@@ -59,16 +59,16 @@ CONFIG = {
     "pre_filter_vol":         1_000,
 
     # ── Gate perubahan harga (pre-filter) ──────────────────────
-    "gate_chg_24h_max":          30.0,
+    "gate_chg_24h_max":          5.0, #30
 
     # ── Funding Gate (WAJIB) ───────────────────────────────────
     "funding_gate_avg":        -0.0001,
     "funding_gate_cumul":      -0.02,
 
     # ── Candle limits ─────────────────────────────────────────
-    "candle_1h":                168,
-    "candle_15m":                96,
-    "candle_4h":                 42,
+    "candle_1h":                200, #168
+    "candle_15m":                150, #96
+    "candle_4h":                 100, #42
 
     # ── Entry/exit ────────────────────────────────────────────
     "min_target_pct":             8.0,      # fallback jika fib gagal
