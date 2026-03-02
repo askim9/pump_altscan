@@ -1,3 +1,4 @@
 # requirements.txt
 requests
 python-dotenv
+numpy
