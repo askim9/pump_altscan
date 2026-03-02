@@ -1,27 +1,22 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v13.4-BETA                                            ║
+║  PRE-PUMP SCANNER v13.5-EXIT                                           ║
 ║                                                                          ║
-║  BERDASARKAN RISET + PERBAIKAN ENTRY + FILTER BTC:                      ║
-║    • Funding rate sebagai GATE WAJIB (avg_6 < -0.0001 / cumul < -0.02) ║
-║    • Variabel utama: BB width, price change, VWAP, RSI, ATR            ║
-║    • Tambahan: Volume Ratio >2.5x, Volume Acceleration >50%            ║
-║    • MACD Histogram positif (opsional)                                  ║
-║    • Entry menggunakan RENTANG (support s/d support+0.3%)               ║
-║    • Target Fibonacci (1.272 dan 1.618) berbasis swing low/high        ║
-║    • Menampilkan potensi gain di summary                                 ║
-║    • FILTER BTC: Beta & Alpha untuk menilai korelasi dan kekuatan      ║
+║  BERDASARKAN EVALUASI REAL-TIME:                                        ║
+║    • Entry support-based (rentang) sudah baik (banyak hit entry)       ║
+║    • Target Fibonacci terlalu jauh → tambah target dekat (3%,6%)       ║
+║    • Stop loss diperkecil menjadi 2-3% (bukan berdasarkan low 5h)      ║
+║    • Menampilkan multiple target di alert                               ║
 ║                                                                          ║
 ║  EXPECTED RESULT:                                                        ║
-║    Entry lebih sering terisi, target lebih terstruktur                  ║
-║    Terhindar dari kerugian saat BTC turun drastis                       ║
+║    Profit lebih sering terealisasi, risiko lebih terkontrol             ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
 import requests, time, os, math, json, logging
 from datetime import datetime, timezone
 from collections import defaultdict
-import numpy as np  # for linear regression
+import numpy as np
 
 try:
     from dotenv import load_dotenv
@@ -75,9 +70,15 @@ CONFIG = {
 
     # ── Entry/exit ────────────────────────────────────────────
     "min_target_pct":             8.0,      # fallback jika fib gagal
-    "max_sl_pct":                3.0,
+    "max_sl_pct":                3.0,      # stop loss maksimal 3%
+    "default_sl_pct":             2.5,      # stop loss default 2.5%
     "entry_support_offset":       0.0,      # entry di support (0%)
     "entry_range_above":         0.003,     # rentang 0.3% di atas support
+
+    # ── Target bertahap ───────────────────────────────────────
+    "target1_pct":                3.0,      # target pertama 3%
+    "target2_pct":                6.0,      # target kedua 6%
+    # target Fibonacci tetap sebagai target lanjutan (opsional)
 
     # ── Operasional ───────────────────────────────────────────
     "alert_cooldown_sec":       1800,
@@ -117,11 +118,11 @@ CONFIG = {
     "vol_accel_threshold":       0.5,
 
     # ── Parameter Beta/Alpha ──────────────────────────────────
-    "beta_lookback_hours":       24,        # periode untuk regresi
-    "beta_high_threshold":       1.5,       # beta di atas ini sensitif
-    "beta_low_threshold":        0.5,       # beta di bawah ini kurang sensitif
-    "alpha_positive_threshold":  0.5,       # alpha > 0.5% per jam dianggap kuat
-    "btc_drop_threshold":        -1.5,      # BTC turun >1.5% dalam 3 jam
+    "beta_lookback_hours":       24,
+    "beta_high_threshold":       1.5,
+    "beta_low_threshold":        0.5,
+    "alpha_positive_threshold":  0.5,
+    "btc_drop_threshold":        -1.5,
 }
 
 MANUAL_EXCLUDE = set()
@@ -430,7 +431,6 @@ def calc_macd(candles, fast=12, slow=26, signal=9):
     if len(candles) < slow + signal:
         return 0
     closes = [c["close"] for c in candles]
-    # Sederhana: gunakan EMA
     def ema(period, index):
         if index < period - 1:
             return closes[index]
@@ -446,11 +446,9 @@ def calc_macd(candles, fast=12, slow=26, signal=9):
     return hist
 
 def get_rank(symbol):
-    # Placeholder
     return 0
 
 def get_ath_distance(symbol, cur_price):
-    # Placeholder
     return -95.0
 
 # ==================== FUNGSI UNTUK FIBONACCI TARGET ====================
@@ -481,7 +479,7 @@ def calc_fib_targets(entry, candles_1h):
         t2 = t1 * 1.08
     return round(t1, 8), round(t2, 8)
 
-# ==================== FUNGSI ENTRY BARU ====================
+# ==================== FUNGSI ENTRY BARU (dengan SL ketat) ====================
 def get_support_levels(candles_1h):
     cur = candles_1h[-1]["close"]
     supports = []
@@ -507,20 +505,37 @@ def calc_entry(candles_1h, candles_15m):
     support = get_support_levels(candles_1h)
     entry = support
     entry_range = (support, support * (1 + CONFIG["entry_range_above"]))
-    low_5h = min(c["low"] for c in candles_1h[-5:])
-    sl = min(entry * 0.98, low_5h * 0.995)
-    t1, t2 = calc_fib_targets(entry, candles_1h)
+
+    # Stop loss baru: minimal dari (entry - ATR) atau persentase tetap, maksimal 3%
+    atr = calc_atr_pct(candles_1h) / 100 * cur  # ATR dalam satuan harga
+    sl_by_atr = entry - atr * 1.5
+    sl_by_pct = entry * (1 - CONFIG["default_sl_pct"] / 100)
+    sl = max(sl_by_atr, sl_by_pct)  # pilih yang terdekat dengan entry (lebih ketat)
+    # Pastikan SL tidak lebih dari max_sl_pct
+    max_sl_price = entry * (1 - CONFIG["max_sl_pct"] / 100)
+    if sl < max_sl_price:
+        sl = max_sl_price  # batasi maksimal 3%
+
+    # Target bertahap
+    t1 = entry * (1 + CONFIG["target1_pct"] / 100)
+    t2 = entry * (1 + CONFIG["target2_pct"] / 100)
+    # Target Fibonacci (opsional, sebagai target lanjutan)
+    fib_t1, fib_t2 = calc_fib_targets(entry, candles_1h)
+
     risk = entry - sl
     reward = t1 - entry
     rr = round(reward / risk, 1) if risk > 0 else 0
+
     return {
         "cur": cur,
         "entry": round(entry, 8),
         "entry_range": (round(entry_range[0], 8), round(entry_range[1], 8)),
         "sl": round(sl, 8),
         "sl_pct": round((entry - sl) / entry * 100, 1),
-        "t1": t1,
-        "t2": t2,
+        "t1": round(t1, 8),
+        "t2": round(t2, 8),
+        "fib_t1": fib_t1,
+        "fib_t2": fib_t2,
         "rr": rr,
         "liq_pct": round((t1 - cur) / cur * 100, 1),
         "support_used": round(support, 8),
@@ -532,48 +547,29 @@ def calc_vwap_zone(candles):
 
 # ==================== FUNGSI BARU: BETA & ALPHA ====================
 def get_btc_candles(gran="1h", limit=168):
-    """Ambil candle BTCUSDT."""
     return get_candles("BTCUSDT", gran, limit)
 
 def compute_beta_alpha(coin_candles, btc_candles, lookback_hours=24):
-    """
-    Menghitung beta dan alpha dari regresi return coin terhadap return BTC.
-    lookback_hours menentukan jumlah candle 1h yang digunakan.
-    Mengembalikan (beta, alpha, r_squared, last_btc_return)
-    """
     if len(coin_candles) < lookback_hours or len(btc_candles) < lookback_hours:
         return 0, 0, 0, 0
-
-    # Ambil harga close
     coin_closes = [c["close"] for c in coin_candles[-lookback_hours:]]
     btc_closes = [c["close"] for c in btc_candles[-lookback_hours:]]
-
-    # Hitung return persen (1h)
     coin_returns = [(coin_closes[i] - coin_closes[i-1]) / coin_closes[i-1] * 100 for i in range(1, len(coin_closes))]
     btc_returns = [(btc_closes[i] - btc_closes[i-1]) / btc_closes[i-1] * 100 for i in range(1, len(btc_closes))]
-
     if len(coin_returns) < 2:
         return 0, 0, 0, 0
-
-    # Regresi linear
     x = np.array(btc_returns)
     y = np.array(coin_returns)
     A = np.vstack([x, np.ones(len(x))]).T
     beta, alpha = np.linalg.lstsq(A, y, rcond=None)[0]
-
-    # Hitung R-squared
     residuals = y - (beta * x + alpha)
     ss_res = np.sum(residuals**2)
     ss_tot = np.sum((y - np.mean(y))**2)
     r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-
-    # Return BTC terakhir
     last_btc_return = btc_returns[-1] if btc_returns else 0
-
     return beta, alpha, r_squared, last_btc_return
 
 def get_btc_trend(btc_candles, hours=3):
-    """Menentukan tren BTC berdasarkan perubahan harga dalam hours terakhir."""
     if len(btc_candles) < hours:
         return "neutral", 0
     start = btc_candles[-hours]["close"]
@@ -586,7 +582,7 @@ def get_btc_trend(btc_candles, hours=3):
     else:
         return "neutral", change
 
-# ==================== MODIFIKASI MASTER SCORE ====================
+# ==================== MASTER SCORE (hanya bagian yang relevan) ====================
 def master_score(symbol, ticker):
     c1h = get_candles(symbol, "1h", CONFIG["candle_1h"])
     c15m = get_candles(symbol, "15m", CONFIG["candle_15m"])
@@ -603,7 +599,6 @@ def master_score(symbol, ticker):
     if vol_24h < CONFIG["min_vol_24h"]:
         return None
 
-    # Funding gate
     funding = get_funding(symbol)
     save_funding_snapshot(symbol, funding)
     fstats = get_funding_stats(symbol, funding)
@@ -614,17 +609,14 @@ def master_score(symbol, ticker):
         log.info(f"  {symbol}: Funding tidak cukup negatif")
         return None
 
-    # Ambil data BTC
     btc_c1h = get_btc_candles("1h", CONFIG["candle_1h"])
     if len(btc_c1h) < 48:
         log.info("  Data BTC tidak cukup")
         return None
 
-    # Hitung beta, alpha
     beta, alpha, r_squared, last_btc_return = compute_beta_alpha(c1h, btc_c1h, CONFIG["beta_lookback_hours"])
     btc_trend, btc_change = get_btc_trend(btc_c1h, hours=3)
 
-    # Indikator teknikal
     bbw, bb_pct = calc_bbw(c1h)
     if len(c1h) >= 2:
         price_chg = (c1h[-1]["close"] - c1h[-2]["close"]) / c1h[-2]["close"] * 100
@@ -661,7 +653,6 @@ def master_score(symbol, ticker):
     score = 0
     signals = []
 
-    # Utama
     if bbw >= 0.12:
         score += CONFIG["score_bbw_12"]
         signals.append(f"BBW {bbw:.2f}% (ekstrem)")
@@ -703,7 +694,6 @@ def master_score(symbol, ticker):
         score += CONFIG["score_atr_10"]
         signals.append(f"ATR {atr_pct:.2f}% (volatilitas sedang)")
 
-    # Funding tambahan
     if fstats["neg_pct"] >= 70:
         score += CONFIG["score_funding_neg_pct"]
         signals.append(f"Funding negatif {fstats['neg_pct']:.0f}%")
@@ -735,13 +725,10 @@ def master_score(symbol, ticker):
         score += CONFIG["score_macd_pos"]
         signals.append("MACD histogram positif")
 
-    # ===== FILTER BTC =====
-    # Berdasarkan beta dan alpha serta tren BTC
     btc_penalty = 0
     btc_bonus = 0
     if btc_trend == "bearish":
         if beta > CONFIG["beta_high_threshold"]:
-            # Coin sangat sensitif, akan jatuh lebih dalam
             btc_penalty = -25
             signals.append(f"🚨 BTC turun {btc_change:.1f}% & beta {beta:.2f} (sensitif) - penalti besar!")
         elif beta > 1.0:
@@ -751,9 +738,8 @@ def master_score(symbol, ticker):
             btc_penalty = -5
             signals.append(f"📉 BTC turun {btc_change:.1f}% - penalti ringan")
 
-        # Jika alpha positif, bisa mengurangi penalti
         if alpha > CONFIG["alpha_positive_threshold"]:
-            btc_penalty = max(btc_penalty + 10, 0)  # kurangi penalti, maks 0
+            btc_penalty = max(btc_penalty + 10, 0)
             signals.append(f"✅ Alpha {alpha:.2f}% positif - mengurangi dampak BTC")
     elif btc_trend == "bullish":
         if beta > CONFIG["beta_high_threshold"]:
@@ -766,19 +752,16 @@ def master_score(symbol, ticker):
             btc_bonus = 3
             signals.append(f"✅ BTC naik {btc_change:.1f}% - bonus")
 
-        # Jika alpha positif, tambah bonus
         if alpha > CONFIG["alpha_positive_threshold"]:
             btc_bonus += 5
             signals.append(f"⭐ Alpha {alpha:.2f}% positif - outperforming BTC")
 
-    # Jika alpha sangat negatif, beri penalti terpisah
     if alpha < -CONFIG["alpha_positive_threshold"]:
         btc_penalty -= 10
         signals.append(f"⚠️ Alpha {alpha:.2f}% negatif - underperforming BTC")
 
     score += btc_penalty + btc_bonus
 
-    # Simpan info beta/alpha untuk ditampilkan
     beta_alpha_info = {
         "beta": round(beta, 2),
         "alpha": round(alpha, 2),
@@ -787,7 +770,6 @@ def master_score(symbol, ticker):
         "btc_change": round(btc_change, 1)
     }
 
-    # Tipe pump
     pump_type = "unknown"
     if above_vwap_rate > CONFIG["above_vwap_rate_min"] and bb_pct > 0.4 and rsi > 45:
         pump_type = "Momentum Breakout (Tipe A)"
@@ -797,6 +779,8 @@ def master_score(symbol, ticker):
     entry_data = calc_entry(c1h, c15m)
     potential_gain_t1 = (entry_data["t1"] - price_now) / price_now * 100
     potential_gain_t2 = (entry_data["t2"] - price_now) / price_now * 100
+    potential_gain_fib1 = (entry_data["fib_t1"] - price_now) / price_now * 100
+    potential_gain_fib2 = (entry_data["fib_t2"] - price_now) / price_now * 100
 
     if score >= CONFIG["min_score_alert"]:
         return {
@@ -818,6 +802,8 @@ def master_score(symbol, ticker):
             "macd_hist": round(macd_hist, 6),
             "potential_gain_t1": round(potential_gain_t1, 1),
             "potential_gain_t2": round(potential_gain_t2, 1),
+            "potential_gain_fib1": round(potential_gain_fib1, 1),
+            "potential_gain_fib2": round(potential_gain_fib2, 1),
             "beta_alpha": beta_alpha_info,
         }
     else:
@@ -825,10 +811,10 @@ def master_score(symbol, ticker):
         return None
 
 # ══════════════════════════════════════════════════════════════
-#  📱  TELEGRAM FORMATTER (modifikasi untuk menampilkan beta/alpha)
+#  📱  TELEGRAM FORMATTER (modifikasi untuk menampilkan multiple target)
 # ══════════════════════════════════════════════════════════════
 def build_alert(r, rank=None):
-    msg = f"🚨 <b>PRE-PUMP SIGNAL {rank} — v13.4-BETA</b>\n\n"
+    msg = f"🚨 <b>PRE-PUMP SIGNAL {rank} — v13.5-EXIT</b>\n\n"
     msg += f"<b>Symbol    :</b> {r['symbol']}\n"
     msg += f"<b>Pump Type :</b> {r['pump_type']}\n"
     msg += f"<b>Score     :</b> {r['score']}\n"
@@ -841,8 +827,7 @@ def build_alert(r, rank=None):
     msg += f"<b>Funding   :</b> avg={r['funding_stats']['avg']:.6f}, cumul={r['funding_stats']['cumulative']:.4f}\n"
     msg += f"  streak={r['funding_stats']['streak']}, basis={r['funding_stats']['basis']:.2f}%\n"
     msg += f"<b>MACD hist :</b> {r['macd_hist']:.6f}\n"
-    msg += f"<b>Potensi Gain:</b> T1 +{r['potential_gain_t1']}% | T2 +{r['potential_gain_t2']}%\n"
-    # Tambahkan info beta/alpha
+    msg += f"<b>Potensi Gain:</b> T1 +{r['potential_gain_t1']}% | T2 +{r['potential_gain_t2']}% | Fib1 +{r['potential_gain_fib1']}% | Fib2 +{r['potential_gain_fib2']}%\n"
     ba = r['beta_alpha']
     msg += f"<b>BTC      :</b> {ba['btc_trend'].upper()} {ba['btc_change']:+.1f}% (3h)\n"
     msg += f"<b>Beta     :</b> {ba['beta']} | <b>Alpha    :</b> {ba['alpha']:+.2f}% | R²={ba['r_squared']}\n"
@@ -853,9 +838,11 @@ def build_alert(r, rank=None):
     msg += f"  Entry    : ${e['entry']} (tepat di support)\n"
     msg += f"  Rentang  : ${e['entry_range'][0]} - ${e['entry_range'][1]} (0 - {CONFIG['entry_range_above']*100:.1f}% di atas support)\n"
     msg += f"  SL       : ${e['sl']} (-{e['sl_pct']:.1f}%)\n"
-    msg += f"  T1 (Fib 1.272): ${e['t1']} (+{e['liq_pct']:.1f}%)\n"
-    msg += f"  T2 (Fib 1.618): ${e['t2']}\n"
-    msg += f"  R/R      : 1:{e['rr']}\n"
+    msg += f"  T1 (3%)  : ${e['t1']} (+{CONFIG['target1_pct']}%)\n"
+    msg += f"  T2 (6%)  : ${e['t2']} (+{CONFIG['target2_pct']}%)\n"
+    msg += f"  Fib 1.272: ${e['fib_t1']} (+{r['potential_gain_fib1']}%)\n"
+    msg += f"  Fib 1.618: ${e['fib_t2']} (+{r['potential_gain_fib2']}%)\n"
+    msg += f"  R/R (T1) : 1:{e['rr']}\n"
     msg += "\n━━━━━━━━━━━━━━━━━━━━\n📊 <b>SINYAL</b>\n"
     for s in r['signals']:
         msg += f"  • {s}\n"
@@ -863,7 +850,7 @@ def build_alert(r, rank=None):
     return msg
 
 def build_summary(results):
-    msg = f"📋 <b>TOP CANDIDATES v13.4 — {utc_now()}</b>\n{'━'*28}\n"
+    msg = f"📋 <b>TOP CANDIDATES v13.5 — {utc_now()}</b>\n{'━'*28}\n"
     for i, r in enumerate(results, 1):
         vol = (f"${r['vol_24h']/1e6:.1f}M" if r['vol_24h'] >= 1e6 else f"${r['vol_24h']/1e3:.0f}K")
         msg += f"{i}. <b>{r['symbol']}</b> [Score:{r['score']} | Gain T1:{r['potential_gain_t1']}% | Beta:{r['beta_alpha']['beta']} | Alpha:{r['beta_alpha']['alpha']:+.2f}]\n"
@@ -951,11 +938,11 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v13.4-BETA — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v13.5-EXIT — {utc_now()} ===")
     log.info("=" * 70)
-    log.info("PERUBAHAN vs v13.3:")
-    log.info("  • Menambahkan filter Beta & Alpha terhadap BTC")
-    log.info("  • Penalti/bonus berdasarkan tren BTC dan sensitivitas coin")
+    log.info("PERUBAHAN vs v13.4:")
+    log.info("  • Stop loss diperketat (maks 3%, berdasarkan ATR atau persentase)")
+    log.info("  • Menambahkan target bertahap 3% dan 6% di samping Fibonacci")
     log.info("=" * 70)
     tickers = get_all_tickers()
     if not tickers:
@@ -1003,8 +990,8 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔═══════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v13.4-BETA                      ║")
-    log.info("║  FOKUS: Entry support + target Fibonacci + filter BTC ║")
+    log.info("║  PRE-PUMP SCANNER v13.5-EXIT                      ║")
+    log.info("║  FOKUS: Entry support + target bertahap + SL ketat║")
     log.info("╚═══════════════════════════════════════════════════╝")
     if not BOT_TOKEN or not CHAT_ID:
         log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan!")
