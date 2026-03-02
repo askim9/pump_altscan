@@ -1,8 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v13.3-FINAL                                           ║
+║  PRE-PUMP SCANNER v13.4-BETA                                            ║
 ║                                                                          ║
-║  BERDASARKAN RISET + PERBAIKAN ENTRY:                                   ║
+║  BERDASARKAN RISET + PERBAIKAN ENTRY + FILTER BTC:                      ║
 ║    • Funding rate sebagai GATE WAJIB (avg_6 < -0.0001 / cumul < -0.02) ║
 ║    • Variabel utama: BB width, price change, VWAP, RSI, ATR            ║
 ║    • Tambahan: Volume Ratio >2.5x, Volume Acceleration >50%            ║
@@ -10,15 +10,18 @@
 ║    • Entry menggunakan RENTANG (support s/d support+0.3%)               ║
 ║    • Target Fibonacci (1.272 dan 1.618) berbasis swing low/high        ║
 ║    • Menampilkan potensi gain di summary                                 ║
+║    • FILTER BTC: Beta & Alpha untuk menilai korelasi dan kekuatan      ║
 ║                                                                          ║
 ║  EXPECTED RESULT:                                                        ║
 ║    Entry lebih sering terisi, target lebih terstruktur                  ║
+║    Terhindar dari kerugian saat BTC turun drastis                       ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
 import requests, time, os, math, json, logging
 from datetime import datetime, timezone
 from collections import defaultdict
+import numpy as np  # for linear regression
 
 try:
     from dotenv import load_dotenv
@@ -59,16 +62,16 @@ CONFIG = {
     "pre_filter_vol":         1_000,
 
     # ── Gate perubahan harga (pre-filter) ──────────────────────
-    "gate_chg_24h_max":          5.0, #30
+    "gate_chg_24h_max":          30.0,
 
     # ── Funding Gate (WAJIB) ───────────────────────────────────
     "funding_gate_avg":        -0.0001,
     "funding_gate_cumul":      -0.02,
 
     # ── Candle limits ─────────────────────────────────────────
-    "candle_1h":                200, #168
-    "candle_15m":                150, #96
-    "candle_4h":                 100, #42
+    "candle_1h":                168,
+    "candle_15m":                96,
+    "candle_4h":                 42,
 
     # ── Entry/exit ────────────────────────────────────────────
     "min_target_pct":             8.0,      # fallback jika fib gagal
@@ -112,6 +115,13 @@ CONFIG = {
     "squeeze_funding_cumul":    -0.05,
     "vol_ratio_threshold":       2.5,
     "vol_accel_threshold":       0.5,
+
+    # ── Parameter Beta/Alpha ──────────────────────────────────
+    "beta_lookback_hours":       24,        # periode untuk regresi
+    "beta_high_threshold":       1.5,       # beta di atas ini sensitif
+    "beta_low_threshold":        0.5,       # beta di bawah ini kurang sensitif
+    "alpha_positive_threshold":  0.5,       # alpha > 0.5% per jam dianggap kuat
+    "btc_drop_threshold":        -1.5,      # BTC turun >1.5% dalam 3 jam
 }
 
 MANUAL_EXCLUDE = set()
@@ -520,9 +530,63 @@ def calc_vwap_zone(candles):
     vwap = calc_vwap(candles)
     return vwap, None
 
-# ══════════════════════════════════════════════════════════════
-#  🧠  MASTER SCORE
-# ══════════════════════════════════════════════════════════════
+# ==================== FUNGSI BARU: BETA & ALPHA ====================
+def get_btc_candles(gran="1h", limit=168):
+    """Ambil candle BTCUSDT."""
+    return get_candles("BTCUSDT", gran, limit)
+
+def compute_beta_alpha(coin_candles, btc_candles, lookback_hours=24):
+    """
+    Menghitung beta dan alpha dari regresi return coin terhadap return BTC.
+    lookback_hours menentukan jumlah candle 1h yang digunakan.
+    Mengembalikan (beta, alpha, r_squared, last_btc_return)
+    """
+    if len(coin_candles) < lookback_hours or len(btc_candles) < lookback_hours:
+        return 0, 0, 0, 0
+
+    # Ambil harga close
+    coin_closes = [c["close"] for c in coin_candles[-lookback_hours:]]
+    btc_closes = [c["close"] for c in btc_candles[-lookback_hours:]]
+
+    # Hitung return persen (1h)
+    coin_returns = [(coin_closes[i] - coin_closes[i-1]) / coin_closes[i-1] * 100 for i in range(1, len(coin_closes))]
+    btc_returns = [(btc_closes[i] - btc_closes[i-1]) / btc_closes[i-1] * 100 for i in range(1, len(btc_closes))]
+
+    if len(coin_returns) < 2:
+        return 0, 0, 0, 0
+
+    # Regresi linear
+    x = np.array(btc_returns)
+    y = np.array(coin_returns)
+    A = np.vstack([x, np.ones(len(x))]).T
+    beta, alpha = np.linalg.lstsq(A, y, rcond=None)[0]
+
+    # Hitung R-squared
+    residuals = y - (beta * x + alpha)
+    ss_res = np.sum(residuals**2)
+    ss_tot = np.sum((y - np.mean(y))**2)
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+
+    # Return BTC terakhir
+    last_btc_return = btc_returns[-1] if btc_returns else 0
+
+    return beta, alpha, r_squared, last_btc_return
+
+def get_btc_trend(btc_candles, hours=3):
+    """Menentukan tren BTC berdasarkan perubahan harga dalam hours terakhir."""
+    if len(btc_candles) < hours:
+        return "neutral", 0
+    start = btc_candles[-hours]["close"]
+    end = btc_candles[-1]["close"]
+    change = (end - start) / start * 100
+    if change < CONFIG["btc_drop_threshold"]:
+        return "bearish", change
+    elif change > -CONFIG["btc_drop_threshold"]:
+        return "bullish", change
+    else:
+        return "neutral", change
+
+# ==================== MODIFIKASI MASTER SCORE ====================
 def master_score(symbol, ticker):
     c1h = get_candles(symbol, "1h", CONFIG["candle_1h"])
     c15m = get_candles(symbol, "15m", CONFIG["candle_15m"])
@@ -539,6 +603,7 @@ def master_score(symbol, ticker):
     if vol_24h < CONFIG["min_vol_24h"]:
         return None
 
+    # Funding gate
     funding = get_funding(symbol)
     save_funding_snapshot(symbol, funding)
     fstats = get_funding_stats(symbol, funding)
@@ -549,6 +614,17 @@ def master_score(symbol, ticker):
         log.info(f"  {symbol}: Funding tidak cukup negatif")
         return None
 
+    # Ambil data BTC
+    btc_c1h = get_btc_candles("1h", CONFIG["candle_1h"])
+    if len(btc_c1h) < 48:
+        log.info("  Data BTC tidak cukup")
+        return None
+
+    # Hitung beta, alpha
+    beta, alpha, r_squared, last_btc_return = compute_beta_alpha(c1h, btc_c1h, CONFIG["beta_lookback_hours"])
+    btc_trend, btc_change = get_btc_trend(btc_c1h, hours=3)
+
+    # Indikator teknikal
     bbw, bb_pct = calc_bbw(c1h)
     if len(c1h) >= 2:
         price_chg = (c1h[-1]["close"] - c1h[-2]["close"]) / c1h[-2]["close"] * 100
@@ -585,6 +661,7 @@ def master_score(symbol, ticker):
     score = 0
     signals = []
 
+    # Utama
     if bbw >= 0.12:
         score += CONFIG["score_bbw_12"]
         signals.append(f"BBW {bbw:.2f}% (ekstrem)")
@@ -626,6 +703,7 @@ def master_score(symbol, ticker):
         score += CONFIG["score_atr_10"]
         signals.append(f"ATR {atr_pct:.2f}% (volatilitas sedang)")
 
+    # Funding tambahan
     if fstats["neg_pct"] >= 70:
         score += CONFIG["score_funding_neg_pct"]
         signals.append(f"Funding negatif {fstats['neg_pct']:.0f}%")
@@ -657,6 +735,59 @@ def master_score(symbol, ticker):
         score += CONFIG["score_macd_pos"]
         signals.append("MACD histogram positif")
 
+    # ===== FILTER BTC =====
+    # Berdasarkan beta dan alpha serta tren BTC
+    btc_penalty = 0
+    btc_bonus = 0
+    if btc_trend == "bearish":
+        if beta > CONFIG["beta_high_threshold"]:
+            # Coin sangat sensitif, akan jatuh lebih dalam
+            btc_penalty = -25
+            signals.append(f"🚨 BTC turun {btc_change:.1f}% & beta {beta:.2f} (sensitif) - penalti besar!")
+        elif beta > 1.0:
+            btc_penalty = -15
+            signals.append(f"⚠️ BTC turun {btc_change:.1f}% & beta {beta:.2f} - penalti sedang")
+        else:
+            btc_penalty = -5
+            signals.append(f"📉 BTC turun {btc_change:.1f}% - penalti ringan")
+
+        # Jika alpha positif, bisa mengurangi penalti
+        if alpha > CONFIG["alpha_positive_threshold"]:
+            btc_penalty = max(btc_penalty + 10, 0)  # kurangi penalti, maks 0
+            signals.append(f"✅ Alpha {alpha:.2f}% positif - mengurangi dampak BTC")
+    elif btc_trend == "bullish":
+        if beta > CONFIG["beta_high_threshold"]:
+            btc_bonus = 15
+            signals.append(f"🚀 BTC naik {btc_change:.1f}% & beta {beta:.2f} - bonus!")
+        elif beta > 1.0:
+            btc_bonus = 8
+            signals.append(f"📈 BTC naik {btc_change:.1f}% & beta {beta:.2f} - bonus kecil")
+        else:
+            btc_bonus = 3
+            signals.append(f"✅ BTC naik {btc_change:.1f}% - bonus")
+
+        # Jika alpha positif, tambah bonus
+        if alpha > CONFIG["alpha_positive_threshold"]:
+            btc_bonus += 5
+            signals.append(f"⭐ Alpha {alpha:.2f}% positif - outperforming BTC")
+
+    # Jika alpha sangat negatif, beri penalti terpisah
+    if alpha < -CONFIG["alpha_positive_threshold"]:
+        btc_penalty -= 10
+        signals.append(f"⚠️ Alpha {alpha:.2f}% negatif - underperforming BTC")
+
+    score += btc_penalty + btc_bonus
+
+    # Simpan info beta/alpha untuk ditampilkan
+    beta_alpha_info = {
+        "beta": round(beta, 2),
+        "alpha": round(alpha, 2),
+        "r_squared": round(r_squared, 2),
+        "btc_trend": btc_trend,
+        "btc_change": round(btc_change, 1)
+    }
+
+    # Tipe pump
     pump_type = "unknown"
     if above_vwap_rate > CONFIG["above_vwap_rate_min"] and bb_pct > 0.4 and rsi > 45:
         pump_type = "Momentum Breakout (Tipe A)"
@@ -687,16 +818,17 @@ def master_score(symbol, ticker):
             "macd_hist": round(macd_hist, 6),
             "potential_gain_t1": round(potential_gain_t1, 1),
             "potential_gain_t2": round(potential_gain_t2, 1),
+            "beta_alpha": beta_alpha_info,
         }
     else:
         log.info(f"  {symbol}: Skor {score} < {CONFIG['min_score_alert']}")
         return None
 
 # ══════════════════════════════════════════════════════════════
-#  📱  TELEGRAM FORMATTER
+#  📱  TELEGRAM FORMATTER (modifikasi untuk menampilkan beta/alpha)
 # ══════════════════════════════════════════════════════════════
 def build_alert(r, rank=None):
-    msg = f"🚨 <b>PRE-PUMP SIGNAL {rank} — v13.3-FINAL</b>\n\n"
+    msg = f"🚨 <b>PRE-PUMP SIGNAL {rank} — v13.4-BETA</b>\n\n"
     msg += f"<b>Symbol    :</b> {r['symbol']}\n"
     msg += f"<b>Pump Type :</b> {r['pump_type']}\n"
     msg += f"<b>Score     :</b> {r['score']}\n"
@@ -710,6 +842,10 @@ def build_alert(r, rank=None):
     msg += f"  streak={r['funding_stats']['streak']}, basis={r['funding_stats']['basis']:.2f}%\n"
     msg += f"<b>MACD hist :</b> {r['macd_hist']:.6f}\n"
     msg += f"<b>Potensi Gain:</b> T1 +{r['potential_gain_t1']}% | T2 +{r['potential_gain_t2']}%\n"
+    # Tambahkan info beta/alpha
+    ba = r['beta_alpha']
+    msg += f"<b>BTC      :</b> {ba['btc_trend'].upper()} {ba['btc_change']:+.1f}% (3h)\n"
+    msg += f"<b>Beta     :</b> {ba['beta']} | <b>Alpha    :</b> {ba['alpha']:+.2f}% | R²={ba['r_squared']}\n"
     msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"📍 <b>ENTRY ZONE (RENTANG)</b>\n"
     e = r['entry']
@@ -727,10 +863,10 @@ def build_alert(r, rank=None):
     return msg
 
 def build_summary(results):
-    msg = f"📋 <b>TOP CANDIDATES v13.3 — {utc_now()}</b>\n{'━'*28}\n"
+    msg = f"📋 <b>TOP CANDIDATES v13.4 — {utc_now()}</b>\n{'━'*28}\n"
     for i, r in enumerate(results, 1):
         vol = (f"${r['vol_24h']/1e6:.1f}M" if r['vol_24h'] >= 1e6 else f"${r['vol_24h']/1e3:.0f}K")
-        msg += f"{i}. <b>{r['symbol']}</b> [Score:{r['score']} | Gain T1:{r['potential_gain_t1']}%]\n"
+        msg += f"{i}. <b>{r['symbol']}</b> [Score:{r['score']} | Gain T1:{r['potential_gain_t1']}% | Beta:{r['beta_alpha']['beta']} | Alpha:{r['beta_alpha']['alpha']:+.2f}]\n"
         msg += f"   {vol} | RSI:{r['rsi']} | BBW:{r['bbw']}% | AboveVWAP:{r['above_vwap_rate']}% | VolRatio:{r['vol_ratio']}x\n"
     return msg
 
@@ -815,10 +951,11 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v13.3-FINAL — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v13.4-BETA — {utc_now()} ===")
     log.info("=" * 70)
-    log.info("PERUBAHAN vs v13.2:")
-    log.info("  • Menampilkan potensi gain T1 di summary dan alert")
+    log.info("PERUBAHAN vs v13.3:")
+    log.info("  • Menambahkan filter Beta & Alpha terhadap BTC")
+    log.info("  • Penalti/bonus berdasarkan tren BTC dan sensitivitas coin")
     log.info("=" * 70)
     tickers = get_all_tickers()
     if not tickers:
@@ -839,7 +976,7 @@ def run_scan():
         try:
             res = master_score(sym, t)
             if res:
-                log.info(f"  Score={res['score']} | sinyal: {len(res['signals'])} | tipe={res['pump_type']} | gain T1={res['potential_gain_t1']}%")
+                log.info(f"  Score={res['score']} | sinyal: {len(res['signals'])} | tipe={res['pump_type']} | gain T1={res['potential_gain_t1']}% | Beta={res['beta_alpha']['beta']} Alpha={res['beta_alpha']['alpha']:+.2f}")
                 results.append(res)
         except Exception as ex:
             log.warning(f"  Error {sym}: {ex}")
@@ -857,7 +994,7 @@ def run_scan():
         ok = send_telegram(build_alert(r, rank=rank))
         if ok:
             set_cooldown(r["symbol"])
-            log.info(f"✅ Alert #{rank}: {r['symbol']} Score={r['score']} Gain T1={r['potential_gain_t1']}%")
+            log.info(f"✅ Alert #{rank}: {r['symbol']} Score={r['score']} Gain T1={r['potential_gain_t1']}% Beta={r['beta_alpha']['beta']}")
         time.sleep(2)
     log.info(f"=== SELESAI — {len(top)} alert terkirim ===")
 
@@ -866,8 +1003,8 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔═══════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v13.3-FINAL                    ║")
-    log.info("║  FOKUS: Entry support + target Fibonacci + potensi gain ║")
+    log.info("║  PRE-PUMP SCANNER v13.4-BETA                      ║")
+    log.info("║  FOKUS: Entry support + target Fibonacci + filter BTC ║")
     log.info("╚═══════════════════════════════════════════════════╝")
     if not BOT_TOKEN or not CHAT_ID:
         log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan!")
