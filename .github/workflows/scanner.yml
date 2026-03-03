@@ -2,7 +2,7 @@ name: Pre-Pump Scanner
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '0 */2 * * *'   # setiap 2 jam sekali
   workflow_dispatch:
 
 permissions:
@@ -14,11 +14,13 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12' # DIUBAH: Gunakan 3.12 agar kompatibel dengan pandas-ta terbaru
+          python-version: '3.12'  # gunakan 3.12 agar kompatibel dengan pandas-ta versi terbaru
 
       - name: Install dependencies
         run: |
