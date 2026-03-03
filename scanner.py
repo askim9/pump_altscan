@@ -1,17 +1,17 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v13.7-ENHANCED                                       ║
+║  PRE-PUMP SCANNER v13.8-FINAL                                          ║
 ║                                                                          ║
 ║  BERDASARKAN EVALUASI REAL-TIME:                                        ║
 ║    • Entry support-based (rentang) sudah baik                           ║
 ║    • Stop loss menggunakan support terdekat (bukan persentase fixed)   ║
-║    • Target menggunakan demand/resistance terdekat (1 & 2)             ║
+║    • Target menggunakan demand/resistance 24h + Fibonacci fallback     ║
 ║    • Batasan risiko maksimal 4% (jika support terlalu jauh)            ║
 ║    • Bonus volume spike >5x (deteksi pump mendadak)                    ║
 ║    • Penalti volume 1h <20% rata-rata 6h (filter aktivitas terkini)    ║
 ║                                                                          ║
 ║  EXPECTED RESULT:                                                        ║
-║    Entry lebih sering terisi, SL lebih realistis, target lebih terukur  ║
+║    Entry lebih sering terisi, SL lebih realistis, target lebih besar    ║
 ║    Lebih sensitif terhadap volume spike, hindari coin tidak aktif       ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
@@ -75,6 +75,7 @@ CONFIG = {
     "max_risk_pct":              4.0,      # maksimal risiko 4% (SL)
     "entry_support_offset":       0.0,      # entry di support (0%)
     "entry_range_above":         0.003,     # rentang 0.3% di atas support
+    "resistance_lookback_hours": 24,        # periode mencari resistance (jam)
 
     # ── Volume spike threshold ─────────────────────────────────
     "vol_spike_threshold":       5.0,      # volume > 5x rata-rata 24h
@@ -470,7 +471,20 @@ def find_swing_low_high(candles_1h, lookback=48):
         swing_high = max(c["high"] for c in recent)
     return swing_low, swing_high
 
-# ==================== FUNGSI ENTRY (dengan target support/resistance) ====================
+def calc_fib_targets(entry, candles_1h):
+    swing_low, swing_high = find_swing_low_high(candles_1h)
+    fib_range = swing_high - swing_low
+    if fib_range <= 0:
+        return entry * 1.08, entry * 1.15
+    t1 = swing_low + fib_range * 1.272
+    t2 = swing_low + fib_range * 1.618
+    if t1 < entry:
+        t1 = entry * 1.08
+    if t2 < t1:
+        t2 = t1 * 1.08
+    return round(t1, 8), round(t2, 8)
+
+# ==================== FUNGSI ENTRY (dengan target resistance 24h + Fibonacci fallback) ====================
 def get_support_levels(candles_1h):
     cur = candles_1h[-1]["close"]
     supports = []
@@ -492,22 +506,33 @@ def get_support_levels(candles_1h):
         return cur * 0.985
 
 def get_resistance_levels(candles_1h, entry):
-    """Mencari level resistance terdekat di atas entry."""
-    if len(candles_1h) < 6:
-        return entry * 1.03, entry * 1.06
-    recent = candles_1h[-6:]
+    """
+    Mencari level resistance terdekat di atas entry dalam 24 jam terakhir.
+    Jika tidak ditemukan, menggunakan Fibonacci extension.
+    """
+    lookback = CONFIG["resistance_lookback_hours"]
+    if len(candles_1h) < lookback:
+        # Jika data kurang, fallback ke Fibonacci
+        fib_t1, fib_t2 = calc_fib_targets(entry, candles_1h)
+        return fib_t1, fib_t2
+    recent = candles_1h[-lookback:]
+    # Ambil semua high yang lebih tinggi dari entry
     highs = [c["high"] for c in recent if c["high"] > entry]
     if not highs:
-        # fallback ke persentase
-        return entry * 1.03, entry * 1.06
+        # Jika tidak ada resistance, fallback ke Fibonacci
+        fib_t1, fib_t2 = calc_fib_targets(entry, candles_1h)
+        return fib_t1, fib_t2
+    # Urutkan ascending
     unique_highs = sorted(set(highs))
-    # target pertama: resistance terdekat (yang paling rendah di atas entry)
+    # T1 adalah resistance terdekat
     t1 = unique_highs[0]
-    # target kedua: resistance berikutnya (bisa lebih tinggi atau jika tidak ada, pakai 1.5% di atas t1)
+    # T2 adalah resistance berikutnya, jika ada; jika tidak, gunakan Fibonacci T2
     if len(unique_highs) >= 2:
         t2 = unique_highs[1]
     else:
-        t2 = t1 * 1.015  # naik 1.5% dari t1
+        # Jika hanya satu resistance, target kedua menggunakan Fibonacci
+        _, fib_t2 = calc_fib_targets(entry, candles_1h)
+        t2 = fib_t2
     return t1, t2
 
 def calc_entry(candles_1h, candles_15m):
@@ -527,22 +552,15 @@ def calc_entry(candles_1h, candles_15m):
         sl_candidate = entry * (1 - CONFIG["max_risk_pct"] / 100)
     sl = sl_candidate
 
-    # Target resistance
+    # Target resistance (dengan fallback Fibonacci)
     t1, t2 = get_resistance_levels(candles_1h, entry)
 
     risk = entry - sl
     reward = t1 - entry
     rr = round(reward / risk, 1) if risk > 0 else 0
 
-    # Fibonacci targets (opsional)
-    swing_low, swing_high = find_swing_low_high(candles_1h)
-    fib_range = swing_high - swing_low
-    if fib_range > 0:
-        fib_t1 = swing_low + fib_range * 1.272
-        fib_t2 = swing_low + fib_range * 1.618
-    else:
-        fib_t1 = t1
-        fib_t2 = t2
+    # Fibonacci targets (opsional, untuk referensi)
+    fib_t1, fib_t2 = calc_fib_targets(entry, candles_1h)
 
     return {
         "cur": cur,
@@ -674,7 +692,6 @@ def master_score(symbol, ticker):
     # MACD
     macd_hist = calc_macd(c1h)
 
-    # ===== FITUR BARU: Volume spike & aktivitas =====
     # Hitung rata-rata volume 6 jam terakhir (untuk filter aktivitas)
     if len(c1h) >= 6:
         avg_vol_6h = sum(c["volume_usd"] for c in c1h[-6:]) / 6
@@ -682,29 +699,6 @@ def master_score(symbol, ticker):
     else:
         avg_vol_6h = 0
         vol_1h_last = 0
-
-    # Bonus volume spike
-    vol_spike_bonus = 0
-    if vol_ratio > CONFIG["vol_spike_threshold"]:
-        vol_spike_bonus = CONFIG["vol_spike_bonus"]
-        signals.append(f"🔥 Volume spike {vol_ratio:.1f}x rata-rata 24h")
-
-    # Penalti volume 1h rendah
-    vol_low_penalty = 0
-    if avg_vol_6h > 0 and vol_1h_last < avg_vol_6h * CONFIG["min_vol_1h_ratio"]:
-        vol_low_penalty = CONFIG["vol_low_penalty"]
-        signals.append(f"⚠️ Volume 1h rendah ({vol_1h_last/avg_vol_6h:.0%} rata-rata 6h) - penalti")
-
-    # Skor awal
-    score = 0
-    signals = []
-
-    # ... (kode scoring yang sudah ada, tetapi kita perlu menambahkan sinyal di atas)
-    # Untuk menghindari duplikasi, kita harus menulis ulang bagian scoring secara lengkap.
-    # Tapi karena panjang, kita akan asumsikan bagian scoring sudah ada dan kita hanya menambahkan bonus/penalti.
-
-    # Sebenarnya di atas kita sudah mendefinisikan signals = [] setelah perhitungan, jadi kita harus menggabungkan.
-    # Mari kita tulis ulang bagian scoring dengan urutan yang benar.
 
     score = 0
     signals = []
@@ -786,14 +780,14 @@ def master_score(symbol, ticker):
         signals.append("MACD histogram positif")
 
     # Bonus volume spike
-    if vol_spike_bonus:
-        score += vol_spike_bonus
+    if vol_ratio > CONFIG["vol_spike_threshold"]:
+        score += CONFIG["vol_spike_bonus"]
         signals.append(f"🔥 Volume spike {vol_ratio:.1f}x rata-rata 24h")
 
-    # Penalti volume rendah
-    if vol_low_penalty:
-        score += vol_low_penalty
-        # sinyal sudah ditambahkan di atas
+    # Penalti volume 1h rendah
+    if avg_vol_6h > 0 and vol_1h_last < avg_vol_6h * CONFIG["min_vol_1h_ratio"]:
+        score += CONFIG["vol_low_penalty"]
+        signals.append(f"⚠️ Volume 1h rendah ({vol_1h_last/avg_vol_6h:.0%} rata-rata 6h) - penalti")
 
     # BTC filter
     btc_penalty = 0
@@ -876,8 +870,8 @@ def master_score(symbol, ticker):
             "potential_gain_fib1": round(potential_gain_fib1, 1),
             "potential_gain_fib2": round(potential_gain_fib2, 1),
             "beta_alpha": beta_alpha_info,
-            "vol_spike": vol_spike_bonus > 0,
-            "vol_low": vol_low_penalty < 0,
+            "vol_spike": vol_ratio > CONFIG["vol_spike_threshold"],
+            "vol_low": (avg_vol_6h > 0 and vol_1h_last < avg_vol_6h * CONFIG["min_vol_1h_ratio"]),
         }
     else:
         log.info(f"  {symbol}: Skor {score} < {CONFIG['min_score_alert']}")
@@ -887,7 +881,7 @@ def master_score(symbol, ticker):
 #  📱  TELEGRAM FORMATTER (modifikasi untuk menampilkan fitur baru)
 # ══════════════════════════════════════════════════════════════
 def build_alert(r, rank=None):
-    msg = f"🚨 <b>PRE-PUMP SIGNAL {rank} — v13.7-ENHANCED</b>\n\n"
+    msg = f"🚨 <b>PRE-PUMP SIGNAL {rank} — v13.8-FINAL</b>\n\n"
     msg += f"<b>Symbol    :</b> {r['symbol']}\n"
     msg += f"<b>Pump Type :</b> {r['pump_type']}\n"
     msg += f"<b>Score     :</b> {r['score']}\n"
@@ -928,7 +922,7 @@ def build_alert(r, rank=None):
     return msg
 
 def build_summary(results):
-    msg = f"📋 <b>TOP CANDIDATES v13.7 — {utc_now()}</b>\n{'━'*28}\n"
+    msg = f"📋 <b>TOP CANDIDATES v13.8 — {utc_now()}</b>\n{'━'*28}\n"
     for i, r in enumerate(results, 1):
         vol = (f"${r['vol_24h']/1e6:.1f}M" if r['vol_24h'] >= 1e6 else f"${r['vol_24h']/1e3:.0f}K")
         spike_tag = " 🔥" if r.get('vol_spike') else ""
@@ -1018,11 +1012,11 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v13.7-ENHANCED — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v13.8-FINAL — {utc_now()} ===")
     log.info("=" * 70)
-    log.info("PERUBAHAN vs v13.6:")
-    log.info("  • Bonus volume spike >5x (+3 poin)")
-    log.info("  • Penalti volume 1h <20% rata-rata 6h (-5 poin)")
+    log.info("PERUBAHAN vs v13.7:")
+    log.info("  • Target resistance diperbesar dengan lookback 24 jam")
+    log.info("  • Fallback ke Fibonacci jika tidak ada resistance")
     log.info("=" * 70)
     tickers = get_all_tickers()
     if not tickers:
@@ -1070,8 +1064,8 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔═══════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v13.7-ENHANCED                  ║")
-    log.info("║  FOKUS: Entry support + target demand + volume spike ║")
+    log.info("║  PRE-PUMP SCANNER v13.8-FINAL                     ║")
+    log.info("║  FOKUS: Entry support + target demand (24h) + Fibonacci ║")
     log.info("╚═══════════════════════════════════════════════════╝")
     if not BOT_TOKEN or not CHAT_ID:
         log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan!")
