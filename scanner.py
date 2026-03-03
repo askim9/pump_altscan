@@ -8,6 +8,7 @@
 ║    • Konfirmasi volume, pola candlestick, dan higher timeframe         ║
 ║    • Composite score: support (40%) + teknikal (35%) + funding (25%)   ║
 ║    • Output 5 sinyal terbaik dengan RR tinggi                          ║
+║    • Funding gate diperlonggar: avg -0.00005, cumul -0.01              ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -66,9 +67,9 @@ CONFIG = {
     # ── Gate perubahan harga (pre-filter) ──────────────────────
     "gate_chg_24h_max": 30.0,
 
-    # ── Funding Gate (WAJIB) ───────────────────────────────────
-    "funding_gate_avg": -0.0001,
-    "funding_gate_cumul": -0.02,
+    # ── Funding Gate (WAJIB) — DIPERLONGGAR ───────────────────
+    "funding_gate_avg": -0.00005,   # sebelumnya -0.0001
+    "funding_gate_cumul": -0.01,    # sebelumnya -0.02
 
     # ── Candle limits ─────────────────────────────────────────
     "candle_1h": 168,
@@ -918,7 +919,7 @@ def master_score(symbol, ticker):
     if vol_24h < CONFIG["min_vol_24h"]:
         return None
 
-    # Funding gate (tetap wajib)
+    # Funding gate (tetap wajib, namun dengan nilai lebih longgar)
     funding = get_funding(symbol)
     save_funding_snapshot(symbol, funding)
     fstats = get_funding_stats(symbol, funding)
@@ -1118,6 +1119,7 @@ def run_scan():
     log.info(f"=== PRE-PUMP SCANNER v13.4-SUPPORT — {utc_now()} ===")
     log.info("=" * 70)
     log.info("FITUR BARU: Filter support kuat + composite score + 5 sinyal terbaik")
+    log.info("Funding gate diperlonggar: avg -0.00005 / cumul -0.01")
     log.info("=" * 70)
     tickers = get_all_tickers()
     if not tickers:
@@ -1166,6 +1168,7 @@ if __name__ == "__main__":
     log.info("╔═══════════════════════════════════════════════════╗")
     log.info("║  PRE-PUMP SCANNER v13.4-SUPPORT                  ║")
     log.info("║  FOKUS: Support kuat + composite scoring         ║")
+    log.info("║  Funding gate diperlonggar                       ║")
     log.info("╚═══════════════════════════════════════════════════╝")
     if not BOT_TOKEN or not CHAT_ID:
         log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan!")
