@@ -26,7 +26,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pandas==2.2.3
-          pip install git+https://github.com/twopirllc/pandas-ta.git
+          pip install https://github.com/twopirllc/pandas-ta/releases/download/v0.3.14b0/pandas_ta-0.3.14b0-py3-none-any.whl
           pip install numpy==1.26.4
           pip install requests==2.31.0
           pip install python-dotenv==1.0.1
