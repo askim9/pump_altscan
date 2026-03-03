@@ -1,5 +1,4 @@
 pandas==2.2.3
-pandas-ta
 numpy==1.26.4
 requests==2.31.0
 python-dotenv==1.0.1
