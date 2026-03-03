@@ -1,24 +1,16 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v13.8-FINAL                                          ║
+║  PRE-PUMP SCANNER v10.0 — UNIFIED EDITION                               ║
 ║                                                                          ║
-║  BERDASARKAN EVALUASI REAL-TIME:                                        ║
-║    • Entry support-based (rentang) sudah baik                           ║
-║    • Stop loss menggunakan support terdekat (bukan persentase fixed)   ║
-║    • Target menggunakan demand/resistance 24h + Fibonacci fallback     ║
-║    • Batasan risiko maksimal 4% (jika support terlalu jauh)            ║
-║    • Bonus volume spike >5x (deteksi pump mendadak)                    ║
-║    • Penalti volume 1h <20% rata-rata 6h (filter aktivitas terkini)    ║
+║  MERGE: v13.8-FINAL + v9.10                                              ║
 ║                                                                          ║
-║  EXPECTED RESULT:                                                        ║
-║    Entry lebih sering terisi, SL lebih realistis, target lebih besar    ║
-║    Lebih sensitif terhadap volume spike, hindari coin tidak aktif       ║
+
+║             ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
 import requests, time, os, math, json, logging
 from datetime import datetime, timezone
-from collections import defaultdict
 import numpy as np
 
 try:
@@ -32,67 +24,69 @@ CHAT_ID   = os.getenv("CHAT_ID")
 
 # ── Logging ───────────────────────────────────────────────────────────────
 import logging.handlers as _lh
-_log_fmt    = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-_log_root   = logging.getLogger()
+_log_fmt  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+_log_root = logging.getLogger()
 _log_root.setLevel(logging.INFO)
 _ch = logging.StreamHandler()
 _ch.setFormatter(_log_fmt)
 _log_root.addHandler(_ch)
 _fh = _lh.RotatingFileHandler(
-    "/tmp/scanner_v13.log", maxBytes=10*1024*1024, backupCount=3
+    "/tmp/scanner_v10.log", maxBytes=10*1024*1024, backupCount=3
 )
 _fh.setFormatter(_log_fmt)
 _log_root.addHandler(_fh)
 log = logging.getLogger(__name__)
-log.info("Log file aktif: /tmp/scanner_v13.log (rotasi 10MB)")
+log.info("Log file aktif: /tmp/scanner_v10.log (rotasi 10MB)")
 
 # ══════════════════════════════════════════════════════════════
 #  ⚙️  CONFIG
 # ══════════════════════════════════════════════════════════════
 CONFIG = {
     # ── Threshold alert ───────────────────────────────────────
-    "min_score_alert":          10,
-    "max_alerts_per_run":        15,
+    "min_score_alert":          20,    # dinaikkan (scoring sekarang lebih kaya)
+    "max_alerts_per_run":       15,
 
-    # ── Volume 24h TOTAL (USD) ─────────────────────────────────
-    "min_vol_24h":            3_000,
-    "max_vol_24h":       50_000_000,
-    "pre_filter_vol":         1_000,
+    # ── Volume 24h (USD) ──────────────────────────────────────
+    "min_vol_24h":          50_000,    # FIX: dinaikkan dari $3K → $50K (realistis)
+    "max_vol_24h":      50_000_000,
+    "pre_filter_vol":       10_000,
 
-    # ── Gate perubahan harga (pre-filter) ──────────────────────
-    "gate_chg_24h_max":          30.0,
+    # ── Gate perubahan harga ──────────────────────────────────
+    "gate_chg_24h_max":         30.0,
 
-    # ── Funding Gate (WAJIB) ───────────────────────────────────
-    "funding_gate_avg":        -0.0001,
+    # ── Dead Activity gate (v9.10) ────────────────────────────
+    # Blok jika volume candle terakhir < threshold% dari avg 6 candle
+    "dead_activity_threshold":  0.10,
+
+    # ── Funding gate (v13.8, difix logikanya) ────────────────
+    # Lolos jika: avg_funding < threshold ATAU cumulative < threshold
+    "funding_gate_avg":      -0.0001,
     "funding_gate_cumul":      -0.02,
 
     # ── Candle limits ─────────────────────────────────────────
-    "candle_1h":                168,
-    "candle_15m":                96,
+    "candle_1h":                168,   # 7 hari
+    "candle_15m":                96,   # 24 jam
     "candle_4h":                 42,
 
-    # ── Entry/exit ────────────────────────────────────────────
-    "max_risk_pct":              4.0,      # maksimal risiko 4% (SL)
-    "entry_support_offset":       0.0,      # entry di support (0%)
-    "entry_range_above":         0.003,     # rentang 0.3% di atas support
-    "resistance_lookback_hours": 24,        # periode mencari resistance (jam)
+    # ── Entry / Exit (v13.8) ──────────────────────────────────
+    "max_risk_pct":              4.0,  # SL maks 4%
+    "entry_range_above":         0.003,# entry range 0.3% di atas support
+    "resistance_lookback_hours": 24,   # cari resistance dalam 24 jam
+    "min_resistance_gap_pct":    0.5,  # FIX: target harus minimal 0.5% dari entry
 
-    # ── Volume spike threshold ─────────────────────────────────
-    "vol_spike_threshold":       5.0,      # volume > 5x rata-rata 24h
-    "vol_spike_bonus":           3,        # bonus poin
+    # ── Volume spike (v13.8) ──────────────────────────────────
+    "vol_spike_threshold":       5.0,
+    "vol_spike_bonus":           3,
+    "min_vol_1h_ratio":          0.2,
+    "vol_low_penalty":          -5,
 
-    # ── Volume 1h minimum (aktivitas terkini) ─────────────────
-    "min_vol_1h_ratio":          0.2,      # volume 1h harus > 20% rata-rata 6h
-    "vol_low_penalty":           -5,       # penalti jika kurang
+    # ── BTC Beta/Alpha (v13.8) ────────────────────────────────
+    "beta_lookback_hours":       24,
+    "beta_high_threshold":       1.5,
+    "btc_drop_threshold":       -1.5,
+    "alpha_positive_threshold":  0.5,
 
-    # ── Operasional ───────────────────────────────────────────
-    "alert_cooldown_sec":       1800,
-    "sleep_coins":               0.8,
-    "sleep_error":               3.0,
-    "cooldown_file":    "./cooldown.json",
-    "funding_snapshot_file":"./funding.json",
-
-    # ── Bobot skor (utama) ────────────────────────────────────
+    # ── Bobot skor teknikal (v13.8) ───────────────────────────
     "score_bbw_12":              5,
     "score_bbw_10":              4,
     "score_bbw_8":               2,
@@ -108,32 +102,52 @@ CONFIG = {
     "score_funding_neg_pct":     3,
     "score_funding_streak":      3,
     "score_basis":               2,
-    "score_lowcap":              1,
-    "score_ath_dist":            1,
-
-    # ── Bobot tambahan ───────────────────────────────────────
     "score_vol_ratio_24h":       2,
     "score_vol_accel":           2,
     "score_macd_pos":            1,
-
-    # ── Threshold tambahan ────────────────────────────────────
     "above_vwap_rate_min":       0.6,
     "squeeze_funding_cumul":    -0.05,
     "vol_ratio_threshold":       2.5,
     "vol_accel_threshold":       0.5,
 
-    # ── Parameter Beta/Alpha ──────────────────────────────────
-    "beta_lookback_hours":       24,
-    "beta_high_threshold":       1.5,
-    "beta_low_threshold":        0.5,
-    "alpha_positive_threshold":  0.5,
-    "btc_drop_threshold":        -1.5,
+    # ── OI layer (v9.10) ──────────────────────────────────────
+    "oi_snapshot_file":    "./oi_snaps.json",
+    "oi_penalty_24h":       -8,  # OI 24h turun signifikan
+    "oi_penalty_1h":        -6,  # OI 1h turun (pendek)
+    "oi_bonus_stealth":     +8,  # OI naik tapi harga flat (akumulasi)
+    "oi_bonus_expand":      +5,  # OI naik moderan
+    "oi_chg24h_penalty_thr": -8.0,
+    "oi_chg1h_penalty_thr":  -3.0,
+    "oi_stealth_oi_min":     +5.0,  # OI naik > 5%
+    "oi_stealth_price_max":   2.0,  # harga flat < 2%
+
+    # ── Net Flow (v9.10) ──────────────────────────────────────
+    "max_netflow_score":        25,
+    "nf_strong_buy":            12.0,
+    "nf_buy":                    5.0,
+    "nf_neutral_max":            5.0,
+    "nf_sell":                  -5.0,
+    "nf_strong_sell":          -15.0,
+    "nf_gate_72h":             -12.0,
+    "nf_gate_24h":              -8.0,
+    "nf_gate_6h":               -5.0,
+    "nf_whale_72h_max":          3.0,
+    "nf_whale_72h_min":        -15.0,
+    "nf_whale_24h_min":          3.0,
+    "nf_whale_6h_min":           5.0,
+
+    # ── Operasional ───────────────────────────────────────────
+    "alert_cooldown_sec":      1800,
+    "sleep_coins":              0.8,
+    "sleep_error":              3.0,
+    "cooldown_file":     "./cooldown.json",
+    "funding_snapshot_file": "./funding.json",
 }
 
 MANUAL_EXCLUDE = set()
 
 # ══════════════════════════════════════════════════════════════
-#  📋  WHITELIST — 324 coin pilihan
+#  📋  WHITELIST
 # ══════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
     "DOGEUSDT", "BCHUSDT", "ADAUSDT", "HYPEUSDT", "XMRUSDT", "LINKUSDT", "XLMUSDT", "HBARUSDT",
@@ -179,16 +193,13 @@ WHITELIST_SYMBOLS = {
     "4USDT", "USUSDT", "HEIUSDT", "OGUSDT",
 }
 
-GRAN_MAP = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
-
+GRAN_MAP       = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
 BITGET_BASE    = "https://api.bitget.com"
-COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 _cache         = {}
-
 EXCLUDED_KEYWORDS = ["XAU","PAXG","BTC","ETH","USDC","DAI","BUSD","UST","LUNC","LUNA"]
 
 # ══════════════════════════════════════════════════════════════
-#  🔒  COOLDOWN & SNAPSHOTS (funding)
+#  🔒  COOLDOWN
 # ══════════════════════════════════════════════════════════════
 def load_cooldown():
     try:
@@ -210,6 +221,19 @@ def save_cooldown(state):
     except:
         pass
 
+_cooldown = load_cooldown()
+log.info(f"Cooldown aktif: {len(_cooldown)} coin")
+
+def is_cooldown(sym):
+    return (time.time() - _cooldown.get(sym, 0)) < CONFIG["alert_cooldown_sec"]
+
+def set_cooldown(sym):
+    _cooldown[sym] = time.time()
+    save_cooldown(_cooldown)
+
+# ══════════════════════════════════════════════════════════════
+#  📦  FUNDING SNAPSHOTS (v13.8)
+# ══════════════════════════════════════════════════════════════
 def load_funding_snapshots():
     try:
         if os.path.exists(CONFIG["funding_snapshot_file"]):
@@ -221,7 +245,7 @@ def load_funding_snapshots():
 
 def save_funding_snapshot(symbol, funding_rate):
     snaps = load_funding_snapshots()
-    now = time.time()
+    now   = time.time()
     if symbol not in snaps:
         snaps[symbol] = []
     snaps[symbol].append({"ts": now, "funding": funding_rate})
@@ -232,15 +256,83 @@ def save_funding_snapshot(symbol, funding_rate):
     except:
         pass
 
-_cooldown = load_cooldown()
-log.info(f"Cooldown aktif: {len(_cooldown)} coin")
+def get_funding_stats(symbol, current_funding):
+    snaps    = load_funding_snapshots().get(symbol, [])
+    all_rates = [s["funding"] for s in snaps] + [current_funding]
+    if len(all_rates) < 2:
+        return None
+    last6    = all_rates[-6:]
+    avg6     = sum(last6) / len(last6)
+    cumul    = sum(last6)
+    neg_pct  = sum(1 for f in last6 if f < 0) / len(last6) * 100
+    streak   = 0
+    for f in reversed(last6):
+        if f < 0: streak += 1
+        else:     break
+    return {
+        "avg":        avg6,
+        "cumulative": cumul,
+        "neg_pct":    neg_pct,
+        "streak":     streak,
+        "basis":      current_funding * 100,
+        "current":    current_funding,
+    }
 
-def is_cooldown(sym):
-    return (time.time() - _cooldown.get(sym, 0)) < CONFIG["alert_cooldown_sec"]
+# ══════════════════════════════════════════════════════════════
+#  📦  OI SNAPSHOTS (v9.10 — v9.9 fix)
+# ══════════════════════════════════════════════════════════════
+def load_oi_snapshots():
+    try:
+        if os.path.exists(CONFIG["oi_snapshot_file"]):
+            with open(CONFIG["oi_snapshot_file"]) as f:
+                return json.load(f)
+    except:
+        pass
+    return {}
 
-def set_cooldown(sym):
-    _cooldown[sym] = time.time()
-    save_cooldown(_cooldown)
+def save_oi_snapshot(symbol, oi_value):
+    snaps = load_oi_snapshots()
+    now   = time.time()
+    if symbol not in snaps:
+        snaps[symbol] = []
+    snaps[symbol].append({"ts": now, "oi": oi_value})
+    snaps[symbol] = sorted(snaps[symbol], key=lambda x: x["ts"])[-100:]
+    try:
+        with open(CONFIG["oi_snapshot_file"], "w") as f:
+            json.dump(snaps, f)
+    except:
+        pass
+
+def get_oi_changes(symbol, current_oi):
+    """
+    v9.9 FIX: OI-valid gate yang robust.
+    - oi_valid = True jika ada >= 2 snapshot (ANY interval)
+    - Toleransi nearest() = 1800s (30 menit)
+    - Fallback ke snapshot tertua jika tidak ada snapshot ~1h
+    """
+    snaps = load_oi_snapshots()
+    hist  = snaps.get(symbol, [])
+    if len(hist) < 2:
+        return 0, 0, False
+    now = time.time()
+
+    def nearest(target_ts, tolerance=1800):
+        cands = [d for d in hist if abs(d["ts"] - target_ts) < tolerance]
+        return min(cands, key=lambda d: abs(d["ts"] - target_ts)) if cands else None
+
+    old1h  = nearest(now - 3600)
+    old24h = nearest(now - 86400, tolerance=7200)
+
+    # Fallback: jika tidak ada snapshot ~1h, gunakan tertua
+    if not old1h:
+        older = [d for d in hist if d["ts"] < now - 60]
+        if older:
+            old1h = min(older, key=lambda d: d["ts"])
+
+    chg1h  = (current_oi - old1h["oi"])  / old1h["oi"]  * 100 if old1h  and old1h["oi"]  else 0
+    chg24h = (current_oi - old24h["oi"]) / old24h["oi"] * 100 if old24h and old24h["oi"] else 0
+    oi_valid = (old1h is not None)
+    return chg1h, chg24h, oi_valid
 
 # ══════════════════════════════════════════════════════════════
 #  🌐  HTTP UTILITIES
@@ -266,10 +358,10 @@ def send_telegram(msg):
         log.error("BOT_TOKEN atau CHAT_ID tidak diset")
         return False
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url     = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
-        r = requests.post(url, data=payload, timeout=15)
-        log.info(f"Telegram response: {r.status_code} - {r.text}")
+        r       = requests.post(url, data=payload, timeout=15)
+        log.info(f"Telegram response: {r.status_code}")
         return r.status_code == 200
     except Exception as e:
         log.error(f"Telegram error: {e}")
@@ -335,71 +427,101 @@ def get_funding(symbol):
             pass
     return 0
 
-def get_funding_stats(symbol, current_funding):
-    snaps = load_funding_snapshots().get(symbol, [])
-    all_rates = [s["funding"] for s in snaps] + [current_funding]
-    if len(all_rates) < 2:
-        return None
-    last6 = all_rates[-6:]
-    avg6 = sum(last6) / len(last6)
-    cumul = sum(last6)
-    neg_pct = sum(1 for f in last6 if f < 0) / len(last6) * 100
-    streak = 0
-    for f in reversed(last6):
-        if f < 0:
-            streak += 1
-        else:
-            break
-    basis = current_funding * 100
-    return {
-        "avg": avg6,
-        "cumulative": cumul,
-        "neg_pct": neg_pct,
-        "streak": streak,
-        "basis": basis,
-        "current": current_funding
-    }
+def get_open_interest(symbol):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/open-interest",
+        params={"symbol": symbol, "productType": "usdt-futures"},
+    )
+    if data and data.get("code") == "00000":
+        try:
+            oi = data.get("data", {})
+            if "openInterestList" in oi and oi["openInterestList"]:
+                return float(oi["openInterestList"][0].get("size", 0))
+            return float(oi.get("size", 0))
+        except:
+            pass
+    return 0
 
-# ── Fungsi pendukung indikator ─────────────────────────────────
+def get_trades(symbol, limit=500):
+    """v9.10: menyertakan fillTime timestamp untuk windowed net flow."""
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/fills",
+        params={"symbol": symbol, "productType": "usdt-futures", "limit": str(limit)},
+    )
+    if data and data.get("code") == "00000":
+        trades = []
+        for t in data.get("data", []):
+            try:
+                ts_ms = int(t.get("fillTime", t.get("cTime", t.get("ts", 0))))
+                trades.append({
+                    "price": float(t["price"]),
+                    "size":  float(t["size"]),
+                    "side":  t.get("side", "").lower(),
+                    "ts_ms": ts_ms,
+                })
+            except:
+                pass
+        return trades
+    return []
+
+def get_orderbook(symbol, levels=50):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/merge-depth",
+        params={"symbol": symbol, "productType": "usdt-futures",
+                "precision": "scale0", "limit": str(levels)},
+    )
+    if data and data.get("code") == "00000":
+        try:
+            book    = data["data"]
+            bid_vol = sum(float(b[1]) for b in book.get("bids", []))
+            ask_vol = sum(float(a[1]) for a in book.get("asks", []))
+            total   = bid_vol + ask_vol
+            ratio   = bid_vol / total if total > 0 else 0.5
+            return ratio, bid_vol, ask_vol
+        except:
+            pass
+    return 0.5, 0, 0
+
+def get_btc_candles(gran="1h", limit=168):
+    return get_candles("BTCUSDT", gran, limit)
+
+# ══════════════════════════════════════════════════════════════
+#  📐  INDICATOR FUNCTIONS (v13.8 base)
+# ══════════════════════════════════════════════════════════════
 def calc_bbw(candles, period=20):
     if len(candles) < period:
         return 0, 0.5
     closes = [c["close"] for c in candles[-period:]]
-    mean = sum(closes) / period
-    std = math.sqrt(sum((x - mean)**2 for x in closes) / period)
+    mean   = sum(closes) / period
+    std    = math.sqrt(sum((x - mean)**2 for x in closes) / period)
     bb_upper = mean + 2*std
     bb_lower = mean - 2*std
-    bbw = (bb_upper - bb_lower) / mean * 100 if mean > 0 else 0
-    last = candles[-1]["close"]
-    if bb_upper - bb_lower == 0:
-        bb_pct = 0.5
-    else:
-        bb_pct = (last - bb_lower) / (bb_upper - bb_lower)
+    bbw    = (bb_upper - bb_lower) / mean * 100 if mean > 0 else 0
+    last   = candles[-1]["close"]
+    bb_pct = (last - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
     return bbw, bb_pct
 
 def calc_atr_pct(candles, period=14):
     if len(candles) < period + 1:
         return 0
     trs = []
-    for i in range(1, period+1):
-        h = candles[-i]["high"]
-        l = candles[-i]["low"]
+    for i in range(1, period + 1):
+        h  = candles[-i]["high"]
+        l  = candles[-i]["low"]
         pc = candles[-i-1]["close"] if i < len(candles) else candles[-i]["open"]
-        tr = max(h-l, abs(h-pc), abs(l-pc))
-        trs.append(tr)
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
     atr = sum(trs) / period
     cur = candles[-1]["close"]
     return atr / cur * 100 if cur > 0 else 0
 
-def calc_vwap(candles):
-    if len(candles) < 24:
+def calc_vwap(candles, window=24):
+    if len(candles) < window:
         return candles[-1]["close"]
-    cum_tv = 0
-    cum_v = 0
-    for c in candles[-24:]:
-        tp = (c["high"] + c["low"] + c["close"]) / 3
+    cum_tv = cum_v = 0
+    for c in candles[-window:]:
+        tp      = (c["high"] + c["low"] + c["close"]) / 3
         cum_tv += tp * c["volume"]
-        cum_v += c["volume"]
+        cum_v  += c["volume"]
     return cum_tv / cum_v if cum_v > 0 else candles[-1]["close"]
 
 def detect_bos_up(candles):
@@ -425,51 +547,48 @@ def get_rsi(candles, period=14):
     avg_g = sum(gains[:period]) / period
     avg_l = sum(losses[:period]) / period
     for i in range(period, len(gains)):
-        avg_g = (avg_g * (period-1) + gains[i]) / period
-        avg_l = (avg_l * (period-1) + losses[i]) / period
+        avg_g = (avg_g * (period - 1) + gains[i]) / period
+        avg_l = (avg_l * (period - 1) + losses[i]) / period
     if avg_l == 0:
         return 100.0
-    rs = avg_g / avg_l
-    return 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + avg_g / avg_l))
 
 def calc_macd(candles, fast=12, slow=26, signal=9):
-    if len(candles) < slow + signal:
+    """FIX v10.0: EMA incremental yang benar (bukan recalculate dari scratch)."""
+    if len(candles) < slow + signal + 5:
         return 0
     closes = [c["close"] for c in candles]
-    def ema(period, index):
-        if index < period - 1:
-            return closes[index]
-        alpha = 2 / (period + 1)
-        ema_val = sum(closes[index-period+1:index+1]) / period
-        for i in range(index - period + 1, index + 1):
-            ema_val = alpha * closes[i] + (1 - alpha) * ema_val
-        return ema_val
-    macd_line = ema(fast, -1) - ema(slow, -1)
-    macd_vals = [ema(fast, i) - ema(slow, i) for i in range(-signal, 0)]
-    signal_line = sum(macd_vals) / signal
-    hist = macd_line - signal_line
-    return hist
 
-def get_rank(symbol):
-    return 0
+    def ema_series(period, data):
+        alpha  = 2 / (period + 1)
+        result = [sum(data[:period]) / period]
+        for price in data[period:]:
+            result.append(alpha * price + (1 - alpha) * result[-1])
+        return result
 
-def get_ath_distance(symbol, cur_price):
-    return -95.0
+    ema_fast   = ema_series(fast,   closes[-(slow + signal + 10):])
+    ema_slow   = ema_series(slow,   closes[-(slow + signal + 10):])
+    min_len    = min(len(ema_fast), len(ema_slow))
+    macd_line  = [ema_fast[i + (len(ema_fast) - min_len)]
+                  - ema_slow[i + (len(ema_slow) - min_len)]
+                  for i in range(min_len)]
+    if len(macd_line) < signal:
+        return 0
+    sig_line   = ema_series(signal, macd_line)
+    return macd_line[-1] - sig_line[-1]
 
-# ==================== FUNGSI UNTUK FIBONACCI TARGET ====================
+# ══════════════════════════════════════════════════════════════
+#  🎯  ENTRY / SL / TARGET SYSTEM (v13.8)
+# ══════════════════════════════════════════════════════════════
 def find_swing_low_high(candles_1h, lookback=48):
     if len(candles_1h) < lookback:
         lookback = len(candles_1h)
-    recent = candles_1h[-lookback:]
-    low_idx = min(range(len(recent)), key=lambda i: recent[i]["low"])
+    recent   = candles_1h[-lookback:]
+    low_idx  = min(range(len(recent)), key=lambda i: recent[i]["low"])
     high_idx = max(range(len(recent)), key=lambda i: recent[i]["high"])
     if low_idx < high_idx:
-        swing_low = recent[low_idx]["low"]
-        swing_high = recent[high_idx]["high"]
-    else:
-        swing_low = min(c["low"] for c in recent)
-        swing_high = max(c["high"] for c in recent)
-    return swing_low, swing_high
+        return recent[low_idx]["low"], recent[high_idx]["high"]
+    return min(c["low"] for c in recent), max(c["high"] for c in recent)
 
 def calc_fib_targets(entry, candles_1h):
     swing_low, swing_high = find_swing_low_high(candles_1h)
@@ -478,457 +597,652 @@ def calc_fib_targets(entry, candles_1h):
         return entry * 1.08, entry * 1.15
     t1 = swing_low + fib_range * 1.272
     t2 = swing_low + fib_range * 1.618
-    if t1 < entry:
-        t1 = entry * 1.08
-    if t2 < t1:
-        t2 = t1 * 1.08
+    if t1 < entry * 1.005:  t1 = entry * 1.08
+    if t2 < t1 * 1.005:     t2 = t1 * 1.08
     return round(t1, 8), round(t2, 8)
 
-# ==================== FUNGSI ENTRY (dengan target resistance 24h + Fibonacci fallback) ====================
 def get_support_levels(candles_1h):
-    cur = candles_1h[-1]["close"]
-    supports = []
-    low_3h = min(c["low"] for c in candles_1h[-3:])
-    supports.append(low_3h)
+    cur      = candles_1h[-1]["close"]
+    supports = [min(c["low"] for c in candles_1h[-3:])]
     if len(candles_1h) >= 24:
         vwap = calc_vwap(candles_1h[-24:])
         if vwap < cur:
             supports.append(vwap)
     if len(candles_1h) >= 20:
         closes = [c["close"] for c in candles_1h[-20:]]
-        ema20 = sum(closes) / 20
+        ema20  = sum(closes) / 20
         if ema20 < cur:
             supports.append(ema20)
     valid = [s for s in supports if s < cur]
-    if valid:
-        return max(valid)
-    else:
-        return cur * 0.985
+    return max(valid) if valid else cur * 0.985
 
 def get_resistance_levels(candles_1h, entry):
     """
-    Mencari level resistance terdekat di atas entry dalam 24 jam terakhir.
-    Jika tidak ditemukan, menggunakan Fibonacci extension.
+    FIX v10.0: filter resistance yang terlalu dekat dari entry
+    (minimal CONFIG['min_resistance_gap_pct'] gap).
     """
     lookback = CONFIG["resistance_lookback_hours"]
+    min_gap  = CONFIG["min_resistance_gap_pct"] / 100
     if len(candles_1h) < lookback:
-        # Jika data kurang, fallback ke Fibonacci
-        fib_t1, fib_t2 = calc_fib_targets(entry, candles_1h)
-        return fib_t1, fib_t2
+        return calc_fib_targets(entry, candles_1h)
     recent = candles_1h[-lookback:]
-    # Ambil semua high yang lebih tinggi dari entry
-    highs = [c["high"] for c in recent if c["high"] > entry]
+    # Filter: high harus di atas entry + min_gap
+    highs  = sorted(set(
+        round(c["high"], 8) for c in recent
+        if c["high"] > entry * (1 + min_gap)
+    ))
     if not highs:
-        # Jika tidak ada resistance, fallback ke Fibonacci
-        fib_t1, fib_t2 = calc_fib_targets(entry, candles_1h)
-        return fib_t1, fib_t2
-    # Urutkan ascending
-    unique_highs = sorted(set(highs))
-    # T1 adalah resistance terdekat
-    t1 = unique_highs[0]
-    # T2 adalah resistance berikutnya, jika ada; jika tidak, gunakan Fibonacci T2
-    if len(unique_highs) >= 2:
-        t2 = unique_highs[1]
-    else:
-        # Jika hanya satu resistance, target kedua menggunakan Fibonacci
-        _, fib_t2 = calc_fib_targets(entry, candles_1h)
-        t2 = fib_t2
+        return calc_fib_targets(entry, candles_1h)
+    t1    = highs[0]
+    t2    = highs[1] if len(highs) >= 2 else calc_fib_targets(entry, candles_1h)[1]
     return t1, t2
 
-def calc_entry(candles_1h, candles_15m):
-    cur = candles_1h[-1]["close"]
+def calc_entry(candles_1h):
+    cur     = candles_1h[-1]["close"]
     support = get_support_levels(candles_1h)
-    entry = support
+    entry   = support
     entry_range = (support, support * (1 + CONFIG["entry_range_above"]))
 
-    # Stop loss: support terdekat di bawah entry
-    # Cari low 5h sebagai support tambahan
-    low_5h = min(c["low"] for c in candles_1h[-5:])
-    # SL di bawah support terdekat, tapi tidak lebih dari max_risk_pct
-    sl_candidate = min(low_5h, support * 0.99)  # sedikit di bawah support
-    # Pastikan SL tidak terlalu jauh
-    risk_pct = (entry - sl_candidate) / entry * 100
+    low_5h       = min(c["low"] for c in candles_1h[-5:])
+    sl_candidate = min(low_5h, support * 0.99)
+    risk_pct     = (entry - sl_candidate) / entry * 100
     if risk_pct > CONFIG["max_risk_pct"]:
         sl_candidate = entry * (1 - CONFIG["max_risk_pct"] / 100)
     sl = sl_candidate
 
-    # Target resistance (dengan fallback Fibonacci)
-    t1, t2 = get_resistance_levels(candles_1h, entry)
-
-    risk = entry - sl
-    reward = t1 - entry
-    rr = round(reward / risk, 1) if risk > 0 else 0
-
-    # Fibonacci targets (opsional, untuk referensi)
+    t1, t2       = get_resistance_levels(candles_1h, entry)
     fib_t1, fib_t2 = calc_fib_targets(entry, candles_1h)
+    risk   = entry - sl
+    reward = t1 - entry
+    rr     = round(reward / risk, 1) if risk > 0 else 0
 
     return {
-        "cur": cur,
-        "entry": round(entry, 8),
-        "entry_range": (round(entry_range[0], 8), round(entry_range[1], 8)),
-        "sl": round(sl, 8),
-        "sl_pct": round((entry - sl) / entry * 100, 1),
-        "t1": round(t1, 8),
-        "t2": round(t2, 8),
-        "fib_t1": round(fib_t1, 8),
-        "fib_t2": round(fib_t2, 8),
-        "rr": rr,
-        "liq_pct": round((t1 - cur) / cur * 100, 1),
+        "cur":          cur,
+        "entry":        round(entry, 8),
+        "entry_range":  (round(entry_range[0], 8), round(entry_range[1], 8)),
+        "sl":           round(sl, 8),
+        "sl_pct":       round((entry - sl) / entry * 100, 1),
+        "t1":           round(t1, 8),
+        "t2":           round(t2, 8),
+        "fib_t1":       round(fib_t1, 8),
+        "fib_t2":       round(fib_t2, 8),
+        "rr":           rr,
         "support_used": round(support, 8),
     }
 
-def calc_vwap_zone(candles):
-    vwap = calc_vwap(candles)
-    return vwap, None
-
-# ==================== FUNGSI BARU: BETA & ALPHA ====================
-def get_btc_candles(gran="1h", limit=168):
-    return get_candles("BTCUSDT", gran, limit)
-
+# ══════════════════════════════════════════════════════════════
+#  📊  BETA / ALPHA vs BTC (v13.8)
+# ══════════════════════════════════════════════════════════════
 def compute_beta_alpha(coin_candles, btc_candles, lookback_hours=24):
     if len(coin_candles) < lookback_hours or len(btc_candles) < lookback_hours:
         return 0, 0, 0, 0
     coin_closes = [c["close"] for c in coin_candles[-lookback_hours:]]
-    btc_closes = [c["close"] for c in btc_candles[-lookback_hours:]]
-    coin_returns = [(coin_closes[i] - coin_closes[i-1]) / coin_closes[i-1] * 100 for i in range(1, len(coin_closes))]
-    btc_returns = [(btc_closes[i] - btc_closes[i-1]) / btc_closes[i-1] * 100 for i in range(1, len(btc_closes))]
-    if len(coin_returns) < 2:
+    btc_closes  = [c["close"] for c in btc_candles[-lookback_hours:]]
+    coin_ret    = [(coin_closes[i] - coin_closes[i-1]) / coin_closes[i-1] * 100
+                   for i in range(1, len(coin_closes))]
+    btc_ret     = [(btc_closes[i]  - btc_closes[i-1])  / btc_closes[i-1]  * 100
+                   for i in range(1, len(btc_closes))]
+    if len(coin_ret) < 2:
         return 0, 0, 0, 0
-    x = np.array(btc_returns)
-    y = np.array(coin_returns)
-    A = np.vstack([x, np.ones(len(x))]).T
+    x  = np.array(btc_ret)
+    y  = np.array(coin_ret)
+    A  = np.vstack([x, np.ones(len(x))]).T
     beta, alpha = np.linalg.lstsq(A, y, rcond=None)[0]
-    residuals = y - (beta * x + alpha)
-    ss_res = np.sum(residuals**2)
-    ss_tot = np.sum((y - np.mean(y))**2)
-    r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-    last_btc_return = btc_returns[-1] if btc_returns else 0
-    return beta, alpha, r_squared, last_btc_return
+    residuals   = y - (beta * x + alpha)
+    ss_res      = np.sum(residuals**2)
+    ss_tot      = np.sum((y - np.mean(y))**2)
+    r_squared   = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+    return beta, alpha, r_squared, btc_ret[-1] if btc_ret else 0
 
 def get_btc_trend(btc_candles, hours=3):
     if len(btc_candles) < hours:
         return "neutral", 0
-    start = btc_candles[-hours]["close"]
-    end = btc_candles[-1]["close"]
+    start  = btc_candles[-hours]["close"]
+    end    = btc_candles[-1]["close"]
     change = (end - start) / start * 100
     if change < CONFIG["btc_drop_threshold"]:
         return "bearish", change
     elif change > -CONFIG["btc_drop_threshold"]:
         return "bullish", change
-    else:
-        return "neutral", change
+    return "neutral", change
 
-# ==================== MASTER SCORE ====================
+# ══════════════════════════════════════════════════════════════
+#  🔴  NET FLOW MULTI-TF LAYER (v9.10)
+# ══════════════════════════════════════════════════════════════
+def _candle_net_flow(candles):
+    buy_usd = sell_usd = 0.0
+    for c in candles:
+        rng       = c["high"] - c["low"]
+        buy_ratio = (c["close"] - c["low"]) / rng if rng > 0 else 0.5
+        buy_usd  += buy_ratio * c["volume_usd"]
+        sell_usd += (1.0 - buy_ratio) * c["volume_usd"]
+    total   = buy_usd + sell_usd
+    net     = buy_usd - sell_usd
+    net_pct = net / total * 100 if total > 0 else 0.0
+    return net, net_pct, buy_usd, sell_usd
+
+def _tick_net_flow(trades, window_minutes=15):
+    if not trades:
+        return 0.0, 0.0, 0.0, 0.0, 0
+    now_ms = int(time.time() * 1000)
+    cutoff = now_ms - window_minutes * 60 * 1000
+    has_ts = any(t.get("ts_ms", 0) > 0 for t in trades)
+    recent = [t for t in trades if t.get("ts_ms", 0) > cutoff] if has_ts else trades
+    if not recent:
+        recent = trades
+    buy_usd  = sum(t["size"] * t["price"] for t in recent if "buy"  in t.get("side", ""))
+    sell_usd = sum(t["size"] * t["price"] for t in recent if "sell" in t.get("side", ""))
+    total    = buy_usd + sell_usd
+    net_pct  = (buy_usd - sell_usd) / total * 100 if total > 0 else 0.0
+    return buy_usd - sell_usd, net_pct, buy_usd, sell_usd, len(recent)
+
+def _classify_flow(net_pct):
+    if net_pct > CONFIG["nf_strong_buy"]:   return "STRONG_BUY"
+    if net_pct > CONFIG["nf_buy"]:          return "BUY"
+    if net_pct > -CONFIG["nf_neutral_max"]: return "NEUTRAL"
+    if net_pct > CONFIG["nf_strong_sell"]:  return "SELL"
+    return "STRONG_SELL"
+
+def layer_net_flow(candles_1h, candles_15m, trades):
+    """
+    Multi-TF Net Flow: gate + scoring.
+    Return: (score, signals, flow_data, should_block)
+    """
+    score, sigs = 0, []
+    flow_data   = {
+        "72h": {"net_pct": 0, "label": "NO_DATA"},
+        "24h": {"net_pct": 0, "label": "NO_DATA"},
+        "6h":  {"net_pct": 0, "label": "NO_DATA"},
+        "15m": {"net_pct": 0, "label": "NO_DATA", "count": 0},
+        "has_data": False,
+    }
+
+    pct_72h = pct_24h = pct_6h = pct_15m = None
+
+    if len(candles_1h) >= 72:
+        _, pct, buy, sell = _candle_net_flow(candles_1h[-72:])
+        pct_72h = pct
+        flow_data["72h"] = {"net_pct": round(pct, 1), "buy_usd": round(buy),
+                            "sell_usd": round(sell), "label": _classify_flow(pct)}
+    if len(candles_1h) >= 24:
+        _, pct, buy, sell = _candle_net_flow(candles_1h[-24:])
+        pct_24h = pct
+        flow_data["24h"] = {"net_pct": round(pct, 1), "buy_usd": round(buy),
+                            "sell_usd": round(sell), "label": _classify_flow(pct)}
+    if len(candles_1h) >= 6:
+        _, pct, buy, sell = _candle_net_flow(candles_1h[-6:])
+        pct_6h = pct
+        flow_data["6h"]  = {"net_pct": round(pct, 1), "buy_usd": round(buy),
+                            "sell_usd": round(sell), "label": _classify_flow(pct)}
+    if trades:
+        _, pct, buy, sell, cnt = _tick_net_flow(trades, window_minutes=15)
+        pct_15m = pct
+        flow_data["15m"] = {"net_pct": round(pct, 1), "buy_usd": round(buy),
+                            "sell_usd": round(sell), "label": _classify_flow(pct), "count": cnt}
+
+    flow_data["has_data"] = (pct_24h is not None)
+    if not flow_data["has_data"]:
+        return 0, [], flow_data, False
+
+    # ── Gate: distribusi sistematis ───────────────────────────
+    if (pct_72h is not None
+            and pct_72h < CONFIG["nf_gate_72h"]
+            and pct_24h < CONFIG["nf_gate_24h"]
+            and pct_6h  < CONFIG["nf_gate_6h"]):
+        sigs.append(
+            f"🚨 NET FLOW DISTRIBUSI: 72h={pct_72h:+.1f}% "
+            f"24h={pct_24h:+.1f}% 6h={pct_6h:+.1f}%"
+        )
+        return 0, sigs, flow_data, True
+
+    # ── Scoring ───────────────────────────────────────────────
+    # 1. Whale Funnel (sinyal terkuat)
+    if (pct_72h is not None
+            and CONFIG["nf_whale_72h_min"] <= pct_72h <= CONFIG["nf_whale_72h_max"]
+            and pct_24h >= CONFIG["nf_whale_24h_min"]
+            and pct_6h  >= CONFIG["nf_whale_6h_min"]):
+        score += 20
+        sigs.append(f"🐋 WHALE FUNNEL: 72h={pct_72h:+.1f}% → 24h={pct_24h:+.1f}% → "
+                    f"6h={pct_6h:+.1f}% — akumulasi 3 hari terkonfirmasi!")
+
+    # 2. Full alignment bullish
+    elif (pct_72h is not None and pct_72h > CONFIG["nf_buy"]
+            and pct_24h > CONFIG["nf_buy"] and pct_6h > CONFIG["nf_buy"]):
+        score += 15
+        sigs.append(f"✅ NET FLOW BULLISH: 72h={pct_72h:+.1f}% 24h={pct_24h:+.1f}% "
+                    f"6h={pct_6h:+.1f}%")
+
+    # 3. Partial alignment
+    else:
+        if pct_24h > CONFIG["nf_buy"] and pct_6h > CONFIG["nf_buy"]:
+            score += 10
+            sigs.append(f"✅ Net Flow 24h={pct_24h:+.1f}% & 6h={pct_6h:+.1f}%")
+        elif pct_6h is not None and pct_6h > CONFIG["nf_strong_buy"]:
+            score += 7
+            sigs.append(f"Net Flow 6h={pct_6h:+.1f}% — buying surge")
+        elif pct_6h is not None and pct_6h > CONFIG["nf_buy"]:
+            score += 4
+            sigs.append(f"Net Flow 6h={pct_6h:+.1f}%")
+
+        if (pct_72h is not None and CONFIG["nf_strong_sell"] < pct_72h < 0
+                and pct_24h > CONFIG["nf_buy"]):
+            score += 5
+            sigs.append(f"📈 Flow shifting: 72h={pct_72h:+.1f}% → 24h={pct_24h:+.1f}%")
+
+    # 4. Penalti TF negatif
+    if pct_72h is not None:
+        if pct_72h < CONFIG["nf_strong_sell"]:  score -= 12; sigs.append(f"⚠️ Net Flow 72h={pct_72h:+.1f}%")
+        elif pct_72h < CONFIG["nf_sell"]:        score -= 6
+    if pct_24h is not None:
+        if pct_24h < CONFIG["nf_strong_sell"]:  score -= 10; sigs.append(f"⚠️ Net Flow 24h={pct_24h:+.1f}%")
+        elif pct_24h < CONFIG["nf_sell"]:        score -= 5
+
+    # 5. Flow acceleration
+    if pct_6h is not None and pct_24h is not None:
+        if pct_6h * 4 > pct_24h + 10 and pct_6h > 0:
+            score += 3
+            sigs.append(f"⚡ Flow akselerasi: 6h={pct_6h:+.1f}% >> 24h={pct_24h:+.1f}%")
+
+    # 6. Real-time ticks
+    if pct_15m is not None and flow_data["15m"]["count"] >= 10:
+        if pct_15m > CONFIG["nf_strong_buy"]:   score += 4; sigs.append(f"✅ Ticks 15m={pct_15m:+.1f}%")
+        elif pct_15m > CONFIG["nf_buy"]:         score += 2
+        elif pct_15m < CONFIG["nf_strong_sell"]: score -= 5; sigs.append(f"⚠️ Ticks 15m={pct_15m:+.1f}%")
+        elif pct_15m < CONFIG["nf_sell"]:        score -= 2
+
+    return min(score, CONFIG["max_netflow_score"]), sigs, flow_data, False
+
+# ══════════════════════════════════════════════════════════════
+#  🔴  OI SCORING LAYER (v9.10, disederhanakan)
+# ══════════════════════════════════════════════════════════════
+def layer_oi(oi_chg1h, oi_chg24h, oi_valid, chg_24h):
+    """
+    Hitung skor dan sinyal dari perubahan OI.
+    Return: (score, signals)
+    """
+    score, sigs = 0, []
+    if not oi_valid:
+        return 0, ["⚠️ OI baseline belum cukup (run ke-1)"]
+
+    # Penalti: OI turun = posisi long ditutup / short buka = bearish
+    if oi_chg24h < CONFIG["oi_chg24h_penalty_thr"]:
+        score += CONFIG["oi_penalty_24h"]
+        sigs.append(f"⚠️ OI 24h {oi_chg24h:+.1f}% — long ditutup masif")
+    if oi_chg1h < CONFIG["oi_chg1h_penalty_thr"]:
+        score += CONFIG["oi_penalty_1h"]
+        sigs.append(f"⚠️ OI 1h {oi_chg1h:+.1f}% — posisi keluar tiba-tiba")
+
+    # Bonus: OI naik tapi harga flat = stealth accumulation (sinyal kuat)
+    if (oi_chg24h > CONFIG["oi_stealth_oi_min"]
+            and abs(chg_24h) < CONFIG["oi_stealth_price_max"]):
+        score += CONFIG["oi_bonus_stealth"]
+        sigs.append(f"✅ OI +{oi_chg24h:.1f}% tapi harga flat — stealth akumulasi")
+    elif oi_chg24h > CONFIG["oi_stealth_oi_min"]:
+        score += CONFIG["oi_bonus_expand"]
+        sigs.append(f"✅ OI 24h +{oi_chg24h:.1f}% — ekspansi posisi")
+
+    return score, sigs
+
+# ══════════════════════════════════════════════════════════════
+#  🚦  GATE: SUDAH PUMP? (v9.10)
+# ══════════════════════════════════════════════════════════════
+def is_already_pumped(oi_chg24h, chg_24h, vol_ratio, oi_valid):
+    """
+    Return: (True/False, alasan)
+    Blok coin yang sudah pump — terlambat masuk.
+    """
+    if not oi_valid:
+        if chg_24h > 15 and vol_ratio > 5:
+            return True, f"Harga +{chg_24h:.0f}% + Volume {vol_ratio:.1f}x — pump sudah terjadi"
+        return False, ""
+    if oi_chg24h > 35 and chg_24h > 3:
+        return True, f"OI 24h +{oi_chg24h:.0f}% + Harga +{chg_24h:.0f}% — TERLAMBAT"
+    if oi_chg24h > 25 and chg_24h > 5:
+        return True, f"OI +{oi_chg24h:.0f}% + Harga +{chg_24h:.0f}% — pump berjalan"
+    if oi_chg24h > 15 and chg_24h > 10:
+        return True, f"OI +{oi_chg24h:.0f}% + Harga +{chg_24h:.0f}% — momentum habis"
+    return False, ""
+
+# ══════════════════════════════════════════════════════════════
+#  🧠  MASTER SCORE
+# ══════════════════════════════════════════════════════════════
 def master_score(symbol, ticker):
-    c1h = get_candles(symbol, "1h", CONFIG["candle_1h"])
+    # ── 1. Ambil candle data ──────────────────────────────────
+    c1h  = get_candles(symbol, "1h",  CONFIG["candle_1h"])
     c15m = get_candles(symbol, "15m", CONFIG["candle_15m"])
-    if len(c1h) < 48:
+    if len(c1h) < 48 or len(c15m) < 20:
         return None
 
+    # ── 2. Data dasar dari ticker ──────────────────────────────
     try:
-        vol_24h = float(ticker.get("quoteVolume", 0))
-        chg_24h = float(ticker.get("change24h", 0)) * 100
-        price_now = float(ticker.get("lastPr", 0)) or c1h[-1]["close"]
+        vol_24h    = float(ticker.get("quoteVolume", 0))
+        chg_24h    = float(ticker.get("change24h", 0)) * 100
+        price_now  = float(ticker.get("lastPr", 0)) or c1h[-1]["close"]
     except:
         return None
 
     if vol_24h < CONFIG["min_vol_24h"]:
         return None
 
-    # Funding gate
+    # ── 3. Dead Activity gate (v9.10) ─────────────────────────
+    if len(c1h) >= 7:
+        avg_vol_6h_prev = sum(c["volume_usd"] for c in c1h[-7:-1]) / 6
+        last_vol_1h     = c1h[-1]["volume_usd"]
+        if avg_vol_6h_prev > 0 and last_vol_1h < avg_vol_6h_prev * CONFIG["dead_activity_threshold"]:
+            log.info(f"  {symbol}: GATE dead activity (vol 1h {last_vol_1h:.0f} vs avg {avg_vol_6h_prev:.0f})")
+            return None
+
+    # ── 4. Funding gate (v13.8, logika difix) ─────────────────
     funding = get_funding(symbol)
     save_funding_snapshot(symbol, funding)
-    fstats = get_funding_stats(symbol, funding)
+    fstats  = get_funding_stats(symbol, funding)
     if not fstats:
-        log.info(f"  {symbol}: Data funding belum cukup")
+        log.info(f"  {symbol}: Data funding belum cukup (run pertama)")
         return None
-    if not (fstats["avg"] < CONFIG["funding_gate_avg"] or fstats["cumulative"] < CONFIG["funding_gate_cumul"]):
-        log.info(f"  {symbol}: Funding tidak cukup negatif")
+    # FIX: sebelumnya `not (avg < thr OR cumul < thr)` → block semua yang tidak memenuhi salah satu
+    # Sekarang: harus penuhi SALAH SATU kondisi untuk lolos
+    funding_ok = (fstats["avg"] < CONFIG["funding_gate_avg"]
+                  or fstats["cumulative"] < CONFIG["funding_gate_cumul"])
+    if not funding_ok:
+        log.info(f"  {symbol}: Funding tidak cukup negatif (avg={fstats['avg']:.6f})")
         return None
 
-    # BTC data
+    # ── 5. OI data + gate sudah pump (v9.10) ──────────────────
+    oi_value = get_open_interest(symbol)
+    if oi_value > 0:
+        save_oi_snapshot(symbol, oi_value)
+    oi_chg1h, oi_chg24h, oi_valid = get_oi_changes(symbol, oi_value)
+
+    # Volume ratio untuk gate
+    avg_vol_24h_calc = sum(c["volume_usd"] for c in c1h[-24:]) / 24 if len(c1h) >= 24 else 0
+    vol_ratio_gate   = c1h[-1]["volume_usd"] / avg_vol_24h_calc if avg_vol_24h_calc > 0 else 0
+
+    pumped, pump_reason = is_already_pumped(oi_chg24h, chg_24h, vol_ratio_gate, oi_valid)
+    if pumped:
+        log.info(f"  {symbol}: GATE already pumped — {pump_reason}")
+        return None
+
+    # ── 6. BTC data + Beta/Alpha ───────────────────────────────
     btc_c1h = get_btc_candles("1h", CONFIG["candle_1h"])
     if len(btc_c1h) < 48:
-        log.info("  Data BTC tidak cukup")
         return None
+    beta, alpha, r_squared, _ = compute_beta_alpha(c1h, btc_c1h, CONFIG["beta_lookback_hours"])
+    btc_trend, btc_change     = get_btc_trend(btc_c1h, hours=3)
 
-    beta, alpha, r_squared, last_btc_return = compute_beta_alpha(c1h, btc_c1h, CONFIG["beta_lookback_hours"])
-    btc_trend, btc_change = get_btc_trend(btc_c1h, hours=3)
+    # ── 7. Indikator teknikal ─────────────────────────────────
+    bbw, bb_pct    = calc_bbw(c1h)
+    price_chg      = (c1h[-1]["close"] - c1h[-2]["close"]) / c1h[-2]["close"] * 100 if len(c1h) >= 2 else 0
+    atr_pct        = calc_atr_pct(c1h)
+    rsi            = get_rsi(c1h[-48:])
+    vwap           = calc_vwap(c1h)
+    macd_hist      = calc_macd(c1h)
 
-    # Indikator teknikal
-    bbw, bb_pct = calc_bbw(c1h)
-    if len(c1h) >= 2:
-        price_chg = (c1h[-1]["close"] - c1h[-2]["close"]) / c1h[-2]["close"] * 100
-    else:
-        price_chg = 0
-    atr_pct = calc_atr_pct(c1h)
-    rsi = get_rsi(c1h[-48:])
-    vwap = calc_vwap(c1h)
-    above_vwap_rate = 0
-    bos_up = False
-    higher_low = False
+    above_vwap_rate = bos_up = higher_low = 0
     if len(c1h) >= 6:
-        recent = c1h[-6:]
-        above = sum(1 for c in recent if c["close"] > vwap)
-        above_vwap_rate = above / len(recent)
-        bos_up = detect_bos_up(c1h)
-        higher_low = higher_low_detected(c1h)
+        recent           = c1h[-6:]
+        above_vwap_rate  = sum(1 for c in recent if c["close"] > vwap) / len(recent)
+        bos_up           = detect_bos_up(c1h)
+        higher_low       = higher_low_detected(c1h)
 
-    # Volume 24h ratio
-    if len(c1h) >= 24:
-        avg_vol_24h = sum(c["volume_usd"] for c in c1h[-24:]) / 24
-        vol_ratio = c1h[-1]["volume_usd"] / avg_vol_24h if avg_vol_24h > 0 else 0
-    else:
-        vol_ratio = 0
+    # Volume indicators
+    avg_vol_24h = sum(c["volume_usd"] for c in c1h[-24:]) / 24 if len(c1h) >= 24 else 0
+    vol_ratio   = c1h[-1]["volume_usd"] / avg_vol_24h if avg_vol_24h > 0 else 0
 
-    # Volume acceleration
+    avg_vol_6h  = sum(c["volume_usd"] for c in c1h[-6:]) / 6 if len(c1h) >= 6 else 0
+    vol_1h_last = c1h[-1]["volume_usd"]
+
     if len(c1h) >= 4:
-        vol_1h = c1h[-1]["volume_usd"]
-        vol_3h = sum(c["volume_usd"] for c in c1h[-4:-1]) / 3
-        vol_accel = (vol_1h - vol_3h) / vol_3h if vol_3h > 0 else 0
+        vol_3h   = sum(c["volume_usd"] for c in c1h[-4:-1]) / 3
+        vol_accel = (vol_1h_last - vol_3h) / vol_3h if vol_3h > 0 else 0
     else:
         vol_accel = 0
 
-    # MACD
-    macd_hist = calc_macd(c1h)
+    # ── 8. BASE SCORING (v13.8) ───────────────────────────────
+    score, signals = 0, []
 
-    # Hitung rata-rata volume 6 jam terakhir (untuk filter aktivitas)
-    if len(c1h) >= 6:
-        avg_vol_6h = sum(c["volume_usd"] for c in c1h[-6:]) / 6
-        vol_1h_last = c1h[-1]["volume_usd"]
-    else:
-        avg_vol_6h = 0
-        vol_1h_last = 0
-
-    score = 0
-    signals = []
-
-    # Utama
+    # BBW (coiling)
     if bbw >= 0.12:
-        score += CONFIG["score_bbw_12"]
-        signals.append(f"BBW {bbw:.2f}% (ekstrem)")
+        score += CONFIG["score_bbw_12"]; signals.append(f"BBW {bbw:.2f}% (squeeze ekstrem)")
     elif bbw >= 0.10:
-        score += CONFIG["score_bbw_10"]
-        signals.append(f"BBW {bbw:.2f}% (tinggi)")
+        score += CONFIG["score_bbw_10"]; signals.append(f"BBW {bbw:.2f}% (squeeze tinggi)")
     elif bbw >= 0.08:
-        score += CONFIG["score_bbw_8"]
-        signals.append(f"BBW {bbw:.2f}% (sedang)")
+        score += CONFIG["score_bbw_8"];  signals.append(f"BBW {bbw:.2f}% (coiling)")
 
+    # Price change momentum
     if price_chg >= 2.0:
-        score += CONFIG["score_price_2"]
-        signals.append(f"Price +{price_chg:.1f}% (spike)")
+        score += CONFIG["score_price_2"];  signals.append(f"Price +{price_chg:.1f}% (spike)")
     elif price_chg >= 1.0:
-        score += CONFIG["score_price_1"]
-        signals.append(f"Price +{price_chg:.1f}% (naik)")
+        score += CONFIG["score_price_1"];  signals.append(f"Price +{price_chg:.1f}% (naik)")
     elif price_chg >= 0.5:
-        score += CONFIG["score_price_05"]
-        signals.append(f"Price +{price_chg:.1f}% (sedang)")
+        score += CONFIG["score_price_05"]; signals.append(f"Price +{price_chg:.1f}%")
 
+    # VWAP + BOS
     if above_vwap_rate > CONFIG["above_vwap_rate_min"] and bos_up:
-        score += CONFIG["score_above_vwap_bos"]
-        signals.append("Above VWAP + Break of Structure")
+        score += CONFIG["score_above_vwap_bos"]; signals.append("Above VWAP + Break of Structure")
     elif above_vwap_rate > CONFIG["above_vwap_rate_min"]:
-        score += CONFIG["score_above_vwap"]
-        signals.append("Above VWAP dominan")
+        score += CONFIG["score_above_vwap"];     signals.append("Above VWAP dominan")
 
+    # RSI
     if rsi >= 65:
-        score += CONFIG["score_rsi_65"]
-        signals.append(f"RSI {rsi:.1f} (overbought kuat)")
+        score += CONFIG["score_rsi_65"]; signals.append(f"RSI {rsi:.1f} (overbought)")
     elif rsi >= 55:
-        score += CONFIG["score_rsi_55"]
-        signals.append(f"RSI {rsi:.1f} (bullish)")
+        score += CONFIG["score_rsi_55"]; signals.append(f"RSI {rsi:.1f} (bullish)")
 
+    # ATR (volatilitas = bahan pump)
     if atr_pct >= 1.5:
-        score += CONFIG["score_atr_15"]
-        signals.append(f"ATR {atr_pct:.2f}% (volatilitas tinggi)")
+        score += CONFIG["score_atr_15"]; signals.append(f"ATR {atr_pct:.2f}% (volatilitas tinggi)")
     elif atr_pct >= 1.0:
-        score += CONFIG["score_atr_10"]
-        signals.append(f"ATR {atr_pct:.2f}% (volatilitas sedang)")
+        score += CONFIG["score_atr_10"]; signals.append(f"ATR {atr_pct:.2f}%")
 
-    # Funding tambahan
+    # Funding stats
     if fstats["neg_pct"] >= 70:
-        score += CONFIG["score_funding_neg_pct"]
-        signals.append(f"Funding negatif {fstats['neg_pct']:.0f}%")
+        score += CONFIG["score_funding_neg_pct"]; signals.append(f"Funding negatif {fstats['neg_pct']:.0f}%")
     if fstats["streak"] >= 10:
-        score += CONFIG["score_funding_streak"]
-        signals.append(f"Funding streak negatif {fstats['streak']}")
+        score += CONFIG["score_funding_streak"];  signals.append(f"Funding streak negatif {fstats['streak']}")
     if fstats["basis"] <= -0.15:
-        score += CONFIG["score_basis"]
-        signals.append(f"Basis {fstats['basis']:.2f}% (diskonto)")
+        score += CONFIG["score_basis"];            signals.append(f"Basis {fstats['basis']:.2f}%")
 
-    # Rank & ATH
-    rank = get_rank(symbol)
-    if rank >= 200:
-        score += CONFIG["score_lowcap"]
-        signals.append("Low cap")
-    ath_dist = get_ath_distance(symbol, price_now)
-    if ath_dist <= -90:
-        score += CONFIG["score_ath_dist"]
-        signals.append("Deep from ATH")
-
-    # Volume ratio dan acceleration
+    # Volume indicators
     if vol_ratio > CONFIG["vol_ratio_threshold"]:
-        score += CONFIG["score_vol_ratio_24h"]
-        signals.append(f"Volume ratio {vol_ratio:.1f}x (tinggi)")
-
+        score += CONFIG["score_vol_ratio_24h"]; signals.append(f"Volume ratio {vol_ratio:.1f}x")
     if vol_accel > CONFIG["vol_accel_threshold"]:
-        score += CONFIG["score_vol_accel"]
-        signals.append(f"Volume acceleration {vol_accel*100:.0f}%")
+        score += CONFIG["score_vol_accel"];     signals.append(f"Volume accel {vol_accel*100:.0f}%")
 
+    # MACD
     if macd_hist > 0:
-        score += CONFIG["score_macd_pos"]
-        signals.append("MACD histogram positif")
+        score += CONFIG["score_macd_pos"]; signals.append("MACD histogram positif")
 
-    # Bonus volume spike
+    # Volume spike bonus
     if vol_ratio > CONFIG["vol_spike_threshold"]:
-        score += CONFIG["vol_spike_bonus"]
-        signals.append(f"🔥 Volume spike {vol_ratio:.1f}x rata-rata 24h")
+        score += CONFIG["vol_spike_bonus"]; signals.append(f"🔥 Volume spike {vol_ratio:.1f}x rata-rata 24h")
 
-    # Penalti volume 1h rendah
-    if avg_vol_6h > 0 and vol_1h_last < avg_vol_6h * CONFIG["min_vol_1h_ratio"]:
-        score += CONFIG["vol_low_penalty"]
-        signals.append(f"⚠️ Volume 1h rendah ({vol_1h_last/avg_vol_6h:.0%} rata-rata 6h) - penalti")
+    # Volume rendah penalti
+    vol_low_flag = (avg_vol_6h > 0 and vol_1h_last < avg_vol_6h * CONFIG["min_vol_1h_ratio"])
+    if vol_low_flag:
+        score += CONFIG["vol_low_penalty"]; signals.append(f"⚠️ Volume 1h rendah ({vol_1h_last/avg_vol_6h:.0%} avg 6h)")
 
-    # BTC filter
-    btc_penalty = 0
-    btc_bonus = 0
+    # ── 9. OI LAYER (v9.10) ───────────────────────────────────
+    oi_sc, oi_sigs = layer_oi(oi_chg1h, oi_chg24h, oi_valid, chg_24h)
+    score   += oi_sc
+    signals += oi_sigs
+
+    # ── 10. NET FLOW LAYER (v9.10) ────────────────────────────
+    trades = get_trades(symbol, 500)
+    nf_sc, nf_sigs, nf_data, nf_block = layer_net_flow(c1h, c15m, trades)
+    if nf_block:
+        log.info(f"  {symbol}: GATE net flow distribusi sistematis")
+        return None
+    score   += nf_sc
+    signals += nf_sigs
+
+    # ── 11. BTC FILTER — Beta/Alpha (v13.8) ──────────────────
+    btc_penalty = btc_bonus = 0
     if btc_trend == "bearish":
         if beta > CONFIG["beta_high_threshold"]:
-            btc_penalty = -25
-            signals.append(f"🚨 BTC turun {btc_change:.1f}% & beta {beta:.2f} (sensitif) - penalti besar!")
+            btc_penalty = -25; signals.append(f"🚨 BTC turun {btc_change:.1f}% & beta {beta:.2f} — penalti besar")
         elif beta > 1.0:
-            btc_penalty = -15
-            signals.append(f"⚠️ BTC turun {btc_change:.1f}% & beta {beta:.2f} - penalti sedang")
+            btc_penalty = -15; signals.append(f"⚠️ BTC turun {btc_change:.1f}% & beta {beta:.2f}")
         else:
-            btc_penalty = -5
-            signals.append(f"📉 BTC turun {btc_change:.1f}% - penalti ringan")
-
+            btc_penalty = -5;  signals.append(f"📉 BTC turun {btc_change:.1f}%")
         if alpha > CONFIG["alpha_positive_threshold"]:
             btc_penalty = max(btc_penalty + 10, 0)
-            signals.append(f"✅ Alpha {alpha:.2f}% positif - mengurangi dampak BTC")
+            signals.append(f"✅ Alpha {alpha:.2f}% positif — kurangi dampak BTC")
     elif btc_trend == "bullish":
         if beta > CONFIG["beta_high_threshold"]:
-            btc_bonus = 15
-            signals.append(f"🚀 BTC naik {btc_change:.1f}% & beta {beta:.2f} - bonus!")
+            btc_bonus = 15; signals.append(f"🚀 BTC naik {btc_change:.1f}% & beta {beta:.2f}")
         elif beta > 1.0:
-            btc_bonus = 8
-            signals.append(f"📈 BTC naik {btc_change:.1f}% & beta {beta:.2f} - bonus kecil")
+            btc_bonus = 8;  signals.append(f"📈 BTC naik {btc_change:.1f}% & beta {beta:.2f}")
         else:
-            btc_bonus = 3
-            signals.append(f"✅ BTC naik {btc_change:.1f}% - bonus")
-
+            btc_bonus = 3;  signals.append(f"✅ BTC naik {btc_change:.1f}%")
         if alpha > CONFIG["alpha_positive_threshold"]:
-            btc_bonus += 5
-            signals.append(f"⭐ Alpha {alpha:.2f}% positif - outperforming BTC")
-
+            btc_bonus += 5; signals.append(f"⭐ Alpha {alpha:.2f}% positif — outperforming BTC")
     if alpha < -CONFIG["alpha_positive_threshold"]:
-        btc_penalty -= 10
-        signals.append(f"⚠️ Alpha {alpha:.2f}% negatif - underperforming BTC")
-
+        btc_penalty -= 10; signals.append(f"⚠️ Alpha {alpha:.2f}% negatif — underperform BTC")
     score += btc_penalty + btc_bonus
 
-    beta_alpha_info = {
-        "beta": round(beta, 2),
-        "alpha": round(alpha, 2),
-        "r_squared": round(r_squared, 2),
-        "btc_trend": btc_trend,
-        "btc_change": round(btc_change, 1)
-    }
-
+    # ── 12. Pump type classification ──────────────────────────
     pump_type = "unknown"
     if above_vwap_rate > CONFIG["above_vwap_rate_min"] and bb_pct > 0.4 and rsi > 45:
         pump_type = "Momentum Breakout (Tipe A)"
-    elif above_vwap_rate < 0.2 and fstats["cumulative"] < CONFIG["squeeze_funding_cumul"] and higher_low:
+    elif (above_vwap_rate < 0.2
+            and fstats["cumulative"] < CONFIG["squeeze_funding_cumul"]
+            and higher_low):
         pump_type = "Short Squeeze (Tipe B)"
+    elif (nf_data.get("72h", {}).get("label") in ("NEUTRAL", "SELL")
+            and nf_data.get("6h", {}).get("label") in ("BUY", "STRONG_BUY")
+            and oi_chg24h > CONFIG["oi_stealth_oi_min"]):
+        pump_type = "Whale Accumulation (Tipe C)"
 
-    entry_data = calc_entry(c1h, c15m)
-    potential_gain_t1 = (entry_data["t1"] - price_now) / price_now * 100
-    potential_gain_t2 = (entry_data["t2"] - price_now) / price_now * 100
-    potential_gain_fib1 = (entry_data["fib_t1"] - price_now) / price_now * 100
-    potential_gain_fib2 = (entry_data["fib_t2"] - price_now) / price_now * 100
-
-    if score >= CONFIG["min_score_alert"]:
-        return {
-            "symbol": symbol,
-            "score": score,
-            "signals": signals,
-            "entry": entry_data,
-            "price": price_now,
-            "chg_24h": chg_24h,
-            "vol_24h": vol_24h,
-            "rsi": round(rsi, 1),
-            "bbw": round(bbw, 2),
-            "bb_pct": round(bb_pct, 2),
-            "above_vwap_rate": round(above_vwap_rate*100, 1),
-            "funding_stats": fstats,
-            "pump_type": pump_type,
-            "vol_ratio": round(vol_ratio, 2),
-            "vol_accel": round(vol_accel*100, 1),
-            "macd_hist": round(macd_hist, 6),
-            "potential_gain_t1": round(potential_gain_t1, 1),
-            "potential_gain_t2": round(potential_gain_t2, 1),
-            "potential_gain_fib1": round(potential_gain_fib1, 1),
-            "potential_gain_fib2": round(potential_gain_fib2, 1),
-            "beta_alpha": beta_alpha_info,
-            "vol_spike": vol_ratio > CONFIG["vol_spike_threshold"],
-            "vol_low": (avg_vol_6h > 0 and vol_1h_last < avg_vol_6h * CONFIG["min_vol_1h_ratio"]),
-        }
-    else:
+    # ── 13. Entry calculation ─────────────────────────────────
+    if score < CONFIG["min_score_alert"]:
         log.info(f"  {symbol}: Skor {score} < {CONFIG['min_score_alert']}")
         return None
 
+    entry_data = calc_entry(c1h)
+    pg_t1  = (entry_data["t1"]     - price_now) / price_now * 100
+    pg_t2  = (entry_data["t2"]     - price_now) / price_now * 100
+    pg_f1  = (entry_data["fib_t1"] - price_now) / price_now * 100
+    pg_f2  = (entry_data["fib_t2"] - price_now) / price_now * 100
+
+    return {
+        "symbol":            symbol,
+        "score":             score,
+        "signals":           signals,
+        "entry":             entry_data,
+        "price":             price_now,
+        "chg_24h":           chg_24h,
+        "vol_24h":           vol_24h,
+        "rsi":               round(rsi, 1),
+        "bbw":               round(bbw, 2),
+        "bb_pct":            round(bb_pct, 2),
+        "above_vwap_rate":   round(above_vwap_rate * 100, 1),
+        "funding_stats":     fstats,
+        "oi_chg24h":         round(oi_chg24h, 1),
+        "oi_chg1h":          round(oi_chg1h, 1),
+        "oi_valid":          oi_valid,
+        "nf_data":           nf_data,
+        "nf_score":          nf_sc,
+        "oi_score":          oi_sc,
+        "pump_type":         pump_type,
+        "vol_ratio":         round(vol_ratio, 2),
+        "vol_accel":         round(vol_accel * 100, 1),
+        "macd_hist":         round(macd_hist, 6),
+        "potential_gain_t1": round(pg_t1, 1),
+        "potential_gain_t2": round(pg_t2, 1),
+        "potential_gain_f1": round(pg_f1, 1),
+        "potential_gain_f2": round(pg_f2, 1),
+        "beta_alpha":        {
+            "beta": round(beta, 2), "alpha": round(alpha, 2),
+            "r_squared": round(r_squared, 2), "btc_trend": btc_trend, "btc_change": round(btc_change, 1),
+        },
+        "vol_spike":         vol_ratio > CONFIG["vol_spike_threshold"],
+        "vol_low":           vol_low_flag,
+    }
+
 # ══════════════════════════════════════════════════════════════
-#  📱  TELEGRAM FORMATTER (modifikasi untuk menampilkan fitur baru)
+#  📱  TELEGRAM FORMATTER
 # ══════════════════════════════════════════════════════════════
+def _flow_icon(label):
+    return {"STRONG_BUY": "🟢🟢", "BUY": "🟢", "NEUTRAL": "⚪",
+            "SELL": "🔴", "STRONG_SELL": "🔴🔴", "NO_DATA": "❓"}.get(label, "⚪")
+
 def build_alert(r, rank=None):
-    msg = f"🚨 <b>PRE-PUMP SIGNAL {rank} — v13.8-FINAL</b>\n\n"
-    msg += f"<b>Symbol    :</b> {r['symbol']}\n"
-    msg += f"<b>Pump Type :</b> {r['pump_type']}\n"
-    msg += f"<b>Score     :</b> {r['score']}\n"
-    msg += f"<b>Harga     :</b> ${r['price']:.6g}  ({r['chg_24h']:+.1f}% 24h)\n"
-    msg += f"<b>RSI 14h   :</b> {r['rsi']}\n"
-    msg += f"<b>BB Width  :</b> {r['bbw']}%\n"
-    msg += f"<b>BB Position:</b> {r['bb_pct']*100:.0f}%\n"
-    msg += f"<b>Above VWAP:</b> {r['above_vwap_rate']}% dalam 6h\n"
-    msg += f"<b>Volume    :</b> ratio 24h={r['vol_ratio']}x, accel={r['vol_accel']}%\n"
-    msg += f"<b>Funding   :</b> avg={r['funding_stats']['avg']:.6f}, cumul={r['funding_stats']['cumulative']:.4f}\n"
-    msg += f"  streak={r['funding_stats']['streak']}, basis={r['funding_stats']['basis']:.2f}%\n"
-    msg += f"<b>MACD hist :</b> {r['macd_hist']:.6f}\n"
-    msg += f"<b>Potensi Gain:</b> T1 +{r['potential_gain_t1']}% | T2 +{r['potential_gain_t2']}% | Fib1 +{r['potential_gain_fib1']}% | Fib2 +{r['potential_gain_fib2']}%\n"
-    ba = r['beta_alpha']
-    msg += f"<b>BTC      :</b> {ba['btc_trend'].upper()} {ba['btc_change']:+.1f}% (3h)\n"
-    msg += f"<b>Beta     :</b> {ba['beta']} | <b>Alpha    :</b> {ba['alpha']:+.2f}% | R²={ba['r_squared']}\n"
-    # Tampilkan informasi volume spike/rendah
-    if r.get('vol_spike'):
-        msg += f"<b>🔥 Volume Spike:</b> Terdeteksi!\n"
-    if r.get('vol_low'):
-        msg += f"<b>⚠️ Volume Rendah:</b> Aktifitas rendah, hati-hati.\n"
+    rk  = f"#{rank} " if rank else ""
+    ba  = r["beta_alpha"]
+    e   = r["entry"]
+    nfd = r.get("nf_data", {})
+
+    # OI line
+    oi_str = ""
+    if r.get("oi_valid"):
+        oi_str = (f"<b>OI           :</b> 24h={r['oi_chg24h']:+.1f}%  "
+                  f"1h={r['oi_chg1h']:+.1f}%  [score:{r['oi_score']:+d}]\n")
+    else:
+        oi_str = "<b>OI           :</b> ⚠️ baseline belum siap (run ke-1)\n"
+
+    # Net Flow line
+    nf_str = ""
+    if nfd.get("has_data"):
+        f72 = nfd.get("72h", {}); f24 = nfd.get("24h", {})
+        f6  = nfd.get("6h",  {}); f15 = nfd.get("15m", {})
+        nf_str = (
+            f"<b>Net Flow     :</b> [score:{r['nf_score']:+d}]\n"
+            f"  {_flow_icon(f72.get('label'))}72h:{f72.get('net_pct',0):+.1f}%  "
+            f"{_flow_icon(f24.get('label'))}24h:{f24.get('net_pct',0):+.1f}%  "
+            f"{_flow_icon(f6.get('label'))}6h:{f6.get('net_pct',0):+.1f}%  "
+            f"{_flow_icon(f15.get('label'))}15m:{f15.get('net_pct',0):+.1f}%\n"
+        )
+
+    msg  = f"🚨 <b>PRE-PUMP SIGNAL {rk}— v10.0</b>\n\n"
+    msg += f"<b>Symbol       :</b> {r['symbol']}\n"
+    msg += f"<b>Pump Type    :</b> {r['pump_type']}\n"
+    msg += f"<b>Score        :</b> {r['score']}\n"
+    msg += f"<b>Harga        :</b> ${r['price']:.6g}  ({r['chg_24h']:+.1f}% 24h)\n"
+    msg += f"<b>RSI          :</b> {r['rsi']}  |  BB Width: {r['bbw']}%  BB Pos: {r['bb_pct']*100:.0f}%\n"
+    msg += f"<b>Above VWAP   :</b> {r['above_vwap_rate']}% (6h)  |  Vol ratio: {r['vol_ratio']}x\n"
+    msg += f"<b>Funding      :</b> avg={r['funding_stats']['avg']:.6f}  cumul={r['funding_stats']['cumulative']:.4f}  streak={r['funding_stats']['streak']}\n"
+    msg += oi_str
+    msg += nf_str
+    msg += f"<b>BTC          :</b> {ba['btc_trend'].upper()} {ba['btc_change']:+.1f}% (3h)  |  Beta:{ba['beta']}  Alpha:{ba['alpha']:+.2f}  R²:{ba['r_squared']}\n"
+    if r.get("vol_spike"):
+        msg += f"<b>🔥 Volume Spike</b> terdeteksi!\n"
+    if r.get("vol_low"):
+        msg += f"<b>⚠️ Volume Rendah</b> — hati-hati aktivitas terbatas\n"
+
     msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📍 <b>ENTRY ZONE (RENTANG)</b>\n"
-    e = r['entry']
+    msg += f"📍 <b>ENTRY ZONE</b>\n"
     msg += f"  Support  : ${e['support_used']}\n"
-    msg += f"  Entry    : ${e['entry']} (tepat di support)\n"
-    msg += f"  Rentang  : ${e['entry_range'][0]} - ${e['entry_range'][1]} (0 - {CONFIG['entry_range_above']*100:.1f}% di atas support)\n"
-    msg += f"  SL       : ${e['sl']} (-{e['sl_pct']:.1f}%)\n"
-    msg += f"  T1 (Demand 1): ${e['t1']} (+{r['potential_gain_t1']}%)\n"
-    msg += f"  T2 (Demand 2): ${e['t2']} (+{r['potential_gain_t2']}%)\n"
-    msg += f"  Fib 1.272: ${e['fib_t1']} (+{r['potential_gain_fib1']}%)\n"
-    msg += f"  Fib 1.618: ${e['fib_t2']} (+{r['potential_gain_fib2']}%)\n"
-    msg += f"  R/R (T1) : 1:{e['rr']}\n"
+    msg += f"  Entry    : ${e['entry']}  →  ${e['entry_range'][1]}  (rentang 0.3%)\n"
+    msg += f"  SL       : ${e['sl']}  (-{e['sl_pct']:.1f}%)\n"
+    msg += f"  T1 (Demand): ${e['t1']}  (+{r['potential_gain_t1']}%)\n"
+    msg += f"  T2 (Demand): ${e['t2']}  (+{r['potential_gain_t2']}%)\n"
+    msg += f"  Fib 1.272 : ${e['fib_t1']}  (+{r['potential_gain_f1']}%)\n"
+    msg += f"  Fib 1.618 : ${e['fib_t2']}  (+{r['potential_gain_f2']}%)\n"
+    msg += f"  R/R (T1)  : 1:{e['rr']}\n"
+
     msg += "\n━━━━━━━━━━━━━━━━━━━━\n📊 <b>SINYAL</b>\n"
-    for s in r['signals']:
+    for s in r["signals"]:
         msg += f"  • {s}\n"
-    msg += f"\n📡 {utc_now()}\n<i>⚠️ Bukan financial advice.</i>"
+
+    msg += f"\n📡 {utc_now()}\n<i>⚠️ Bukan financial advice. Manage risk ketat.</i>"
     return msg
 
 def build_summary(results):
-    msg = f"📋 <b>TOP CANDIDATES v13.8 — {utc_now()}</b>\n{'━'*28}\n"
+    msg = f"📋 <b>TOP CANDIDATES v10.0 — {utc_now()}</b>\n{'━'*28}\n"
     for i, r in enumerate(results, 1):
-        vol = (f"${r['vol_24h']/1e6:.1f}M" if r['vol_24h'] >= 1e6 else f"${r['vol_24h']/1e3:.0f}K")
-        spike_tag = " 🔥" if r.get('vol_spike') else ""
-        low_tag = " ⚠️" if r.get('vol_low') else ""
-        msg += f"{i}. <b>{r['symbol']}</b> [Score:{r['score']} | Gain T1:{r['potential_gain_t1']}% | Beta:{r['beta_alpha']['beta']} | Alpha:{r['beta_alpha']['alpha']:+.2f}]{spike_tag}{low_tag}\n"
-        msg += f"   {vol} | RSI:{r['rsi']} | BBW:{r['bbw']}% | AboveVWAP:{r['above_vwap_rate']}% | VolRatio:{r['vol_ratio']}x\n"
+        vol  = (f"${r['vol_24h']/1e6:.1f}M" if r['vol_24h'] >= 1e6 else f"${r['vol_24h']/1e3:.0f}K")
+        nfd  = r.get("nf_data", {})
+        f6   = nfd.get("6h", {})
+        nf6  = f"{f6.get('net_pct', 0):+.1f}%" if nfd.get("has_data") else "N/A"
+        tags  = (" 🔥" if r.get("vol_spike") else "") + (" ⚠️" if r.get("vol_low") else "")
+        oi_tag = f" OI24h:{r['oi_chg24h']:+.1f}%" if r.get("oi_valid") else ""
+        msg += (f"{i}. <b>{r['symbol']}</b> "
+                f"[Score:{r['score']} | T1:+{r['potential_gain_t1']}% | "
+                f"Beta:{r['beta_alpha']['beta']} | Alpha:{r['beta_alpha']['alpha']:+.2f} | "
+                f"Flow6h:{nf6}{oi_tag}]{tags}\n")
+        msg += (f"   {vol} | RSI:{r['rsi']} | BBW:{r['bbw']}% | "
+                f"VWAP:{r['above_vwap_rate']}% | VolRatio:{r['vol_ratio']}x | "
+                f"Type:{r['pump_type']}\n")
     return msg
 
 # ══════════════════════════════════════════════════════════════
@@ -936,117 +1250,92 @@ def build_summary(results):
 # ══════════════════════════════════════════════════════════════
 def build_candidate_list(tickers):
     all_candidates = []
-    not_found = []
-    filtered_stats = {
-        "cooldown": 0,
-        "manual_exclude": 0,
-        "vol_too_low": 0,
-        "vol_too_high": 0,
-        "change_extreme": 0,
-        "invalid_price": 0,
-        "parse_error": 0,
-    }
+    not_found      = []
+    fstats         = {"cooldown": 0, "manual": 0, "vol_low": 0, "vol_high": 0,
+                      "chg_extreme": 0, "price_invalid": 0, "parse_err": 0}
+
     log.info("=" * 70)
-    log.info("🔍 SCANNING MODE: FULL WHITELIST (ALL 324 COINS)")
+    log.info("🔍 SCANNING: FULL WHITELIST")
     log.info("=" * 70)
+
     for sym in WHITELIST_SYMBOLS:
         if sym in MANUAL_EXCLUDE:
-            filtered_stats["manual_exclude"] += 1
-            continue
+            fstats["manual"] += 1; continue
         if is_cooldown(sym):
-            filtered_stats["cooldown"] += 1
-            continue
+            fstats["cooldown"] += 1; continue
         if sym not in tickers:
-            not_found.append(sym)
-            continue
+            not_found.append(sym); continue
         ticker = tickers[sym]
         try:
             vol   = float(ticker.get("quoteVolume", 0))
             chg   = float(ticker.get("change24h", 0)) * 100
             price = float(ticker.get("lastPr", 0))
         except:
-            filtered_stats["parse_error"] += 1
-            continue
-        if vol < CONFIG["pre_filter_vol"]:
-            filtered_stats["vol_too_low"] += 1
-            continue
-        if vol > CONFIG["max_vol_24h"]:
-            filtered_stats["vol_too_high"] += 1
-            continue
-        if abs(chg) > CONFIG["gate_chg_24h_max"]:
-            filtered_stats["change_extreme"] += 1
-            continue
-        if price <= 0:
-            filtered_stats["invalid_price"] += 1
-            continue
+            fstats["parse_err"] += 1; continue
+        if vol   < CONFIG["pre_filter_vol"]:  fstats["vol_low"]  += 1; continue
+        if vol   > CONFIG["max_vol_24h"]:     fstats["vol_high"] += 1; continue
+        if abs(chg) > CONFIG["gate_chg_24h_max"]: fstats["chg_extreme"] += 1; continue
+        if price <= 0:                        fstats["price_invalid"] += 1; continue
         all_candidates.append((sym, ticker))
-    total = len(WHITELIST_SYMBOLS)
+
+    total    = len(WHITELIST_SYMBOLS)
     will_scan = len(all_candidates)
-    filtered = total - will_scan
-    log.info("")
-    log.info("📊 SCAN SUMMARY:")
-    log.info(f"   Whitelist total: {total} coins")
-    log.info(f"   ✅ Will scan:     {will_scan} coins ({will_scan/total*100:.1f}%)")
-    log.info(f"   ❌ Filtered:      {filtered} coins ({filtered/total*100:.1f}%)")
-    log.info("")
-    log.info("📋 Filter breakdown:")
-    log.info(f"   Not in Bitget:  {len(not_found)}")
-    log.info(f"   Cooldown:       {filtered_stats['cooldown']}")
-    log.info(f"   Manual exclude: {filtered_stats['manual_exclude']}")
-    log.info(f"   Vol < $1K:      {filtered_stats['vol_too_low']}")
-    log.info(f"   Vol > $50M:     {filtered_stats['vol_too_high']}")
-    log.info(f"   Chg > ±30%:     {filtered_stats['change_extreme']}")
-    log.info(f"   Invalid price:  {filtered_stats['invalid_price']}")
-    log.info(f"   Parse error:    {filtered_stats['parse_error']}")
-    if not_found and len(not_found) <= 30:
-        log.info(f"\n⚠️  Missing from Bitget: {', '.join(not_found)}")
-    elif not_found:
-        log.info(f"\n⚠️  {len(not_found)} coins missing from Bitget")
-        log.info(f"     First 10: {', '.join(not_found[:10])}")
-    log.info(f"\n⏱️  Est. scan time: {will_scan * CONFIG['sleep_coins']:.0f}s (~{will_scan * CONFIG['sleep_coins']/60:.1f} min)")
+    log.info(f"   Whitelist: {total}  |  Akan di-scan: {will_scan}  |  "
+             f"Filter: {total - will_scan}")
+    log.info(f"   Not in Bitget:{len(not_found)}  Cooldown:{fstats['cooldown']}  "
+             f"Vol<:{fstats['vol_low']}  Vol>:{fstats['vol_high']}  "
+             f"Chg>30%:{fstats['chg_extreme']}")
+    log.info(f"   Est. scan time: {will_scan * CONFIG['sleep_coins']:.0f}s "
+             f"(~{will_scan * CONFIG['sleep_coins'] / 60:.1f} menit)")
     log.info("=" * 70)
-    log.info("")
     return all_candidates
 
 # ══════════════════════════════════════════════════════════════
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v13.8-FINAL — {utc_now()} ===")
-    log.info("=" * 70)
-    log.info("PERUBAHAN vs v13.7:")
-    log.info("  • Target resistance diperbesar dengan lookback 24 jam")
-    log.info("  • Fallback ke Fibonacci jika tidak ada resistance")
-    log.info("=" * 70)
+    log.info(f"=== PRE-PUMP SCANNER v10.0 — {utc_now()} ===")
     tickers = get_all_tickers()
     if not tickers:
         send_telegram("⚠️ Scanner Error: Gagal ambil data Bitget")
         return
-    log.info(f"Total ticker: {len(tickers)}")
+    log.info(f"Total ticker Bitget: {len(tickers)}")
     candidates = build_candidate_list(tickers)
-    results = []
+    results    = []
+
     for i, (sym, t) in enumerate(candidates):
         try:
             vol = float(t.get("quoteVolume", 0))
         except:
             vol = 0
         if vol < CONFIG["min_vol_24h"]:
-            log.info(f"[{i+1}] {sym} — vol ${vol:,.0f} di bawah minimum")
             continue
         log.info(f"[{i+1}/{len(candidates)}] {sym} (vol ${vol/1e3:.0f}K)...")
         try:
             res = master_score(sym, t)
             if res:
-                log.info(f"  Score={res['score']} | sinyal: {len(res['signals'])} | tipe={res['pump_type']} | gain T1={res['potential_gain_t1']}% | Beta={res['beta_alpha']['beta']} Alpha={res['beta_alpha']['alpha']:+.2f}")
+                ba = res["beta_alpha"]
+                nfd = res.get("nf_data", {})
+                f6  = nfd.get("6h", {})
+                log.info(
+                    f"  ✅ Score={res['score']} | OI24h={res['oi_chg24h']:+.1f}% "
+                    f"[{'valid' if res['oi_valid'] else 'init'}] | "
+                    f"Flow6h={f6.get('net_pct', 0):+.1f}% | "
+                    f"Beta={ba['beta']} Alpha={ba['alpha']:+.2f} | "
+                    f"T1=+{res['potential_gain_t1']}% | Type={res['pump_type']}"
+                )
                 results.append(res)
         except Exception as ex:
             log.warning(f"  Error {sym}: {ex}")
         time.sleep(CONFIG["sleep_coins"])
+
     results.sort(key=lambda x: x["score"], reverse=True)
-    log.info(f"Lolos threshold: {len(results)} coin")
+    log.info(f"Lolos semua gate: {len(results)} coin")
+
     if not results:
-        log.info("Tidak ada sinyal yang memenuhi syarat saat ini")
+        log.info("Tidak ada sinyal memenuhi syarat")
         return
+
     top = results[:CONFIG["max_alerts_per_run"]]
     if len(top) >= 2:
         send_telegram(build_summary(top))
@@ -1055,7 +1344,7 @@ def run_scan():
         ok = send_telegram(build_alert(r, rank=rank))
         if ok:
             set_cooldown(r["symbol"])
-            log.info(f"✅ Alert #{rank}: {r['symbol']} Score={r['score']} Gain T1={r['potential_gain_t1']}% Beta={r['beta_alpha']['beta']}")
+            log.info(f"✅ Alert #{rank}: {r['symbol']} Score={r['score']}")
         time.sleep(2)
     log.info(f"=== SELESAI — {len(top)} alert terkirim ===")
 
@@ -1063,11 +1352,13 @@ def run_scan():
 #  ▶️  ENTRY POINT
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info("╔═══════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v13.8-FINAL                     ║")
-    log.info("║  FOKUS: Entry support + target demand (24h) + Fibonacci ║")
-    log.info("╚═══════════════════════════════════════════════════╝")
+    log.info("╔═══════════════════════════════════════════════════════╗")
+    log.info("║  PRE-PUMP SCANNER v10.0 — UNIFIED EDITION             ║")
+    log.info("║  Merge: v13.8-FINAL + v9.10                           ║")
+    log.info("║  Entry support-based | OI layer | Net Flow multi-TF   ║")
+    log.info("║  Beta/Alpha vs BTC | Whale Funnel | Dist. Gate        ║")
+    log.info("╚═══════════════════════════════════════════════════════╝")
     if not BOT_TOKEN or not CHAT_ID:
-        log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan!")
+        log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan di .env!")
         exit(1)
     run_scan()
