@@ -1,4 +1,6 @@
 # requirements.txt
+pandas
+pandas-ta
+numpy
 requests
 python-dotenv
-numpy
