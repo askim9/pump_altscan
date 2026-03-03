@@ -22,10 +22,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
+    - name: Install dependencies
+  run: |
+    pip install --upgrade pip
+    pip install pandas==2.2.3
+    pip install git+https://github.com/twopirllc/pandas-ta.git
+    pip install numpy==1.26.4
+    pip install requests==2.31.0
+    pip install python-dotenv==1.0.1
 
       - name: Run scanner
         env:
