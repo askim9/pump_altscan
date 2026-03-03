@@ -2,7 +2,7 @@ name: Pre-Pump Scanner
 
 on:
   schedule:
-    - cron: '0 */2 * * *'   # Setiap 2 jam sekali
+    - cron: '0 */2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -18,15 +18,15 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12' # DIUBAH: Gunakan 3.12 agar kompatibel dengan pandas-ta terbaru
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Pasang paket dasar tanpa kunci versi yang terlalu ketat agar tidak konflik
+          # Pasang paket dasar
           pip install numpy pandas requests python-dotenv
-          # Pasang pandas-ta langsung dari PyPI (cara paling standar)
-          pip install pandas-ta
+          # Gunakan flag --pre karena pandas-ta 0.4.x masih berstatus pre-release (beta)
+          pip install pandas-ta --pre
 
       - name: Run scanner
         env:
@@ -40,14 +40,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Cek jika file state ada, lalu tambahkan
           for file in cooldown.json funding.json; do
             if [ -f "$file" ]; then
               git add "$file"
             fi
           done
           
-          # Commit & Push jika ada perubahan
           if ! git diff --cached --quiet; then
             git commit -m "chore: update scanner state [skip ci]"
             git push
