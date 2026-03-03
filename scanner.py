@@ -7,10 +7,16 @@
 ║    • Jarak dinamis berdasarkan ATR                                      ║
 ║    • Konfirmasi volume, pola candlestick, dan higher timeframe         ║
 ║    • Composite score: support (40%) + teknikal (35%) + funding (25%)   ║
+║    • Output 5 sinyal terbaik dengan RR tinggi                          ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
-import requests, time, os, math, json, logging
+import requests
+import time
+import os
+import math
+import json
+import logging
 from datetime import datetime, timezone
 from collections import defaultdict
 
@@ -26,18 +32,18 @@ except ImportError:
     pass
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID   = os.getenv("CHAT_ID")
+CHAT_ID = os.getenv("CHAT_ID")
 
 # ── Logging ───────────────────────────────────────────────────────────────
 import logging.handlers as _lh
-_log_fmt    = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-_log_root   = logging.getLogger()
+_log_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+_log_root = logging.getLogger()
 _log_root.setLevel(logging.INFO)
 _ch = logging.StreamHandler()
 _ch.setFormatter(_log_fmt)
 _log_root.addHandler(_ch)
 _fh = _lh.RotatingFileHandler(
-    "/tmp/scanner_v13.log", maxBytes=10*1024*1024, backupCount=3
+    "/tmp/scanner_v13.log", maxBytes=10 * 1024 * 1024, backupCount=3
 )
 _fh.setFormatter(_log_fmt)
 _log_root.addHandler(_fh)
@@ -49,87 +55,87 @@ log.info("Log file aktif: /tmp/scanner_v13.log (rotasi 10MB)")
 # ══════════════════════════════════════════════════════════════
 CONFIG = {
     # ── Threshold alert ───────────────────────────────────────
-    "min_score_alert":          10,          # untuk backward compatibility (tidak dipakai langsung)
-    "max_alerts_per_run":        15,
+    "min_score_alert": 10,  # untuk backward compatibility (tidak dipakai langsung)
+    "max_alerts_per_run": 5,  # Kirim maksimal 5 sinyal terbaik
 
     # ── Volume 24h TOTAL (USD) ─────────────────────────────────
-    "min_vol_24h":            3_000,
-    "max_vol_24h":       50_000_000,
-    "pre_filter_vol":         1_000,
+    "min_vol_24h": 3_000,
+    "max_vol_24h": 50_000_000,
+    "pre_filter_vol": 1_000,
 
     # ── Gate perubahan harga (pre-filter) ──────────────────────
-    "gate_chg_24h_max":          30.0,
+    "gate_chg_24h_max": 30.0,
 
     # ── Funding Gate (WAJIB) ───────────────────────────────────
-    "funding_gate_avg":        -0.0001,
-    "funding_gate_cumul":      -0.02,
+    "funding_gate_avg": -0.0001,
+    "funding_gate_cumul": -0.02,
 
     # ── Candle limits ─────────────────────────────────────────
-    "candle_1h":                168,
-    "candle_15m":                96,
-    "candle_4h":                 42,
-    "candle_1d":                 30,        # tambahan untuk 1D
+    "candle_1h": 168,
+    "candle_15m": 96,
+    "candle_4h": 42,
+    "candle_1d": 30,  # tambahan untuk 1D
 
     # ── Entry/exit ────────────────────────────────────────────
-    "min_target_pct":             8.0,
-    "max_sl_pct":                3.0,
-    "entry_support_offset":       0.0,
-    "entry_range_above":         0.003,
+    "min_target_pct": 8.0,
+    "max_sl_pct": 3.0,
+    "entry_support_offset": 0.0,
+    "entry_range_above": 0.003,
 
     # ── Operasional ───────────────────────────────────────────
-    "alert_cooldown_sec":       1800,
-    "sleep_coins":               0.8,
-    "sleep_error":               3.0,
-    "cooldown_file":    "./cooldown.json",
-    "funding_snapshot_file":"./funding.json",
+    "alert_cooldown_sec": 1800,
+    "sleep_coins": 0.8,
+    "sleep_error": 3.0,
+    "cooldown_file": "./cooldown.json",
+    "funding_snapshot_file": "./funding.json",
 
     # ── Bobot skor (utama) ────────────────────────────────────
-    "score_bbw_12":              5,
-    "score_bbw_10":              4,
-    "score_bbw_8":               2,
-    "score_price_2":             5,
-    "score_price_1":             3,
-    "score_price_05":            2,
-    "score_above_vwap_bos":      4,
-    "score_above_vwap":          2,
-    "score_rsi_65":              3,
-    "score_rsi_55":              2,
-    "score_atr_15":              4,
-    "score_atr_10":              2,
-    "score_lowcap":              1,
-    "score_ath_dist":            1,
+    "score_bbw_12": 5,
+    "score_bbw_10": 4,
+    "score_bbw_8": 2,
+    "score_price_2": 5,
+    "score_price_1": 3,
+    "score_price_05": 2,
+    "score_above_vwap_bos": 4,
+    "score_above_vwap": 2,
+    "score_rsi_65": 3,
+    "score_rsi_55": 2,
+    "score_atr_15": 4,
+    "score_atr_10": 2,
+    "score_lowcap": 1,
+    "score_ath_dist": 1,
 
     # ── Bobot tambahan ───────────────────────────────────────
-    "score_vol_ratio_24h":       2,
-    "score_vol_accel":           2,
-    "score_macd_pos":            1,
+    "score_vol_ratio_24h": 2,
+    "score_vol_accel": 2,
+    "score_macd_pos": 1,
 
     # ── Bobot funding (dipisahkan untuk funding score) ───────
-    "score_funding_neg_pct":     3,
-    "score_funding_streak":      3,
-    "score_basis":               2,
+    "score_funding_neg_pct": 3,
+    "score_funding_streak": 3,
+    "score_basis": 2,
 
     # ── Threshold tambahan ────────────────────────────────────
-    "above_vwap_rate_min":       0.6,
-    "squeeze_funding_cumul":    -0.05,
-    "vol_ratio_threshold":       2.5,
-    "vol_accel_threshold":       0.5,
+    "above_vwap_rate_min": 0.6,
+    "squeeze_funding_cumul": -0.05,
+    "vol_ratio_threshold": 2.5,
+    "vol_accel_threshold": 0.5,
 
     # ── Konfigurasi Support Strength (BARU) ───────────────────
     "support": {
         "min_touches": 2,
-        "touch_tolerance": 0.003,        # 0.3%
+        "touch_tolerance": 0.003,  # 0.3%
         "max_distance_atr_multiplier": 1.5,
-        "max_distance_cap": 0.02,        # 2% cap
+        "max_distance_cap": 0.02,  # 2% cap
     },
     "volume": {
         "min_touch_volume_ratio": 1.2,
         "confirmation_volume_ratio": 1.3,
     },
     "scoring": {
-        "min_support_score": 70,          # minimal skor support untuk dianggap kuat
+        "min_support_score": 70,  # minimal skor support untuk dianggap kuat
         "strong_support_threshold": 85,
-        "composite_threshold": 75,        # minimal composite score untuk alert
+        "composite_threshold": 75,  # minimal composite score untuk alert
         "support_weight": 0.4,
         "tech_weight": 0.35,
         "funding_weight": 0.25,
@@ -144,7 +150,7 @@ CONFIG = {
 MANUAL_EXCLUDE = set()
 
 # ══════════════════════════════════════════════════════════════
-#  📋  WHITELIST — 324 coin pilihan (sama seperti sebelumnya)
+#  📋  WHITELIST — 324 coin pilihan
 # ══════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
     "DOGEUSDT", "BCHUSDT", "ADAUSDT", "HYPEUSDT", "XMRUSDT", "LINKUSDT", "XLMUSDT", "HBARUSDT",
@@ -192,14 +198,14 @@ WHITELIST_SYMBOLS = {
 
 GRAN_MAP = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
 
-BITGET_BASE    = "https://api.bitget.com"
+BITGET_BASE = "https://api.bitget.com"
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
-_cache         = {}
+_cache = {}
 
-EXCLUDED_KEYWORDS = ["XAU","PAXG","BTC","ETH","USDC","DAI","BUSD","UST","LUNC","LUNA"]
+EXCLUDED_KEYWORDS = ["XAU", "PAXG", "BTC", "ETH", "USDC", "DAI", "BUSD", "UST", "LUNC", "LUNA"]
 
 # ══════════════════════════════════════════════════════════════
-#  🔒  COOLDOWN & SNAPSHOTS (sama seperti sebelumnya)
+#  🔒  COOLDOWN & SNAPSHOTS
 # ══════════════════════════════════════════════════════════════
 def load_cooldown():
     try:
@@ -254,7 +260,7 @@ def set_cooldown(sym):
     save_cooldown(_cooldown)
 
 # ══════════════════════════════════════════════════════════════
-#  🌐  HTTP UTILITIES (sama)
+#  🌐  HTTP UTILITIES
 # ══════════════════════════════════════════════════════════════
 def safe_get(url, params=None, timeout=12):
     for attempt in range(2):
@@ -285,11 +291,11 @@ def send_telegram(msg):
     except:
         return False
 
-def utc_now():  return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+def utc_now(): return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 def utc_hour(): return datetime.now(timezone.utc).hour
 
 # ══════════════════════════════════════════════════════════════
-#  📡  DATA FETCHERS (ditambah pengambilan candle 4h & 1d)
+#  📡  DATA FETCHERS
 # ══════════════════════════════════════════════════════════════
 def get_all_tickers():
     data = safe_get(
@@ -301,7 +307,7 @@ def get_all_tickers():
     return {}
 
 def get_candles(symbol, gran="1h", limit=168):
-    g   = GRAN_MAP.get(gran, "1H")
+    g = GRAN_MAP.get(gran, "1H")
     key = f"c_{symbol}_{g}_{limit}"
     if key in _cache:
         ts, val = _cache[key]
@@ -319,12 +325,12 @@ def get_candles(symbol, gran="1h", limit=168):
         try:
             vol_usd = float(c[6]) if len(c) > 6 else float(c[5]) * float(c[4])
             candles.append({
-                "ts":         int(c[0]),
-                "open":     float(c[1]),
-                "high":     float(c[2]),
-                "low":      float(c[3]),
-                "close":    float(c[4]),
-                "volume":   float(c[5]),
+                "ts": int(c[0]),
+                "open": float(c[1]),
+                "high": float(c[2]),
+                "low": float(c[3]),
+                "close": float(c[4]),
+                "volume": float(c[5]),
                 "volume_usd": vol_usd,
             })
         except:
@@ -376,9 +382,9 @@ def calc_bbw(candles, period=20):
         return 0, 0.5
     closes = [c["close"] for c in candles[-period:]]
     mean = sum(closes) / period
-    std = math.sqrt(sum((x - mean)**2 for x in closes) / period)
-    bb_upper = mean + 2*std
-    bb_lower = mean - 2*std
+    std = math.sqrt(sum((x - mean) ** 2 for x in closes) / period)
+    bb_upper = mean + 2 * std
+    bb_lower = mean - 2 * std
     bbw = (bb_upper - bb_lower) / mean * 100 if mean > 0 else 0
     last = candles[-1]["close"]
     if bb_upper - bb_lower == 0:
@@ -391,11 +397,11 @@ def calc_atr_pct(candles, period=14):
     if len(candles) < period + 1:
         return 0
     trs = []
-    for i in range(1, period+1):
+    for i in range(1, period + 1):
         h = candles[-i]["high"]
         l = candles[-i]["low"]
-        pc = candles[-i-1]["close"] if i < len(candles) else candles[-i]["open"]
-        tr = max(h-l, abs(h-pc), abs(l-pc))
+        pc = candles[-i - 1]["close"] if i < len(candles) else candles[-i]["open"]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
         trs.append(tr)
     atr = sum(trs) / period
     cur = candles[-1]["close"]
@@ -429,14 +435,14 @@ def get_rsi(candles, period=14):
     closes = [c["close"] for c in candles]
     gains, losses = [], []
     for i in range(1, len(closes)):
-        d = closes[i] - closes[i-1]
+        d = closes[i] - closes[i - 1]
         gains.append(max(d, 0))
         losses.append(max(-d, 0))
     avg_g = sum(gains[:period]) / period
     avg_l = sum(losses[:period]) / period
     for i in range(period, len(gains)):
-        avg_g = (avg_g * (period-1) + gains[i]) / period
-        avg_l = (avg_l * (period-1) + losses[i]) / period
+        avg_g = (avg_g * (period - 1) + gains[i]) / period
+        avg_l = (avg_l * (period - 1) + losses[i]) / period
     if avg_l == 0:
         return 100.0
     rs = avg_g / avg_l
@@ -446,17 +452,17 @@ def calc_macd(candles, fast=12, slow=26, signal=9):
     if len(candles) < slow + signal:
         return 0
     closes = [c["close"] for c in candles]
-    # Sederhana: gunakan EMA
+
     def ema(period, index):
         if index < period - 1:
             return closes[index]
         alpha = 2 / (period + 1)
-        ema_val = sum(closes[index-period+1:index+1]) / period
+        ema_val = sum(closes[index - period + 1:index + 1]) / period
         for i in range(index - period + 1, index + 1):
             ema_val = alpha * closes[i] + (1 - alpha) * ema_val
         return ema_val
+
     macd_line = ema(fast, -1) - ema(slow, -1)
-    # hitung signal line sebagai EMA dari MACD line selama signal periode
     macd_vals = [ema(fast, i) - ema(slow, i) for i in range(-signal, 0)]
     signal_line = sum(macd_vals) / signal
     hist = macd_line - signal_line
@@ -470,7 +476,7 @@ def get_ath_distance(symbol, cur_price):
     # Placeholder
     return -95.0
 
-# ==================== FUNGSI UNTUK FIBONACCI TARGET (sama) ====================
+# ==================== FUNGSI UNTUK FIBONACCI TARGET ====================
 def find_swing_low_high(candles_1h, lookback=48):
     if len(candles_1h) < lookback:
         lookback = len(candles_1h)
@@ -498,7 +504,7 @@ def calc_fib_targets(entry, candles_1h):
         t2 = t1 * 1.08
     return round(t1, 8), round(t2, 8)
 
-# ==================== FUNGSI ENTRY BARU (menerima support level dari luar) ====================
+# ==================== FUNGSI ENTRY DARI SUPPORT ====================
 def calc_entry_from_support(current_price, support_level, candles_1h):
     """
     Menghitung entry, SL, dan target berdasarkan support level yang diberikan.
@@ -530,7 +536,7 @@ def calc_entry_from_support(current_price, support_level, candles_1h):
         "support_used": round(support_level, 8),
     }
 
-# ==================== FUNGSI BARU UNTUK SUPPORT STRENGTH ====================
+# ==================== FUNGSI UNTUK SUPPORT STRENGTH ====================
 def candles_to_df(candles):
     """Konversi list candle ke pandas DataFrame."""
     df = pd.DataFrame(candles)
@@ -555,9 +561,9 @@ def count_touches(df, level, tolerance=0.003, lookback=48):
         low = df.iloc[i]['low']
         if lower_bound <= low <= upper_bound:
             # Cek apakah ini swing low (lebih rendah dari tetangga)
-            if i > start and i < n-1:
-                prev_low = df.iloc[i-1]['low']
-                next_low = df.iloc[i+1]['low']
+            if i > start and i < n - 1:
+                prev_low = df.iloc[i - 1]['low']
+                next_low = df.iloc[i + 1]['low']
                 if low <= prev_low and low <= next_low:
                     touches += 1
     return touches
@@ -595,7 +601,7 @@ def analyze_candle_patterns(df_recent, support_level):
 
         # Bullish engulfing
         if i > 0:
-            prev = df_recent.iloc[i-1]
+            prev = df_recent.iloc[i - 1]
             if (prev['close'] < prev['open'] and  # Prev bearish
                 row['close'] > row['open'] and     # Current bullish
                 row['open'] <= prev['close'] and
@@ -614,7 +620,7 @@ def analyze_trend_structure(df_1h, df_4h):
     """
     # Check higher lows in last 20 candles of 1H
     lows_1h = df_1h['low'].tail(20).values
-    higher_lows = sum(1 for i in range(1, len(lows_1h)) if lows_1h[i] > lows_1h[i-1])
+    higher_lows = sum(1 for i in range(1, len(lows_1h)) if lows_1h[i] > lows_1h[i - 1])
 
     # Check EMA alignment in 4H
     ema20_4h = ta.ema(df_4h['close'], length=20).iloc[-1] if len(df_4h) >= 20 else None
@@ -636,7 +642,6 @@ def check_htf_alignment(support_1h, df_4h, df_1d, atr_1h):
     # Cari support level di 4H (menggunakan low terbaru sebagai proxy sederhana)
     if len(df_4h) >= 10:
         support_4h_candidates = df_4h['low'].tail(10).min()  # simple: low terendah 10 candle
-        # Bisa juga menggunakan swing low, tapi sederhanakan dulu
         if abs(support_1h - support_4h_candidates) / support_1h < 0.005:
             score += 50
 
@@ -664,16 +669,14 @@ def calculate_support_strength(df_1h, df_4h, df_1d, current_price):
     max_distance = min(CONFIG["support"]["max_distance_atr_multiplier"] * atr_14 / current_price,
                        CONFIG["support"]["max_distance_cap"])
 
-    # 2. Cari support terdekat dari level yang ada (gunakan low 3h, VWAP, EMA20 seperti sebelumnya)
-    # Kita gunakan fungsi get_support_levels yang sudah ada, tapi perlu diadaptasi untuk DataFrame
-    # Sederhana: gunakan low 3h sebagai proxy
+    # 2. Cari support terdekat dari level yang ada (gunakan low 3h, VWAP, EMA20)
     if len(df_1h) >= 3:
         low_3h = df_1h['low'].tail(3).min()
     else:
         low_3h = current_price * 0.985
     support_candidates = [low_3h]
     if len(df_1h) >= 24:
-        vwap = calc_vwap_from_df(df_1h)  # perlu fungsi
+        vwap = calc_vwap_from_df(df_1h)
         if vwap < current_price:
             support_candidates.append(vwap)
     if len(df_1h) >= 20:
@@ -692,7 +695,7 @@ def calculate_support_strength(df_1h, df_4h, df_1d, current_price):
 
     # 3. Cek apakah dalam jarak yang diperbolehkan
     if min_distance > max_distance:
-        return {'score': 0, 'valid': False, 'reason': f'Too far from support ({min_distance*100:.2f}% > {max_distance*100:.2f}%)'}
+        return {'score': 0, 'valid': False, 'reason': f'Too far from support ({min_distance * 100:.2f}% > {max_distance * 100:.2f}%)'}
 
     # 4. Touch Count Analysis
     touch_count = count_touches(df_1h, nearest_support, tolerance=CONFIG["support"]["touch_tolerance"], lookback=48)
@@ -776,7 +779,6 @@ def calc_vwap_from_df(df):
 def calculate_technical_score(candles_1h, ticker):
     """
     Menghitung skor teknikal (0-100) berdasarkan indikator selain funding.
-    Menggunakan bobot yang sama seperti sebelumnya, tetapi dinormalisasi.
     """
     score = 0
     signals = []
@@ -816,7 +818,7 @@ def calculate_technical_score(candles_1h, ticker):
 
     macd_hist = calc_macd(candles_1h)
 
-    # Bobot (tanpa funding)
+    # Bobot
     if bbw >= 0.12:
         score += CONFIG["score_bbw_12"]
         signals.append(f"BBW {bbw:.2f}% (ekstrem)")
@@ -858,23 +860,13 @@ def calculate_technical_score(candles_1h, ticker):
         score += CONFIG["score_atr_10"]
         signals.append(f"ATR {atr_pct:.2f}% (volatilitas sedang)")
 
-    # Rank & ATH (placeholder, tidak dihitung)
-    # rank = get_rank(symbol)
-    # if rank >= 200:
-    #     score += CONFIG["score_lowcap"]
-    #     signals.append("Low cap")
-    # ath_dist = get_ath_distance(symbol, price_now)
-    # if ath_dist <= -90:
-    #     score += CONFIG["score_ath_dist"]
-    #     signals.append("Deep from ATH")
-
     if vol_ratio > CONFIG["vol_ratio_threshold"]:
         score += CONFIG["score_vol_ratio_24h"]
         signals.append(f"Volume ratio {vol_ratio:.1f}x (tinggi)")
 
     if vol_accel > CONFIG["vol_accel_threshold"]:
         score += CONFIG["score_vol_accel"]
-        signals.append(f"Volume acceleration {vol_accel*100:.0f}%")
+        signals.append(f"Volume acceleration {vol_accel * 100:.0f}%")
 
     if macd_hist > 0:
         score += CONFIG["score_macd_pos"]
@@ -973,7 +965,7 @@ def master_score(symbol, ticker):
     else:
         all_signals.append(f"Support kuat ({support_analysis['score']:.0f})")
 
-    # Tipe pump (bisa disesuaikan)
+    # Tipe pump
     pump_type = "Support Bounce"
 
     # Potensi gain
@@ -997,15 +989,15 @@ def master_score(symbol, ticker):
         "above_vwap_rate": round(sum(1 for c in c1h[-6:] if c["close"] > calc_vwap(c1h)) / 6 * 100, 1),
         "funding_stats": fstats,
         "pump_type": pump_type,
-        "vol_ratio": round((c1h[-1]["volume_usd"] / (sum(c["volume_usd"] for c in c1h[-24:])/24)) if len(c1h)>=24 else 0, 2),
-        "vol_accel": round((c1h[-1]["volume_usd"] - (sum(c["volume_usd"] for c in c1h[-4:-1])/3)) / (sum(c["volume_usd"] for c in c1h[-4:-1])/3) * 100 if len(c1h)>=4 else 0, 1),
+        "vol_ratio": round((c1h[-1]["volume_usd"] / (sum(c["volume_usd"] for c in c1h[-24:]) / 24)) if len(c1h) >= 24 else 0, 2),
+        "vol_accel": round((c1h[-1]["volume_usd"] - (sum(c["volume_usd"] for c in c1h[-4:-1]) / 3)) / (sum(c["volume_usd"] for c in c1h[-4:-1]) / 3) * 100 if len(c1h) >= 4 else 0, 1),
         "macd_hist": round(calc_macd(c1h), 6),
         "potential_gain_t1": round(potential_gain_t1, 1),
         "potential_gain_t2": round(potential_gain_t2, 1),
         "support_analysis": support_analysis,
     }
 
-# ==================== TELEGRAM FORMATTER (dimodifikasi) ====================
+# ==================== TELEGRAM FORMATTER ====================
 def build_alert(r, rank=None):
     msg = f"🚨 <b>PRE-PUMP SIGNAL {rank} — v13.4-SUPPORT</b>\n\n"
     msg += f"<b>Symbol    :</b> {r['symbol']}\n"
@@ -1014,7 +1006,7 @@ def build_alert(r, rank=None):
     msg += f"<b>Harga     :</b> ${r['price']:.6g}  ({r['chg_24h']:+.1f}% 24h)\n"
     msg += f"<b>RSI 14h   :</b> {r['rsi']}\n"
     msg += f"<b>BB Width  :</b> {r['bbw']}%\n"
-    msg += f"<b>BB Position:</b> {r['bb_pct']*100:.0f}%\n"
+    msg += f"<b>BB Position:</b> {r['bb_pct'] * 100:.0f}%\n"
     msg += f"<b>Above VWAP:</b> {r['above_vwap_rate']}% dalam 6h\n"
     msg += f"<b>Volume    :</b> ratio 24h={r['vol_ratio']}x, accel={r['vol_accel']}%\n"
     msg += f"<b>Funding   :</b> avg={r['funding_stats']['avg']:.6f}, cumul={r['funding_stats']['cumulative']:.4f}\n"
@@ -1027,7 +1019,7 @@ def build_alert(r, rank=None):
     msg += f"  Support   : ${e['support_used']}\n"
     msg += f"  Jarak     : {r['support_analysis']['distance_pct']:.2f}% dari harga\n"
     msg += f"  Entry     : ${e['entry']} (tepat di support)\n"
-    msg += f"  Rentang   : ${e['entry_range'][0]} - ${e['entry_range'][1]} (0 - {CONFIG['entry_range_above']*100:.1f}% di atas support)\n"
+    msg += f"  Rentang   : ${e['entry_range'][0]} - ${e['entry_range'][1]} (0 - {CONFIG['entry_range_above'] * 100:.1f}% di atas support)\n"
     msg += f"  SL        : ${e['sl']} (-{e['sl_pct']:.1f}%)\n"
     msg += f"  T1 (Fib 1.272): ${e['t1']} (+{e['liq_pct']:.1f}%)\n"
     msg += f"  T2 (Fib 1.618): ${e['t2']}\n"
@@ -1039,32 +1031,100 @@ def build_alert(r, rank=None):
     return msg
 
 def build_summary(results):
-    msg = f"📋 <b>TOP CANDIDATES v13.4 — {utc_now()}</b>\n{'━'*28}\n"
-    for i, r in enumerate(results, 1):
-        vol = (f"${r['vol_24h']/1e6:.1f}M" if r['vol_24h'] >= 1e6 else f"${r['vol_24h']/1e3:.0f}K")
-        msg += f"{i}. <b>{r['symbol']}</b> [Comp:{r['composite_score']} | S:{r['support_score']} | Gain T1:{r['potential_gain_t1']}%]\n"
+    msg = f"📋 <b>TOP 5 CANDIDATES v13.4 — {utc_now()}</b>\n{'━' * 28}\n"
+    for i, r in enumerate(results[:5], 1):
+        vol = (f"${r['vol_24h'] / 1e6:.1f}M" if r['vol_24h'] >= 1e6 else f"${r['vol_24h'] / 1e3:.0f}K")
+        msg += f"{i}. <b>{r['symbol']}</b> [Comp:{r['composite_score']} | S:{r['support_score']} | RR:1:{r['entry']['rr']} | Gain T1:{r['potential_gain_t1']}%]\n"
         msg += f"   {vol} | RSI:{r['rsi']} | BBW:{r['bbw']}% | AboveVWAP:{r['above_vwap_rate']}% | VolRatio:{r['vol_ratio']}x\n"
     return msg
 
-# ==================== BUILD CANDIDATE LIST (sama) ====================
+# ==================== BUILD CANDIDATE LIST ====================
 def build_candidate_list(tickers):
-    # ... (kode sama seperti sebelumnya, tidak diubah)
-    # Untuk menghemat ruang, saya tidak menyalin ulang, tetapi asumsikan tetap sama.
-    # Dalam implementasi sebenarnya, gunakan kode build_candidate_list yang sudah ada.
-    pass
+    all_candidates = []
+    not_found = []
+    filtered_stats = {
+        "cooldown": 0,
+        "manual_exclude": 0,
+        "vol_too_low": 0,
+        "vol_too_high": 0,
+        "change_extreme": 0,
+        "invalid_price": 0,
+        "parse_error": 0,
+    }
+    log.info("=" * 70)
+    log.info("🔍 SCANNING MODE: FULL WHITELIST (ALL 324 COINS)")
+    log.info("=" * 70)
+    for sym in WHITELIST_SYMBOLS:
+        if sym in MANUAL_EXCLUDE:
+            filtered_stats["manual_exclude"] += 1
+            continue
+        if is_cooldown(sym):
+            filtered_stats["cooldown"] += 1
+            continue
+        if sym not in tickers:
+            not_found.append(sym)
+            continue
+        ticker = tickers[sym]
+        try:
+            vol = float(ticker.get("quoteVolume", 0))
+            chg = float(ticker.get("change24h", 0)) * 100
+            price = float(ticker.get("lastPr", 0))
+        except:
+            filtered_stats["parse_error"] += 1
+            continue
+        if vol < CONFIG["pre_filter_vol"]:
+            filtered_stats["vol_too_low"] += 1
+            continue
+        if vol > CONFIG["max_vol_24h"]:
+            filtered_stats["vol_too_high"] += 1
+            continue
+        if abs(chg) > CONFIG["gate_chg_24h_max"]:
+            filtered_stats["change_extreme"] += 1
+            continue
+        if price <= 0:
+            filtered_stats["invalid_price"] += 1
+            continue
+        all_candidates.append((sym, ticker))
+    total = len(WHITELIST_SYMBOLS)
+    will_scan = len(all_candidates)
+    filtered = total - will_scan
+    log.info("")
+    log.info("📊 SCAN SUMMARY:")
+    log.info(f"   Whitelist total: {total} coins")
+    log.info(f"   ✅ Will scan:     {will_scan} coins ({will_scan / total * 100:.1f}%)")
+    log.info(f"   ❌ Filtered:      {filtered} coins ({filtered / total * 100:.1f}%)")
+    log.info("")
+    log.info("📋 Filter breakdown:")
+    log.info(f"   Not in Bitget:  {len(not_found)}")
+    log.info(f"   Cooldown:       {filtered_stats['cooldown']}")
+    log.info(f"   Manual exclude: {filtered_stats['manual_exclude']}")
+    log.info(f"   Vol < $1K:      {filtered_stats['vol_too_low']}")
+    log.info(f"   Vol > $50M:     {filtered_stats['vol_too_high']}")
+    log.info(f"   Chg > ±30%:     {filtered_stats['change_extreme']}")
+    log.info(f"   Invalid price:  {filtered_stats['invalid_price']}")
+    log.info(f"   Parse error:    {filtered_stats['parse_error']}")
+    if not_found and len(not_found) <= 30:
+        log.info(f"\n⚠️  Missing from Bitget: {', '.join(not_found)}")
+    elif not_found:
+        log.info(f"\n⚠️  {len(not_found)} coins missing from Bitget")
+        log.info(f"     First 10: {', '.join(not_found[:10])}")
+    log.info(f"\n⏱️  Est. scan time: {will_scan * CONFIG['sleep_coins']:.0f}s (~{will_scan * CONFIG['sleep_coins'] / 60:.1f} min)")
+    log.info("=" * 70)
+    log.info("")
+    return all_candidates  # Pastikan selalu mengembalikan list (bisa kosong)
 
-# ==================== MAIN SCAN (disesuaikan) ====================
+# ==================== MAIN SCAN ====================
 def run_scan():
     log.info(f"=== PRE-PUMP SCANNER v13.4-SUPPORT — {utc_now()} ===")
     log.info("=" * 70)
-    log.info("FITUR BARU: Filter support kuat + composite score")
+    log.info("FITUR BARU: Filter support kuat + composite score + 5 sinyal terbaik")
     log.info("=" * 70)
     tickers = get_all_tickers()
     if not tickers:
         send_telegram("⚠️ Scanner Error: Gagal ambil data Bitget")
         return
     log.info(f"Total ticker: {len(tickers)}")
-    candidates = build_candidate_list(tickers)  # panggil fungsi yang sudah ada
+    candidates = build_candidate_list(tickers)
     results = []
     for i, (sym, t) in enumerate(candidates):
         try:
@@ -1072,31 +1132,32 @@ def run_scan():
         except:
             vol = 0
         if vol < CONFIG["min_vol_24h"]:
-            log.info(f"[{i+1}] {sym} — vol ${vol:,.0f} di bawah minimum")
+            log.info(f"[{i + 1}] {sym} — vol ${vol:,.0f} di bawah minimum")
             continue
-        log.info(f"[{i+1}/{len(candidates)}] {sym} (vol ${vol/1e3:.0f}K)...")
+        log.info(f"[{i + 1}/{len(candidates)}] {sym} (vol ${vol / 1e3:.0f}K)...")
         try:
             res = master_score(sym, t)
             if res:
-                log.info(f"  Composite={res['composite_score']} | support={res['support_score']} | gain T1={res['potential_gain_t1']}%")
+                log.info(f"  Composite={res['composite_score']} | support={res['support_score']} | RR={res['entry']['rr']} | gain T1={res['potential_gain_t1']}%")
                 results.append(res)
         except Exception as ex:
             log.warning(f"  Error {sym}: {ex}")
         time.sleep(CONFIG["sleep_coins"])
-    results.sort(key=lambda x: x["composite_score"], reverse=True)
+    # Urutkan berdasarkan composite score tertinggi, lalu RR (jika sama)
+    results.sort(key=lambda x: (x['composite_score'], x['entry']['rr']), reverse=True)
     log.info(f"Lolos threshold: {len(results)} coin")
     if not results:
         log.info("Tidak ada sinyal yang memenuhi syarat saat ini")
         return
-    top = results[:CONFIG["max_alerts_per_run"]]
-    if len(top) >= 2:
-        send_telegram(build_summary(top))
-        time.sleep(2)
+    top = results[:CONFIG["max_alerts_per_run"]]  # Ambil maksimal 5
+    # Kirim summary 5 terbaik
+    send_telegram(build_summary(top))
+    time.sleep(2)
     for rank, r in enumerate(top, 1):
         ok = send_telegram(build_alert(r, rank=rank))
         if ok:
             set_cooldown(r["symbol"])
-            log.info(f"✅ Alert #{rank}: {r['symbol']} Composite={r['composite_score']} Gain T1={r['potential_gain_t1']}%")
+            log.info(f"✅ Alert #{rank}: {r['symbol']} Composite={r['composite_score']} RR=1:{r['entry']['rr']} Gain T1={r['potential_gain_t1']}%")
         time.sleep(2)
     log.info(f"=== SELESAI — {len(top)} alert terkirim ===")
 
