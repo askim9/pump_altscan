@@ -2,7 +2,7 @@ name: Pre-Pump Scanner
 
 on:
   schedule:
-    - cron: '0 */2 * * *'   # setiap 2 jam sekali
+    - cron: '0 */1 * * *'   # setiap 2 jam sekali
   workflow_dispatch:
 
 permissions:
