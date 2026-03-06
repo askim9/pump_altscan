@@ -51,3 +51,4 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "chore: update scanner state [skip ci]"
             git push
+  fi
