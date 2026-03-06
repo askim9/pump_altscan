@@ -2,7 +2,7 @@ name: Pre-Pump Scanner
 
 on:
   schedule:
-    - cron: '0 */1 * * *'   # setiap 2 jam sekali
+    - cron: '*/30 * * * *'   # setiap 30 menit sekali
   workflow_dispatch:
 
 permissions:
@@ -51,4 +51,3 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "chore: update scanner state [skip ci]"
             git push
-          fi
