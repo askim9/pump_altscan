@@ -106,17 +106,25 @@ CONFIG = {
     "candle_1h":                168,
     "candle_15m":                96,
 
-    # ── Entry / SL (berbasis riset) ───────────────────────────────────────────
+    # ── Entry / SL (berbasis riset + ATR-aware) ──────────────────────────────
     # HIGH alert: entry 0.1% di atas bos_level
     "entry_bos_buffer":         0.001,
     # MEDIUM alert: entry 0.1% di atas VWAP
     "entry_vwap_buffer":        0.001,
-    # SL: 0.5% di bawah VWAP (riset: primary SL)
-    "sl_vwap_offset":           0.005,
-    # SL: 1% di bawah low terbaru (riset: secondary SL)
-    "sl_low_offset":            0.010,
-    # SL maksimum dari entry (tidak boleh lebih dari 1%)
-    "max_sl_pct":               1.0,
+    # SL dihitung dari swing low struktur (lookback 12 candle 1h = 12 jam)
+    # Bukan dari VWAP — karena untuk MEDIUM alert harga sudah jauh di atas VWAP
+    "sl_swing_lookback":        12,
+    # Buffer di bawah swing low untuk SL (0.3% = sedikit ruang noise)
+    "sl_swing_buffer":          0.003,
+    # SL minimum = 0.5x ATR di bawah entry (untuk coin low-volatility)
+    "sl_atr_multiplier_min":    0.5,
+    # SL maksimum = 2.5x ATR di bawah entry (untuk coin high-volatility)
+    # Ini mencegah SL terlalu ketat di coin ATR tinggi seperti AGLD
+    "sl_atr_multiplier_max":    2.5,
+    # Hard floor: SL tidak boleh lebih dari 8% di bawah entry (absolute max)
+    "max_sl_pct":               8.0,
+    # Hard floor minimum: SL tidak boleh kurang dari 0.5% di bawah entry
+    "min_sl_pct":               0.5,
 
     # ── Operasional ───────────────────────────────────────────────────────────
     "alert_cooldown_sec":      1800,
@@ -655,70 +663,150 @@ def calc_fib_targets(entry, candles):
 
     return round(t1, 8), round(t2, 8)
 
-def calc_entry(candles, bos_level, alert_level, vwap, price_now):
+def calc_atr_for_sl(candles, period=14):
     """
-    Entry logic berbasis riset (DIBALIK dari v13):
-
-    v13 (salah): entry di support → DI BAWAH harga → tidak pernah terkejar
-    v14 (benar): entry mengikuti arah momentum
-
-    HIGH alert (bos_up = True):
-      Entry 0.1% di atas bos_level (konfirmasi breakout sudah terjadi)
-      Riset: HIGH alert entry di atas bos_up level
-
-    MEDIUM alert:
-      Entry 0.1% di atas VWAP (konfirmasi harga di atas equilibrium)
-      Riset: MEDIUM alert entry di atas VWAP
-
-    SL (riset: primary = di bawah VWAP 0.5%, secondary = di bawah low 1%):
-      Ambil SL yang lebih tinggi dari kedua opsi (tighter = lebih aman).
-      Hard limit: SL tidak lebih dari max_sl_pct (1%) di bawah entry.
+    ATR dalam nilai absolut (bukan persen) untuk menghitung jarak SL yang realistis.
+    Digunakan terpisah dari calc_atr_pct agar tidak ada duplikasi kalkulasi.
     """
-    # Hitung entry
+    if len(candles) < period + 1:
+        return candles[-1]["close"] * 0.01  # fallback 1% jika data kurang
+    trs = []
+    for i in range(1, period + 1):
+        idx = len(candles) - i
+        if idx < 1:
+            break
+        h  = candles[idx]["high"]
+        l  = candles[idx]["low"]
+        pc = candles[idx - 1]["close"]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    return sum(trs) / len(trs) if trs else candles[-1]["close"] * 0.01
+
+def find_swing_low_sl(candles, lookback=12):
+    """
+    Cari swing low terbaru dalam lookback candle sebagai dasar SL.
+
+    Logika:
+    - Cari low terendah di lookback candle terakhir
+    - Ambil sedikit di bawahnya sebagai SL (buffer sl_swing_buffer)
+
+    Kenapa bukan VWAP?
+    - VWAP cocok untuk SL ketika entry dekat VWAP
+    - Untuk MEDIUM alert, harga bisa sudah 5-10% di atas VWAP
+    - SL dari VWAP dalam kondisi itu terlalu jauh, sehingga kalah dengan
+      hard limit dan hard limit yang flat (mis. 1%) tidak mempertimbangkan
+      volatilitas coin → SL kena noise biasa
+
+    Kenapa lookback 12 candle (12 jam)?
+    - Cukup lebar untuk menangkap struktur support terdekat
+    - Tidak terlalu jauh sehingga SL masih relevan dengan kondisi saat ini
+    """
+    n = min(lookback, len(candles) - 1)
+    if n < 2:
+        return None
+    recent_lows = [c["low"] for c in candles[-(n + 1):-1]]
+    swing_low   = min(recent_lows)
+    return swing_low * (1.0 - CONFIG["sl_swing_buffer"])
+
+def calc_entry(candles, bos_level, alert_level, vwap, price_now, atr_abs=None):
+    """
+    Entry & SL yang REALISTIS — mempertimbangkan volatilitas coin (ATR).
+
+    MASALAH v14.0 sebelumnya:
+    - SL = max(sl_from_vwap, sl_from_low) → hard limit 1%
+    - Untuk AGLDUSDT (ATR 4.87%), SL 1% = kena noise candle normal
+    - Hasilnya: langsung SL karena terlalu sempit untuk volatilitas coin itu
+
+    SOLUSI v14.1:
+    SL dihitung dari 3 kandidat, lalu divalidasi dengan ATR:
+
+    1. sl_swing = swing low 12h * (1 - buffer 0.3%)
+       → Level struktur market yang valid
+       → Kalau harga tembus ini, memang tren berubah
+
+    2. sl_atr_min = entry - (ATR * 0.5)
+       → Minimum SL agar tidak kena noise (floor)
+
+    3. sl_atr_max = entry - (ATR * 2.5)
+       → Maximum SL agar tidak terlalu lebar (ceiling)
+
+    Prioritas:
+    - Gunakan sl_swing sebagai SL utama
+    - Clamp ke [sl_atr_min, sl_atr_max] agar selalu proporsional dengan ATR
+    - Hard floor: tidak kurang dari min_sl_pct (0.5%)
+    - Hard ceiling: tidak lebih dari max_sl_pct (8%) — mencegah SL absurd
+    """
+    # ── Entry ─────────────────────────────────────────────────────────────────
     if alert_level == "HIGH":
         entry = bos_level * (1.0 + CONFIG["entry_bos_buffer"])
     else:
         entry = vwap * (1.0 + CONFIG["entry_vwap_buffer"])
 
-    # Jika entry masih di bawah harga sekarang (misalnya vwap jauh di bawah cur),
-    # gunakan harga sekarang + 0.1% sebagai minimum entry
+    # Jika entry masih di bawah harga sekarang, gunakan harga sekarang + 0.1%
     if entry < price_now:
         entry = price_now * 1.001
 
-    # Hitung SL
-    sl_from_vwap = vwap    * (1.0 - CONFIG["sl_vwap_offset"])
-    low_5h       = min(c["low"] for c in candles[-5:]) if len(candles) >= 5 else entry * 0.99
-    sl_from_low  = low_5h  * (1.0 - CONFIG["sl_low_offset"])
-    # Ambil SL tertinggi (lebih dekat ke entry = lebih konservatif / ketat)
-    sl           = max(sl_from_vwap, sl_from_low)
-    # Hard limit: tidak lebih dari max_sl_pct di bawah entry
-    sl_hard_min  = entry * (1.0 - CONFIG["max_sl_pct"] / 100.0)
-    sl           = max(sl, sl_hard_min)
+    # ── ATR absolut ──────────────────────────────────────────────────────────
+    if atr_abs is None:
+        atr_abs = calc_atr_for_sl(candles)
 
-    # Pastikan SL tidak di atas entry (kasus edge case)
+    # ── SL kandidat 1: Swing low struktur ────────────────────────────────────
+    sl_swing = find_swing_low_sl(candles, lookback=CONFIG["sl_swing_lookback"])
+    if sl_swing is None or sl_swing >= entry:
+        # Fallback jika swing low tidak valid: 1.5x ATR di bawah entry
+        sl_swing = entry - atr_abs * 1.5
+
+    # ── SL kandidat 2 & 3: Batas ATR ─────────────────────────────────────────
+    sl_atr_min = entry - atr_abs * CONFIG["sl_atr_multiplier_min"]   # floor (tidak terlalu sempit)
+    sl_atr_max = entry - atr_abs * CONFIG["sl_atr_multiplier_max"]   # ceiling (tidak terlalu lebar)
+
+    # ── Pilih SL utama dari swing, lalu clamp ke range ATR ───────────────────
+    sl = sl_swing
+    # Kalau swing SL lebih dekat dari 0.5x ATR → terlalu sempit → pakai floor
+    if sl > sl_atr_min:
+        sl = sl_atr_min
+    # Kalau swing SL lebih jauh dari 2.5x ATR → terlalu lebar → pakai ceiling
+    if sl < sl_atr_max:
+        sl = sl_atr_max
+
+    # ── Hard limits absolut ───────────────────────────────────────────────────
+    sl_hard_floor   = entry * (1.0 - CONFIG["min_sl_pct"] / 100.0)   # min 0.5% dari entry
+    sl_hard_ceiling = entry * (1.0 - CONFIG["max_sl_pct"] / 100.0)   # max 8% dari entry
+
+    # Pastikan SL tidak lebih dekat dari min_sl_pct
+    if sl > sl_hard_floor:
+        sl = sl_hard_floor
+    # Pastikan SL tidak lebih jauh dari max_sl_pct
+    if sl < sl_hard_ceiling:
+        sl = sl_hard_ceiling
+
+    # Edge case: SL tidak boleh sama atau di atas entry
     if sl >= entry:
-        sl = entry * 0.99
+        sl = entry * (1.0 - CONFIG["min_sl_pct"] / 100.0)
 
-    # Hitung target Fibonacci
+    # ── Target Fibonacci ──────────────────────────────────────────────────────
     t1, t2 = calc_fib_targets(entry, candles)
 
     risk   = entry - sl
     reward = t1 - entry
     rr     = round(reward / risk, 1) if risk > 0 else 0.0
 
+    sl_pct = round((entry - sl) / entry * 100, 2)
+
     return {
         "entry":          round(entry, 8),
         "sl":             round(sl, 8),
-        "sl_pct":         round((entry - sl) / entry * 100, 2),
+        "sl_pct":         sl_pct,
         "t1":             t1,
         "t2":             t2,
         "rr":             rr,
         "vwap":           round(vwap, 8),
         "bos_level":      round(bos_level, 8),
         "alert_level":    alert_level,
-        # Gain dihitung dari ENTRY (bukan dari harga sekarang seperti di v13)
         "gain_t1_pct":    round((t1 - entry) / entry * 100, 1),
         "gain_t2_pct":    round((t2 - entry) / entry * 100, 1),
+        "atr_abs":        round(atr_abs, 8),
+        "sl_method":      "swing+ATR",
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -909,7 +997,8 @@ def master_score(symbol, ticker):
         pump_type   = "VWAP Momentum"
 
     # ── Hitung entry & target ────────────────────────────────────────────────
-    entry_data = calc_entry(c1h, bos_level, alert_level, vwap, price_now)
+    atr_abs    = calc_atr_for_sl(c1h)
+    entry_data = calc_entry(c1h, bos_level, alert_level, vwap, price_now, atr_abs=atr_abs)
 
     if score >= CONFIG["min_score_alert"]:
         return {
@@ -975,7 +1064,8 @@ def build_alert(r, rank=None):
     msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"📍 <b>ENTRY ({e['alert_level']})</b>\n"
     msg += f"  Entry      : ${e['entry']}\n"
-    msg += f"  SL         : ${e['sl']} (-{e['sl_pct']:.2f}%)\n"
+    msg += f"  SL         : ${e['sl']} (-{e['sl_pct']:.2f}%) [ATR±swing]\n"
+    msg += f"  ATR 1h     : ${e['atr_abs']:.6g} ({r['atr_pct']:.2f}%)\n"
     msg += f"  T1 (1.272) : ${e['t1']} (+{e['gain_t1_pct']:.1f}% dari entry)\n"
     msg += f"  T2 (1.618) : ${e['t2']} (+{e['gain_t2_pct']:.1f}% dari entry)\n"
     msg += f"  R/R        : 1:{e['rr']}\n"
