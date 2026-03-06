@@ -36,19 +36,18 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python scanner.py
 
-      - name: Save state files
-        if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          for file in cooldown.json funding.json; do
-            if [ -f "$file" ]; then
-              git add "$file"
-            fi
-          done
-          
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update scanner state [skip ci]"
-            git push
-  fi
+     - name: Save state
+  run: |
+    git config user.name "github-actions[bot]"
+    git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    for file in cooldown.json funding.json; do
+      if [ -f "$file" ]; then
+        git add "$file"
+      fi
+    done
+
+    if ! git diff --cached --quiet; then
+      git commit -m "chore: update scanner state [skip ci]"
+      git push
+    fi
