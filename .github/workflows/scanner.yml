@@ -2,7 +2,7 @@ name: Pre-Pump Scanner
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # setiap 30 menit sekali
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -20,15 +20,12 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'  # gunakan 3.12 agar kompatibel dengan pandas-ta versi terbaru
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Pasang paket dasar
-          pip install numpy pandas requests python-dotenv
-          # Gunakan flag --pre karena pandas-ta 0.4.x masih berstatus pre-release (beta)
-          pip install pandas-ta --pre
+          pip install numpy requests python-dotenv
 
       - name: Run scanner
         env:
@@ -51,3 +48,4 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "chore: update scanner state [skip ci]"
             git push
+          fi
