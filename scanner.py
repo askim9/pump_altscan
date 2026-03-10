@@ -1,25 +1,23 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  QUANTITATIVE PUMP DETECTION SCANNER v27 — PRE-PUMP INTELLIGENCE EDITION    ║
+║  QUANTITATIVE PUMP DETECTION SCANNER v28 — PRE-PUMP ENERGY ENGINE           ║
 ║                                                                              ║
-║  INHERITED FROM v26 (all bug fixes + performance confirmed working):        ║
-║    pump_prob_v22 ✅ | vol log ✅ | crash protection ✅ | HTTP session ✅     ║
-║    sleep 0.15s ✅ | EMA/vol cache reuse ✅ | TOP 5 output ✅                 ║
+║  INHERITED FROM v27 (7 pre-pump intelligence modules confirmed working):    ║
+║    Vol4x +20 ✅ | OI5% +20 ✅ | L2-OB +15 ✅ | Whale +15 ✅                ║
+║    MomAccel +10 ✅ | ATRbreak +10 ✅ | SweepUP +10 ✅                        ║
 ║                                                                              ║
-║  NEW v27 — 7 Pre-Pump Intelligence Modules:                                 ║
-║    Module 1 — Momentum Acceleration MTF (5m vs 1h)          → +10           ║
-║    Module 2 — Volume Expansion Extreme (>4× baseline)        → +20           ║
-║    Module 3 — OI Expansion (>5% growth = new money in)       → +20           ║
-║    Module 4 — ATR Breakout (price > EMA20 + 1.5×ATR)        → +10           ║
-║    Module 5 — Real L2 Orderbook (Bitget merge-depth, live)   → +15/+7        ║
-║    Module 6 — Whale Accumulation (large buy candles ≥$15K)   → +15           ║
-║    Module 7 — Upward Liquidity Sweep (short stop-hunt >1%)   → +10           ║
-║                                                                              ║
-║  pump_probability_score (0-90): aggregated v27 composite score              ║
-║  Boost: pump_prob += pump_probability_score × 0.15 (max +13.5pp, cap 95%)  ║
-║  Ranking: pump_score_v27 → rank_value → mm_score → vol_z → ob_imbalance    ║
-║                                                                              ║
-║  TARGET: detect 8–30% pumps vs current 2–4% sensitivity                    ║
+║  NEW v28 — Pre-Pump Energy Engine (§12 simplified alert format):            ║
+║    Compression Score    (BBW<3.5%+ATR%<2.5%+range 1h/4h)    0–30          ║
+║    Absorption Score     (vol>1.5× + price<1.5%)              0–20          ║
+║    OB Support Score     (L2 bid/ask ≥ 1.5/1.2, reused)       0–20          ║
+║    Wick Sweep Score     (lower_wick≥2×body, bullish candle)   0–15          ║
+║    Supply Removal Score (ask depth drop ≥5%, cross-scan)     0–15          ║
+║    ─────────────────────────────────────────────────────────────────────    ║
+║    pre_pump_energy_score   sum → 0–100                                       ║
+║    pump_probability_v28    energy + expansion runway                         ║
+║    Expansion gate          < 8% to R1 → penalise –15                        ║
+║    Telegram               build_pre_pump_alert() if energy ≥ 60             ║
+║    Ranking                energy_v28 → pump_v27 → score × prob              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -57,13 +55,13 @@ _ch.setFormatter(_log_fmt)
 _log_root.addHandler(_ch)
 
 _fh = _lh.RotatingFileHandler(
-    "/tmp/scanner_v27.log", maxBytes=10 * 1024 * 1024, backupCount=3
+    "/tmp/scanner_v28.log", maxBytes=10 * 1024 * 1024, backupCount=3
 )
 _fh.setFormatter(_log_fmt)
 _log_root.addHandler(_fh)
 
 log = logging.getLogger(__name__)
-log.info("Scanner v27 — log aktif: /tmp/scanner_v27.log")
+log.info("Scanner v28 — log aktif: /tmp/scanner_v28.log")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ⚙️  CONFIG
@@ -597,6 +595,47 @@ CONFIG = {
 
     # pump_probability_score cap
     "v27_pump_score_cap":        90,     # max pump_probability_score (0-100)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PRE-PUMP ENGINE v28 CONFIG
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # Volatility compression thresholds
+    "v28_bbw_tight":             0.035,  # BB width < 3.5% = tight compression
+    "v28_atr_pct_tight":         0.025,  # ATR% < 2.5%     = low volatility
+    "v28_range_1h_tight":        0.030,  # 1h high-low range < 3%
+    "v28_range_4h_tight":        0.060,  # 4h high-low range < 6%
+    "v28_compression_score_max": 30,     # cap on compression score
+
+    # Volume absorption thresholds
+    "v28_absorption_vol_strong": 1.5,   # vol ratio > 1.5 = strong absorption
+    "v28_absorption_vol_mild":   1.2,   # vol ratio > 1.2 = mild absorption
+    "v28_absorption_price_max":  0.015, # price change < 1.5% during absorption
+
+    # Orderbook support thresholds (reuses v27 L2 OB result)
+    "v28_ob_support_strong":     1.5,   # bid/ask > 1.5 = strong support floor
+    "v28_ob_support_mild":       1.2,   # bid/ask > 1.2 = mild support
+
+    # Wick sweep thresholds (stop-hunt detection)
+    "v28_wick_ratio_min":        2.0,   # lower wick must be 2× the body
+
+    # Supply removal (ask-side liquidity drop)
+    "v28_supply_ask_drop_pct":   0.05,  # 5% drop in ask depth = meaningful removal
+
+    # Pre-pump energy gate
+    "v28_energy_gate":           60,    # reject if pre_pump_energy_score < 60
+
+    # Expansion potential gate
+    "v28_expansion_min":         0.08,  # reject if nearest resistance < 8% away
+    "v28_expansion_max":         0.30,  # preferred ceiling
+
+    # Fixed TP multipliers
+    "v28_tp1_mult":              1.08,  # +8%
+    "v28_tp2_mult":              1.15,  # +15%
+    "v28_tp3_mult":              1.25,  # +25%
+
+    # Weight of pre_pump_energy in blended score
+    "v28_pre_pump_score_weight": 0.20,
 }
 
 MANUAL_EXCLUDE = set()
@@ -708,6 +747,8 @@ def add_funding_snapshot(symbol, funding_rate):
 #  💾  OI SNAPSHOTS — FIX v18: PERSISTEN KE DISK
 # ══════════════════════════════════════════════════════════════════════════════
 _oi_snapshot = {}
+# PRE-PUMP ENGINE v28: ask-side liquidity snapshot for supply removal detection
+_ob_ask_snapshot = {}   # {symbol: {"ts": float, "ask_vol": float}}
 
 def load_oi_snapshots():
     """
@@ -3811,6 +3852,520 @@ def calc_pump_probability_score_v27(
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  🔬  PRE-PUMP ENGINE v28 — VOLATILITY COMPRESSION + ABSORPTION FRAMEWORK
+#
+#  7 modular helper functions + 1 aggregator + 1 entry model.
+#  All functions are ADDITIVE — no hard rejects except the two explicit gates
+#  (pre_pump_energy_score < 60 and expansion_potential < 8%).
+#  Every function accepts pre-computed values to avoid recalculation.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def calc_compression_score_v28(c1h, c4h, bbw, atr_pct):
+    """
+    PRE-PUMP ENGINE v28 — Volatility Compression Score (0–30).
+
+    Detects the coiled-spring state before explosive expansion.
+    Uses both absolute thresholds (BB width, ATR%) and range compression
+    across timeframes (1h range vs 4h range).
+
+    Reuses already-computed bbw and atr_pct from master_score —
+    no recalculation of indicators.
+
+    Returns dict with compression_score, conditions, label.
+    """
+    bbw_tight   = bbw   < CONFIG.get("v28_bbw_tight",     0.035)
+    atr_tight   = atr_pct < CONFIG.get("v28_atr_pct_tight", 0.025)
+
+    if bbw_tight and atr_tight:
+        base_score = 20
+    elif bbw_tight or atr_tight:
+        base_score = 10
+    else:
+        base_score = 0
+
+    # Range compression bonus (multi-TF confirmation)
+    range_bonus = 0
+    range_1h_ok = False
+    range_4h_ok = False
+    if len(c1h) >= 1:
+        c = c1h[-1]
+        mid = c["close"] if c["close"] > 0 else 1.0
+        range_1h = (c["high"] - c["low"]) / mid
+        range_1h_ok = range_1h < CONFIG.get("v28_range_1h_tight", 0.030)
+    if c4h and len(c4h) >= 1:
+        c4 = c4h[-1]
+        mid4 = c4["close"] if c4["close"] > 0 else 1.0
+        range_4h = (c4["high"] - c4["low"]) / mid4
+        range_4h_ok = range_4h < CONFIG.get("v28_range_4h_tight", 0.060)
+
+    if range_1h_ok and range_4h_ok:
+        range_bonus = 10
+
+    cap = CONFIG.get("v28_compression_score_max", 30)
+    compression_score = min(base_score + range_bonus, cap)
+
+    parts = []
+    if bbw_tight:    parts.append(f"BBW={bbw*100:.2f}%<3.5%")
+    if atr_tight:    parts.append(f"ATR%={atr_pct*100:.2f}%<2.5%")
+    if range_1h_ok:  parts.append("1h range<3%")
+    if range_4h_ok:  parts.append("4h range<6%")
+
+    if compression_score >= 20:
+        label = f"🗜️ Compression TIGHT v28: {compression_score}pts [{' | '.join(parts)}]"
+    elif compression_score > 0:
+        label = f"Compression MILD v28: {compression_score}pts [{' | '.join(parts)}]"
+    else:
+        label = f"No compression v28: BBW={bbw*100:.2f}%, ATR={atr_pct*100:.2f}%"
+
+    return {
+        "compression_score": compression_score,
+        "bbw_tight":         bbw_tight,
+        "atr_tight":         atr_tight,
+        "range_1h_ok":       range_1h_ok,
+        "range_4h_ok":       range_4h_ok,
+        "label":             label,
+    }
+
+
+def calc_absorption_score_v28(c1h):
+    """
+    PRE-PUMP ENGINE v28 — Volume Absorption Score (0–20).
+
+    Detects whale stealth accumulation: high volume but price barely moves.
+    Classic sign that large buyers are absorbing all available supply.
+
+    Volume ratio uses 20-candle baseline (aligned with existing vol_spike).
+    Price change measured on last candle body.
+
+    Returns dict with absorption_score, vol_ratio, price_chg, label.
+    """
+    window = 20
+    null = {"absorption_score": 0, "vol_ratio": 0.0, "price_chg": 0.0,
+            "label": "Absorption v28: data kurang"}
+    if len(c1h) < window + 1:
+        return null
+
+    cur_vol  = c1h[-1].get("volume_usd", 0)
+    avg_vol  = (sum(c.get("volume_usd", 0) for c in c1h[-(window + 1):-1]) / window
+                if window > 0 else cur_vol)
+    if avg_vol <= 0:
+        return null
+
+    vol_ratio  = cur_vol / avg_vol
+    c          = c1h[-1]
+    price_chg  = (abs(c["close"] - c["open"]) / c["open"]
+                  if c["open"] > 0 else 0.0)
+
+    strong_v = CONFIG.get("v28_absorption_vol_strong", 1.5)
+    mild_v   = CONFIG.get("v28_absorption_vol_mild",   1.2)
+    p_max    = CONFIG.get("v28_absorption_price_max",  0.015)
+
+    if vol_ratio >= strong_v and price_chg < p_max:
+        absorption_score = 20
+        label = (f"🐳 Absorption STRONG v28: vol {vol_ratio:.1f}× avg, "
+                 f"price only {price_chg*100:.2f}% — whale buy wall (+20)")
+    elif vol_ratio >= mild_v:
+        absorption_score = 10
+        label = f"📊 Absorption MILD v28: vol {vol_ratio:.1f}× avg (+10)"
+    else:
+        absorption_score = 0
+        label = f"No absorption v28: vol {vol_ratio:.1f}× avg"
+
+    return {
+        "absorption_score": absorption_score,
+        "vol_ratio":        round(vol_ratio, 2),
+        "price_chg":        round(price_chg * 100, 3),
+        "label":            label,
+    }
+
+
+def calc_ob_support_score_v28(ob_imbal_v27_data):
+    """
+    PRE-PUMP ENGINE v28 — Orderbook Support Score (0–20).
+
+    Derives support floor score from the already-fetched v27 L2 OB data.
+    No additional API call — reuses _v27_ob_imbal from master_score.
+    Slightly different threshold from v27 (1.5 vs 1.6 strong).
+
+    Returns dict with orderbook_support_score, ratio, label.
+    """
+    ratio = ob_imbal_v27_data.get("ratio", 1.0)
+    source = ob_imbal_v27_data.get("source", "fallback")
+
+    strong = CONFIG.get("v28_ob_support_strong", 1.5)
+    mild   = CONFIG.get("v28_ob_support_mild",   1.2)
+
+    if ratio >= strong:
+        orderbook_support_score = 20
+        label = (f"📚 OB Support STRONG v28: bid/ask={ratio:.2f} ≥ {strong} "
+                 f"[{source}] — deep buy floor (+20)")
+    elif ratio >= mild:
+        orderbook_support_score = 10
+        label = (f"📊 OB Support MILD v28: bid/ask={ratio:.2f} ≥ {mild} "
+                 f"[{source}] (+10)")
+    else:
+        orderbook_support_score = 0
+        label = f"OB Support v28: bid/ask={ratio:.2f} — no floor"
+
+    return {
+        "orderbook_support_score": orderbook_support_score,
+        "ratio":                   round(ratio, 3),
+        "label":                   label,
+    }
+
+
+def calc_wick_sweep_score_v28(c1h):
+    """
+    PRE-PUMP ENGINE v28 — Liquidity Sweep Score via Wick Ratio (0–15).
+
+    Detects stop-loss hunting pattern: long lower wick (≥2× body) on a
+    bullish candle = market maker swept longs, then price recovered.
+    This is a classic precursor to explosive upward moves.
+
+    Checks last 3 candles (not just the latest) to catch recent sweeps.
+
+    Returns dict with liquidity_sweep_score, wick_ratio, label.
+    """
+    null = {"liquidity_sweep_score": 0, "wick_ratio": 0.0,
+            "label": "Wick sweep v28: data kurang"}
+    if len(c1h) < 3:
+        return null
+
+    min_ratio = CONFIG.get("v28_wick_ratio_min", 2.0)
+    score_val = 15
+
+    # Check the last 3 candles — catch sweeps that happened recently
+    for c in reversed(c1h[-3:]):
+        body       = abs(c["close"] - c["open"])
+        lower_wick = c["open"] - c["low"] if c["close"] >= c["open"] else c["close"] - c["low"]
+        if body <= 0:
+            continue
+        wick_ratio = lower_wick / body
+        is_bullish = c["close"] >= c["open"]
+
+        if wick_ratio >= min_ratio and is_bullish:
+            label = (f"🎯 Wick Sweep v28: lower wick {wick_ratio:.1f}× body "
+                     f"on bullish candle — stop hunt (+{score_val})")
+            return {
+                "liquidity_sweep_score": score_val,
+                "wick_ratio":            round(wick_ratio, 2),
+                "label":                 label,
+            }
+
+    return {"liquidity_sweep_score": 0, "wick_ratio": 0.0,
+            "label": "No wick sweep v28 in last 3 candles"}
+
+
+def calc_supply_removal_score_v28(symbol, ob_imbal_v27_data):
+    """
+    PRE-PUMP ENGINE v28 — Supply Removal Score (0–15).
+
+    Detects when ask-side liquidity is being removed (sellers pulling
+    their orders), while bid side holds or grows. This is the classic
+    pre-pump supply exhaustion signature.
+
+    Uses _ob_ask_snapshot to compare current vs previous ask volume.
+    On first scan: stores snapshot, returns 0. On subsequent scans:
+    compares and scores if ask_vol dropped ≥ 5%.
+
+    No extra API call — reuses ask_vol from the v27 L2 OB result.
+
+    Returns dict with supply_removal_score, ask_drop_pct, label.
+    """
+    global _ob_ask_snapshot
+    null = {"supply_removal_score": 0, "ask_drop_pct": 0.0,
+            "label": "Supply removal v28: first scan"}
+
+    ask_vol_now = ob_imbal_v27_data.get("ask_vol", 0.0)
+    bid_vol_now = ob_imbal_v27_data.get("bid_vol", 0.0)
+
+    if ask_vol_now <= 0:
+        return null
+
+    prev = _ob_ask_snapshot.get(symbol)
+    # Always update snapshot for next scan
+    _ob_ask_snapshot[symbol] = {"ts": time.time(), "ask_vol": ask_vol_now,
+                                 "bid_vol": bid_vol_now}
+
+    if prev is None:
+        return null
+
+    ask_vol_prev = prev.get("ask_vol", 0.0)
+    if ask_vol_prev <= 0:
+        return null
+
+    ask_drop_pct  = (ask_vol_prev - ask_vol_now) / ask_vol_prev
+    bid_change    = bid_vol_now - prev.get("bid_vol", bid_vol_now)
+
+    drop_thresh = CONFIG.get("v28_supply_ask_drop_pct", 0.05)
+
+    if ask_drop_pct >= drop_thresh and bid_change >= 0:
+        supply_removal_score = 15
+        label = (f"🔥 Supply Removal v28: ask dropped {ask_drop_pct*100:.1f}%, "
+                 f"bid {'up' if bid_change > 0 else 'stable'} — supply exhaustion (+15)")
+    elif ask_drop_pct > 0:
+        supply_removal_score = 0
+        label = f"Supply change v28: ask {ask_drop_pct*100:.1f}% drop (need >{drop_thresh*100:.0f}%)"
+    else:
+        supply_removal_score = 0
+        label = f"Supply v28: ask growing ({ask_drop_pct*100:.1f}%)"
+
+    return {
+        "supply_removal_score": supply_removal_score,
+        "ask_drop_pct":         round(ask_drop_pct * 100, 2),
+        "bid_change":           round(bid_change, 0),
+        "label":                label,
+    }
+
+
+def calc_expansion_potential_v28(price_now, sr):
+    """
+    PRE-PUMP ENGINE v28 — Expansion Potential (distance to resistance).
+
+    Measures available upside runway before the nearest resistance wall.
+    A coin coiled under a major resistance has limited expansion potential.
+    A coin with 8–30% clear air above has explosive potential.
+
+    Uses already-computed calc_support_resistance() result.
+    Returns expansion_potential (0.0-1.0 decimal) and gate status.
+    """
+    null = {"expansion_potential": 0.0, "nearest_resistance": None,
+            "gate_pass": True,   # pass if no resistance data (benefit of doubt)
+            "label": "Expansion v28: no resistance data"}
+
+    if not sr or not sr.get("resistance"):
+        return null
+
+    nearest = sr.get("nearest_res")
+    if nearest is None:
+        return null
+
+    res_price = nearest["level"]
+    if res_price <= price_now or price_now <= 0:
+        return null
+
+    expansion_potential = (res_price - price_now) / price_now
+    min_exp = CONFIG.get("v28_expansion_min", 0.08)
+    max_exp = CONFIG.get("v28_expansion_max", 0.30)
+    gate_pass = expansion_potential >= min_exp
+
+    if expansion_potential >= min_exp:
+        zone = "SWEET SPOT" if expansion_potential <= max_exp else "EXTENDED"
+        label = (f"📐 Expansion v28: {expansion_potential*100:.1f}% to R1 "
+                 f"{_fmt_price(res_price)} — {zone}")
+    else:
+        label = (f"⚠️ Expansion LOW v28: only {expansion_potential*100:.1f}% to R1 "
+                 f"(need ≥{min_exp*100:.0f}%) — limited upside")
+
+    return {
+        "expansion_potential": round(expansion_potential, 4),
+        "nearest_resistance":  round(res_price, 8),
+        "gate_pass":           gate_pass,
+        "label":               label,
+    }
+
+
+def calc_pump_window_v28(compression_score, absorption_score):
+    """
+    PRE-PUMP ENGINE v28 — Pump Window Estimation.
+
+    Estimates the likely time window before price expansion begins,
+    based on how tight the compression and absorption are.
+
+    Returns dict with pump_window_label, min_minutes, max_minutes.
+    """
+    if compression_score > 20 and absorption_score >= 15:
+        lo, hi = 30,  90
+        urgency = "⚡ IMMINENT"
+    elif compression_score > 15:
+        lo, hi = 60,  180
+        urgency = "🕐 SOON"
+    else:
+        lo, hi = 90,  240
+        urgency = "🕑 FORMING"
+
+    label = f"{urgency} Pump Window v28: {lo}–{hi} min"
+    return {
+        "pump_window_label": label,
+        "min_minutes":       lo,
+        "max_minutes":       hi,
+        "urgency":           urgency,
+    }
+
+
+def calc_pre_pump_energy_v28(
+        compression_data, absorption_data, ob_support_data,
+        wick_sweep_data, supply_removal_data):
+    """
+    PRE-PUMP ENGINE v28 — Aggregate Pre-Pump Energy Score (0–100).
+
+    Sums the five component scores:
+        compression_score      0–30
+        absorption_score       0–20
+        orderbook_support_score 0–20
+        liquidity_sweep_score  0–15
+        supply_removal_score   0–15
+        ─────────────────────────────
+        Max raw total          100
+
+    Gate: if pre_pump_energy_score < 60 → gate_pass = False.
+    Caller decides whether to hard-reject or soft-penalise.
+
+    Returns dict with pre_pump_energy_score, components, gate_pass, label.
+    """
+    # PRE-PUMP ENGINE v28
+    compression_score       = compression_data.get("compression_score",       0)
+    absorption_score        = absorption_data.get("absorption_score",          0)
+    orderbook_support_score = ob_support_data.get("orderbook_support_score",   0)
+    liquidity_sweep_score   = wick_sweep_data.get("liquidity_sweep_score",     0)
+    supply_removal_score    = supply_removal_data.get("supply_removal_score",  0)
+
+    pre_pump_energy_score = min(100, (
+        compression_score
+        + absorption_score
+        + orderbook_support_score
+        + liquidity_sweep_score
+        + supply_removal_score
+    ))
+
+    gate    = CONFIG.get("v28_energy_gate", 60)
+    gate_pass = pre_pump_energy_score >= gate
+
+    active = []
+    if compression_score  > 0: active.append(f"Compress({compression_score})")
+    if absorption_score   > 0: active.append(f"Absorb({absorption_score})")
+    if orderbook_support_score > 0: active.append(f"OB({orderbook_support_score})")
+    if liquidity_sweep_score   > 0: active.append(f"Sweep({liquidity_sweep_score})")
+    if supply_removal_score    > 0: active.append(f"Supply({supply_removal_score})")
+
+    tag = " + ".join(active) if active else "none"
+    if gate_pass:
+        label = f"🚀 Pre-Pump Energy v28: {pre_pump_energy_score}/100 [{tag}]"
+    else:
+        label = f"Pre-Pump Energy v28: {pre_pump_energy_score}/100 < {gate} gate [{tag}]"
+
+    return {
+        "pre_pump_energy_score":    pre_pump_energy_score,
+        "compression_score":        compression_score,
+        "absorption_score":         absorption_score,
+        "orderbook_support_score":  orderbook_support_score,
+        "liquidity_sweep_score":    liquidity_sweep_score,
+        "supply_removal_score":     supply_removal_score,
+        "gate_pass":                gate_pass,
+        "active_components":        active,
+        "label":                    label,
+    }
+
+
+def calc_pump_probability_v28(pre_pump_energy_score, expansion_potential):
+    """
+    PRE-PUMP ENGINE v28 — Final Pump Probability (0–100%).
+
+    Formula (spec §11):
+        pump_probability = min(100,
+            pre_pump_energy_score + expansion_potential * 100 * 0.5)
+
+    This blends the compression/absorption energy with the available
+    price runway to the nearest resistance.
+
+    Returns dict with pump_probability, label.
+    """
+    # PRE-PUMP ENGINE v28
+    exp_contrib   = expansion_potential * 100 * 0.5
+    pump_probability = min(100.0, pre_pump_energy_score + exp_contrib)
+
+    if pump_probability >= 80:
+        label = f"🔥 Pump Probability v28: {pump_probability:.0f}%"
+    elif pump_probability >= 60:
+        label = f"📈 Pump Probability v28: {pump_probability:.0f}%"
+    else:
+        label = f"Pump Probability v28: {pump_probability:.0f}%"
+
+    return {
+        "pump_probability":  round(pump_probability, 1),
+        "energy_contrib":    round(pre_pump_energy_score, 1),
+        "expansion_contrib": round(exp_contrib, 1),
+        "label":             label,
+    }
+
+
+def build_pre_pump_alert(r, rank=None):
+    """
+    PRE-PUMP ENGINE v28 — Simplified Pre-Pump Telegram Alert.
+
+    Sends a clean, actionable message focused on the coin's
+    pre-pump setup quality. Replaces the verbose build_alert() output
+    when pre_pump_energy_score >= 60 and the coin is a strong candidate.
+
+    Format spec (§12):
+        PRE-PUMP ALERT
+        Coin | Score | Pump Probability
+        Entry | SL | TP1 | TP2 | TP3
+        Pump Window
+        Active signals
+
+    Falls back gracefully if any field is missing.
+    """
+    sym     = r.get("symbol", "?")
+    price   = r.get("price",  0.0)
+    ppe_d   = r.get("v28_pre_pump_energy",    {})
+    exp_d   = r.get("v28_expansion_potential", {})
+    pp_d    = r.get("v28_pump_probability",    {})
+    pw_d    = r.get("v28_pump_window",         {})
+
+    ppe     = ppe_d.get("pre_pump_energy_score", 0)
+    pp      = pp_d.get("pump_probability",       0.0)
+    pw_lbl  = pw_d.get("pump_window_label",      "—")
+    urgency = pw_d.get("urgency",                "")
+
+    # Entry / SL / TP from pre-pump model (v28 fixed multipliers)
+    e_data  = r.get("entry", {})
+    entry   = e_data.get("entry", price)
+    sl      = e_data.get("sl",    price * 0.94)
+
+    tp1_m   = CONFIG.get("v28_tp1_mult", 1.08)
+    tp2_m   = CONFIG.get("v28_tp2_mult", 1.15)
+    tp3_m   = CONFIG.get("v28_tp3_mult", 1.25)
+    tp1     = round(entry * tp1_m, 8)
+    tp2     = round(entry * tp2_m, 8)
+    tp3     = round(entry * tp3_m, 8)
+
+    sl_pct  = (entry - sl)  / entry * 100 if entry > 0 else 0.0
+    t1_pct  = (tp1   - entry) / entry * 100
+    t2_pct  = (tp2   - entry) / entry * 100
+    t3_pct  = (tp3   - entry) / entry * 100
+
+    # Active signal names
+    comps = ppe_d.get("active_components", [])
+    exp_potential = exp_d.get("expansion_potential", 0.0)
+    expansion_str = (f"{exp_potential*100:.1f}%" if exp_potential > 0 else "—")
+
+    rank_str = f"#{rank}" if rank is not None else ""
+    score    = r.get("score", 0)
+
+    msg  = f"🚀 <b>PRE-PUMP ALERT {rank_str}</b>\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"<b>Coin :</b> <code>{sym}</code>  ({r.get('chg_24h', 0):+.1f}% 24h)\n"
+    msg += f"<b>Score:</b> {score}  |  <b>Energy:</b> {ppe}/100\n"
+    msg += f"<b>Pump Prob:</b> <b>{pp:.0f}%</b>  |  Runway: {expansion_str}\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"<b>📍 Entry :</b> <code>{_fmt_price(entry)}</code>\n"
+    msg += f"<b>🛑 SL    :</b> <code>{_fmt_price(sl)}</code>  (-{sl_pct:.2f}%)\n"
+    msg += f"<b>🎯 TP1   :</b> <code>{_fmt_price(tp1)}</code>  (+{t1_pct:.0f}%)\n"
+    msg += f"<b>🎯 TP2   :</b> <code>{_fmt_price(tp2)}</code>  (+{t2_pct:.0f}%)\n"
+    msg += f"<b>🎯 TP3   :</b> <code>{_fmt_price(tp3)}</code>  (+{t3_pct:.0f}%)\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"<b>⏱ Pump Window:</b> {pw_lbl}\n"
+    if comps:
+        msg += "<b>Signals:</b>\n"
+        for c in comps:
+            msg += f"  • {c}\n"
+    msg += f"\n<i>Scanner v28 | {utc_now()} | ⚠️ Bukan financial advice</i>"
+    return msg
+
+
 
 def calc_entry_v19(candles, vwap, price_now, atr_abs_val, market_regime, sr,
                    rsi, buy_ratio, vol_ratio, price_pos, alert_level, bos_level,
@@ -4775,6 +5330,34 @@ def master_score(symbol, ticker):
         _v27_atr_break, _v27_ob_imbal, _v27_whale_accum, _v27_liq_sweep_up
     )
 
+    # ── PRE-PUMP ENGINE v28 — Compression / Absorption framework ─────────────
+    # All inputs are already-computed variables — zero recalculation.
+    # Performance: heavy metrics (BBW, ATR, S/R, L2 OB) computed ONCE above.
+    _v28_compress   = calc_compression_score_v28(c1h, c4h, bbw, atr_pct)
+    _v28_absorb     = calc_absorption_score_v28(c1h)
+    _v28_ob_sup     = calc_ob_support_score_v28(_v27_ob_imbal)   # reuses v27 L2 data
+    _v28_wick_sweep = calc_wick_sweep_score_v28(c1h)
+    _v28_supply_rem = calc_supply_removal_score_v28(symbol, _v27_ob_imbal)
+
+    # Aggregate pre-pump energy
+    _v28_energy     = calc_pre_pump_energy_v28(
+        _v28_compress, _v28_absorb, _v28_ob_sup,
+        _v28_wick_sweep, _v28_supply_rem
+    )
+
+    # Expansion potential (reuses already-computed sr)
+    _v28_expansion  = calc_expansion_potential_v28(price_now, sr)
+
+    # Pump window and final probability
+    _v28_pump_window = calc_pump_window_v28(
+        _v28_energy["compression_score"],
+        _v28_energy["absorption_score"]
+    )
+    _v28_pump_prob  = calc_pump_probability_v28(
+        _v28_energy["pre_pump_energy_score"],
+        _v28_expansion["expansion_potential"]
+    )
+
 
     # Set energy.is_strong jika funding negatif
     if energy["is_buildup"] and fstats.get("current", 1) <= 0:
@@ -5405,6 +5988,57 @@ def master_score(symbol, ticker):
         signals.append(_v27_pump_score_data["label"])
 
     # ══════════════════════════════════════════════════════════════════════════
+    #  SCORING v28 — PRE-PUMP ENERGY BONUSES
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # Add component bonuses to heuristic score
+    # PRE-PUMP ENGINE v28
+    if _v28_energy["compression_score"] > 0:
+        score += _v28_energy["compression_score"]
+        signals.append(_v28_compress["label"])
+
+    if _v28_energy["absorption_score"] > 0:
+        score += _v28_energy["absorption_score"]
+        signals.append(_v28_absorb["label"])
+
+    if _v28_energy["orderbook_support_score"] > 0:
+        score += _v28_energy["orderbook_support_score"]
+        signals.append(_v28_ob_sup["label"])
+
+    if _v28_energy["liquidity_sweep_score"] > 0:
+        score += _v28_energy["liquidity_sweep_score"]
+        signals.append(_v28_wick_sweep["label"])
+
+    if _v28_energy["supply_removal_score"] > 0:
+        score += _v28_energy["supply_removal_score"]
+        signals.append(_v28_supply_rem["label"])
+
+    # Pre-pump energy label (always show if any component fired)
+    if _v28_energy["pre_pump_energy_score"] > 0:
+        signals.append(_v28_energy["label"])
+
+    # Expansion potential label
+    if _v28_expansion["expansion_potential"] > 0:
+        signals.append(_v28_expansion["label"])
+
+    # Pump probability label
+    if _v28_pump_prob["pump_probability"] >= 50:
+        signals.append(_v28_pump_prob["label"])
+
+    # ── PRE-PUMP ENGINE v28 GATES ─────────────────────────────────────────────
+    # Gate A: Expansion potential < 8% → penalise -15 (soft, not hard reject)
+    # Applying as penalty keeps the funnel consistent; hard-reject would be too
+    # aggressive since many coins have no clean S/R above.
+    if (_v28_expansion["expansion_potential"] > 0
+            and not _v28_expansion["gate_pass"]):
+        _exp_penalty = -15
+        score += _exp_penalty
+        log.debug(
+            f"  {symbol}: Expansion {_v28_expansion['expansion_potential']*100:.1f}%"
+            f" < 8% — penalti {_exp_penalty}"
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
     #  ALERT LEVEL v18 — feature-based probability + timing ETA
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -5439,6 +6073,14 @@ def master_score(symbol, ticker):
         + mm_score_data["mm_score"]        * _mw
     )
 
+    # v28: incorporate pre_pump_energy_score into blended score
+    # Weight: 20% of energy score, additive (does not displace existing weights)
+    _v28_energy_contrib = round(
+        _v28_energy["pre_pump_energy_score"]
+        * CONFIG.get("v28_pre_pump_score_weight", 0.20), 1
+    )
+    blended_score = round(blended_score + _v28_energy_contrib)
+
     # Pump probability: blend sigmoid from MM score (70%) + legacy logistic (30%)
     pump_prob_v23  = calc_pump_probability_v23(mm_score_data["mm_score"])
     pump_prob_leg  = calc_pump_probability_v19(blended_score)
@@ -5447,7 +6089,9 @@ def master_score(symbol, ticker):
     # they boost the final pump_prob by up to 15 percentage points (capped at 95)
     _v27_ps        = _v27_pump_score_data["pump_probability_score"]
     _v27_boost     = round(_v27_ps * 0.15, 1)   # max +13.5pp at score=90
-    pump_prob      = min(round(pump_prob_base + _v27_boost, 1), 95.0)
+    # v28: also incorporate v28 pump_probability (max +10pp additional boost)
+    _v28_pp_boost  = round(_v28_pump_prob["pump_probability"] * 0.10, 1)
+    pump_prob      = min(round(pump_prob_base + _v27_boost + _v28_pp_boost, 1), 95.0)
     # BUG FIX v25: pump_prob_v22 was referenced in result dict but never assigned
     # Alias to pump_prob_v23 for backward compatibility with build_alert
     pump_prob_v22  = pump_prob_v23
@@ -5633,6 +6277,18 @@ def master_score(symbol, ticker):
             "pump_probability_score": _v27_pump_score_data["pump_probability_score"],
             "v27_active_modules": _v27_pump_score_data["active_modules"],
             "rank_pump_score_v27": _v27_pump_score_data["pump_probability_score"],
+            # PRE-PUMP ENGINE v28 fields
+            "v28_compress":          _v28_compress,
+            "v28_absorb":            _v28_absorb,
+            "v28_ob_sup":            _v28_ob_sup,
+            "v28_wick_sweep":        _v28_wick_sweep,
+            "v28_supply_rem":        _v28_supply_rem,
+            "v28_pre_pump_energy":   _v28_energy,
+            "v28_expansion_potential": _v28_expansion,
+            "v28_pump_window":       _v28_pump_window,
+            "v28_pump_probability":  _v28_pump_prob,
+            "pre_pump_energy_score": _v28_energy["pre_pump_energy_score"],
+            "rank_pre_pump_v28":     _v28_energy["pre_pump_energy_score"],
         }
     else:
         log.info(f"  {symbol}: Skor {score} < {min_score} (WATCHLIST threshold) — dilewati")
@@ -5931,7 +6587,7 @@ def build_alert(r, rank=None):
     z_rank   = r.get("rank_vol_z_v20", 0)
     mm_rank  = r.get("rank_mm_score", 0)
     ob_rank  = r.get("rank_ob_score", 1.0)
-    msg += (f"\n<i>Scanner v27 | Rank:{rank_val:.1f} | "
+    msg += (f"\n<i>Scanner v28 | Rank:{rank_val:.1f} | "
             f"MM:{mm_rank:.0f} | Z:{z_rank:.2f} | OB:{ob_rank:.2f} | ⚠️ Bukan financial advice</i>")
     return msg
 
@@ -5942,7 +6598,7 @@ def build_summary(results):
     """
     top5 = results[:5]
     msg  = (
-        f"📋 <b>TOP {len(top5)} PUMP CANDIDATES — Scanner v27</b>\n"
+        f"📋 <b>TOP {len(top5)} PUMP CANDIDATES — Scanner v28</b>\n"
         f"{utc_now()}\n"
         f"{'━'*30}\n"
     )
@@ -6060,7 +6716,7 @@ def build_candidate_list(tickers):
                      if k not in ("excluded_keyword", "manual_exclude"))
     accounted  = will_scan + n_excluded + n_filtered + len(not_found)
 
-    log.info(f"\n📊 SCAN SUMMARY Scanner v27:")
+    log.info(f"\n📊 SCAN SUMMARY Scanner v28:")
     log.info(f"   Whitelist total  : {total} coins")
     log.info(f"   ✅ Will scan     : {will_scan} ({will_scan/total*100:.1f}%)")
     log.info(f"   🚫 Excluded kw   : {n_excluded}")
@@ -6083,7 +6739,7 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== QUANTITATIVE PUMP DETECTION SCANNER v27 — {utc_now()} ===")
+    log.info(f"=== QUANTITATIVE PUMP DETECTION SCANNER v28 — {utc_now()} ===")
 
     load_funding_snapshots()
     log.info(f"Funding snapshots loaded: {len(_funding_snapshots)} coins di memori")
@@ -6149,11 +6805,12 @@ def run_scan():
     if CONFIG.get("rank_v20_multi", True):
         results.sort(
             key=lambda x: (
-                x.get("rank_pump_score_v27", 0),          # 1: v27 pump score (NEW)
-                x.get("rank_value",      x["score"]),     # 2: score × prob
-                x.get("rank_mm_score",   0),              # 3: MM score (v23)
-                x.get("rank_vol_z_v20",  0),              # 4: vol z-score
-                x.get("rank_ob_score",   1.0),            # 5: OB imbalance
+                x.get("rank_pre_pump_v28",   0),           # 1: v28 energy score (NEW)
+                x.get("rank_pump_score_v27", 0),           # 2: v27 pump score
+                x.get("rank_value",      x["score"]),      # 3: score × prob
+                x.get("rank_mm_score",   0),               # 4: MM score (v23)
+                x.get("rank_vol_z_v20",  0),               # 5: vol z-score
+                x.get("rank_ob_score",   1.0),             # 6: OB imbalance
             ),
             reverse=True,
         )
@@ -6192,23 +6849,29 @@ def run_scan():
         time.sleep(2)
 
     for rank, r in enumerate(top, 1):
-        ok = send_telegram(build_alert(r, rank=rank))
+        # PRE-PUMP ENGINE v28: use simplified alert for coins with strong energy score
+        _ppe = r.get("pre_pump_energy_score", 0)
+        if _ppe >= CONFIG.get("v28_energy_gate", 60):
+            # High-confidence pre-pump setup — send the clean v28 alert
+            ok = send_telegram(build_pre_pump_alert(r, rank=rank))
+        else:
+            ok = send_telegram(build_alert(r, rank=rank))
         if ok:
             set_cooldown(r["symbol"])
             log.info(
                 f"✅ Alert #{rank}: {r['symbol']} Score={r['score']} "
-                f"Level={r['alert_level']}"
+                f"Level={r['alert_level']} Energy={_ppe}"
             )
         time.sleep(2)
 
-    log.info(f"=== SELESAI Scanner v27 — {len(top)} alert terkirim ===")
+    log.info(f"=== SELESAI Scanner v28 — {len(top)} alert terkirim ===")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ▶️  ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔══════════════════════════════════════════════════════════════╗")
-    log.info("║  QUANTITATIVE PUMP DETECTION SCANNER v27                   ║")
+    log.info("║  QUANTITATIVE PUMP DETECTION SCANNER v28                   ║")
     log.info("║  PRE-PUMP INTELLIGENCE EDITION — 7 new modules             ║")
     log.info("║  Vol4x+20 | OI5%+20 | L2-OB+15 | Whale+15                ║")
     log.info("║  MomAccel+10 | ATRbreak+10 | SweepUP+10 | prob_score 0-90 ║")
