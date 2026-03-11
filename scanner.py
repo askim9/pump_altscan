@@ -127,6 +127,8 @@ CONFIG = {
     "funding_snapshot_file":  "./funding.json",
     # FIX v18: OI snapshot sekarang persisten ke disk
     "oi_snapshot_file":       "./oi_snapshot.json",
+    # FIX v30 TASK 4: OI history buffer persisted to disk (survives restarts)
+    "oi_history_file":        "./oi_history.json",
 
     # ══════════════════════════════════════════════════════════════════════════
     #  BOBOT SKOR v18
@@ -636,6 +638,25 @@ CONFIG = {
 
     # Weight of pre_pump_energy in blended score
     "v28_pre_pump_score_weight": 0.20,
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  v30 NEW MICROSTRUCTURE SIGNALS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # Signal 1 — OI Acceleration
+    "v30_oi_accel_min_pct":      2.0,   # oi_accel_percent >= 2.0 → trigger
+    "score_oi_acceleration":     12,    # +12 when triggered
+
+    # Signal 2 — Orderbook Liquidity Vacuum
+    "v30_liq_vacuum_depth_pct":  0.005, # 0.5% price band
+    "v30_liq_vacuum_imbalance":  2.5,   # bid_depth / ask_depth >= 2.5
+    "score_liquidity_vacuum":    10,    # +10 when triggered
+
+    # Signal 3 — CVD Divergence
+    "v30_cvd_lookback":          10,    # last N candles for CVD
+    "v30_cvd_price_change_max":  0.5,   # price change <= 0.5% (flat price)
+    "v30_cvd_ratio_min":         1.5,   # buy_vol / sell_vol >= 1.5
+    "score_cvd_divergence":      10,    # +10 when triggered
 }
 
 MANUAL_EXCLUDE = set()
@@ -646,30 +667,414 @@ EXCLUDED_KEYWORDS = ["XAU", "PAXG", "BTC", "ETH", "USDC", "DAI", "BUSD", "UST"]
 #  📋  WHITELIST
 # ══════════════════════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
-    # ── Tier 1: Large Cap Altcoin (OI & volume tertinggi) ────────────────────
-    "DOGEUSDT", "ADAUSDT", "XMRUSDT", "LINKUSDT", "XLMUSDT", "HBARUSDT",
-    "LTCUSDT", "AVAXUSDT", "SHIBUSDT", "SUIUSDT", "TONUSDT",
-    "UNIUSDT", "DOTUSDT", "TAOUSDT", "AAVEUSDT", "PEPEUSDT",
-    "ETCUSDT", "NEARUSDT", "ONDOUSDT", "POLUSDT", "ICPUSDT", "ATOMUSDT",
-    "ENAUSDT", "KASUSDT", "ALGOUSDT", "RENDERUSDT", "FILUSDT", "APTUSDT",
-    "ARBUSDT", "JUPUSDT", "SEIUSDT", "STXUSDT", "DYDXUSDT", "VIRTUALUSDT",
+       "4USDT",
+"0GUSDT",
+"1000BONKUSDT",
+"1000PEPEUSDT",
+"1000RATSUSDT",
+"1000SHIBUSDT",
+"1000XECUSDT",
+"1INCHUSDT",
+"1MBABYDOGEUSDT",
+"2ZUSDT",
 
-    # ── Tier 2: Mid Cap (OI signifikan, aktif di futures) ────────────────────
-    "FETUSDT", "INJUSDT", "PYTHUSDT", "GRTUSDT", "TIAUSDT", "LDOUSDT",
-    "OPUSDT", "ENSUSDT", "AXSUSDT", "PENDLEUSDT", "WIFUSDT", "SANDUSDT",
-    "MANAUSDT", "COMPUSDT", "GALAUSDT", "RAYUSDT", "RUNEUSDT", "EGLDUSDT",
-    "SNXUSDT", "ARUSDT", "CRVUSDT", "IMXUSDT", "EIGENUSDT", "JTOUSDT",
-    "CELOUSDT", "MASKUSDT", "APEUSDT", "MOVEUSDT", "MINAUSDT", "SONICUSDT",
-    "KAIAUSDT", "HYPEUSDT", "WLDUSDT", "STRKUSDT", "CFXUSDT", "BOMEUSDT",
+"AAVEUSDT",
+"ACEUSDT",
+"ACHUSDT",
+"ACTUSDT",
+"ADAUSDT",
+"AEROUSDT",
+"AGLDUSDT",
+"AINUSDT",
+"AIOUSDT",
+"AIXBTUSDT",
+"AKTUSDT",
+"ALCHUSDT",
+"ALGOUSDT",
+"ALICEUSDT",
+"ALLOUSDT",
+"ALTUSDT",
+"AMZNUSDT",
+"ANIMEUSDT",
+"ANKRUSDT",
+"APEUSDT",
+"APEXUSDT",
+"API3USDT",
+"APRUSDT",
+"APTUSDT",
+"ARUSDT",
+"ARBUSDT",
+"ARCUSDT",
+"ARIAUSDT",
+"ARKUSDT",
+"ARKMUSDT",
+"ARPAUSDT",
+"ASTERUSDT",
+"ATUSDT",
+"ATHUSDT",
+"ATOMUSDT",
+"AUCTIONUSDT",
+"AVAXUSDT",
+"AVNTUSDT",
+"AWEUSDT",
+"AXLUSDT",
+"AXSUSDT",
+"AZTECUSDT",
+"BUSDT",
+"B2USDT",
+"BABAUSDT",
+"BABYUSDT",
+"BANUSDT",
+"BANANAUSDT",
+"BANANAS31USDT",
+"BANKUSDT",
+"BARDUSDT",
+"BATUSDT",
+"BCHUSDT",
+"BEATUSDT",
+"BERAUSDT",
+"BGBUSDT",
+"BIGTIMEUSDT",
+"BIOUSDT",
+"BIRBUSDT",
+"BLASTUSDT",
+"BLESSUSDT",
+"BLURUSDT",
+"BNBUSDT",
+"BOMEUSDT",
+"BRETTUSDT",
+"BREVUSDT",
+"BROCCOLIUSDT",
+"BSVUSDT",
+"BTCUSDT",
+"BULLAUSDT",
+"C98USDT",
+"CAKEUSDT",
+"CCUSDT",
+"CELOUSDT",
+"CFXUSDT",
+"CHILLGUYUSDT",
+"CHZUSDT",
+"CLUSDT",
+"CLANKERUSDT",
+"CLOUSDT",
+"COAIUSDT",
+"COINUSDT",
+"COMPUSDT",
+"COOKIEUSDT",
+"COWUSDT",
+"CRCLUSDT",
+"CROUSDT",
+"CROSSUSDT",
+"CRVUSDT",
+"CTKUSDT",
+"CVCUSDT",
+"CVXUSDT",
+"CYBERUSDT",
+"CYSUSDT",
+"DASHUSDT",
+"DEEPUSDT",
+"DENTUSDT",
+"DEXEUSDT",
+"DOGEUSDT",
+"DOLOUSDT",
+"DOODUSDT",
+"DOTUSDT",
+"DRIFTUSDT",
+"DYDXUSDT",
+"DYMUSDT",
+"EGLDUSDT",
+"EIGENUSDT",
+"ENAUSDT",
+"ENJUSDT",
+"ENSUSDT",
+"ENSOUSDT",
+"EPICUSDT",
+"ESPUSDT",
+"ETCUSDT",
+"ETHUSDT",
+"ETHFIUSDT",
+"EURUSDUSDT",
+"FUSDT",
+"FARTCOINUSDT",
+"FETUSDT",
+"FFUSDT",
+"FIDAUSDT",
+"FILUSDT",
+"FLOKIUSDT",
+"FLUIDUSDT",
+"FOGOUSDT",
+"FOLKSUSDT",
+"FORMUSDT",
+"GALAUSDT",
+"GASUSDT",
+"GBPUSDUSDT",
+"GIGGLEUSDT",
+"GLMUSDT",
+"GMTUSDT",
+"GMXUSDT",
+"GOATUSDT",
 
-    # ── Tier 3: Aktif trading, OI > threshold ────────────────────────────────
-    "FLOKIUSDT", "CAKEUSDT", "CHZUSDT", "HNTUSDT", "ROSEUSDT", "IOTXUSDT",
-    "ANKRUSDT", "ZILUSDT", "ONTUSDT", "ENJUSDT", "GMTUSDT", "NOTUSDT",
-    "PEOPLEUSDT", "METISUSDT", "AIXBTUSDT", "GOATUSDT", "PNUTUSDT",
-    "GRASSUSDT", "POPCATUSDT", "ORDIUSDT", "MOODENGUSDT", "BIOUSDT",
-    "MAGICUSDT", "REZUSDT", "ARPAUSDT", "ACTUSDT", "USUALUSDT",
-    "SLPUSDT", "XAIUSDT", "BLURUSDT", "ARKMUSDT", "API3USDT", "AGLDUSDT",
-    "TNSRUSDT", "LAYERUSDT", "ANIMEUSDT", "YGGUSDT", "THEUSDT",
+"GPSUSDT",
+"GRASSUSDT",
+"GRIFFAINUSDT",
+"GRTUSDT",
+"GUNUSDT",
+"GWEIUSDT",
+"HUSDT",
+"HBARUSDT",
+"HEIUSDT",
+"HEMIUSDT",
+"HMSTRUSDT",
+"HOLOUSDT",
+"HOMEUSDT",
+"HOODUSDT",
+"HYPEUSDT",
+"HYPERUSDT",
+"ICNTUSDT",
+"ICPUSDT",
+"IDOLUSDT",
+"ILVUSDT",
+"IMXUSDT",
+"INITUSDT",
+"INJUSDT",
+"INTCUSDT",
+"INXUSDT",
+"IOUSDT",
+"IOTAUSDT",
+"IOTXUSDT",
+"IPUSDT",
+"JASMYUSDT",
+"JCTUSDT",
+"JSTUSDT",
+"JTOUSDT",
+"JUPUSDT",
+"KAIAUSDT",
+"KAITOUSDT",
+"KASUSDT",
+"KAVAUSDT",
+"kBONKUSDT",
+"KERNELUSDT",
+"KGENUSDT",
+"KITEUSDT",
+"kPEPEUSDT",
+"kSHIBUSDT",
+"LAUSDT",
+"LABUSDT",
+"LAYERUSDT",
+"LDOUSDT",
+"LIGHTUSDT",
+"LINEAUSDT",
+"LINKUSDT",
+"LITUSDT",
+"LPTUSDT",
+"LSKUSDT",
+"LTCUSDT",
+"LUNAUSDT",
+"LUNCUSDT",
+"LYNUSDT",
+"MUSDT",
+"MAGICUSDT",
+"MAGMAUSDT",
+"MANAUSDT",
+"MANTAUSDT",
+"MANTRAUSDT",
+"MASKUSDT",
+"MAVUSDT",
+"MAVIAUSDT",
+"MBOXUSDT",
+"MEUSDT",
+"MEGAUSDT",
+"MELANIAUSDT",
+"MEMEUSDT",
+"MERLUSDT",
+"METUSDT",
+"METAUSDT",
+"MEWUSDT",
+"MINAUSDT",
+"MMTUSDT",
+"MNTUSDT",
+"MONUSDT",
+"MOODENGUSDT",
+"MORPHOUSDT",
+"MOVEUSDT",
+"MOVRUSDT",
+"MSFTUSDT",
+"MSTRUSDT",
+"MUUSDT",
+"MUBARAKUSDT",
+"MYXUSDT",
+"NAORISUSDT",
+"NEARUSDT",
+"NEIROCTOUSDT",
+"NEOUSDT",
+"NEWTUSDT",
+"NILUSDT",
+"NMRUSDT",
+"NOMUSDT",
+"NOTUSDT",
+
+"NXPCUSDT",
+"ONDOUSDT",
+"ONGUSDT",
+"ONTUSDT",
+"OPUSDT",
+"OPENUSDT",
+"OPNUSDT",
+"ORCAUSDT",
+"ORCLUSDT",
+"ORDIUSDT",
+"OXTUSDT",
+"PARTIUSDT",
+"PAXGUSDT",
+"PENDLEUSDT",
+"PENGUUSDT",
+"PEOPLEUSDT",
+"PEPEUSDT",
+"PHAUSDT",
+"PIEVERSEUSDT",
+"PIPPINUSDT",
+"PLTRUSDT",
+"PLUMEUSDT",
+"PNUTUSDT",
+"POLUSDT",
+"POLYXUSDT",
+"POPCATUSDT",
+"POWERUSDT",
+"PROMPTUSDT",
+"PROVEUSDT",
+"PUMPUSDT",
+"PURRUSDT",
+"PYTHUSDT",
+"QUSDT",
+"QNTUSDT",
+"QQQUSDT",
+"RAVEUSDT",
+"RAYUSDT",
+"RDDTUSDT",
+"RECALLUSDT",
+"RENDERUSDT",
+"RESOLVUSDT",
+"REZUSDT",
+"RIVERUSDT",
+"ROBOUSDT",
+"ROSEUSDT",
+"RPLUSDT",
+"RSRUSDT",
+"RUNEUSDT",
+"SUSDT",
+"SAGAUSDT",
+"SAHARAUSDT",
+"SAMSUNGUSDT",
+"SANDUSDT",
+"SAPIENUSDT",
+"SEIUSDT",
+"SENTUSDT",
+"SHIBUSDT",
+"SIGNUSDT",
+"SIRENUSDT",
+"SKHYNIXUSDT",
+"SKRUSDT",
+"SKYUSDT",
+"SKYAIUSDT",
+"SLPUSDT",
+"SNXUSDT",
+"SOLUSDT",
+"SOMIUSDT",
+"SONICUSDT",
+"SOONUSDT",
+"SOPHUSDT",
+"SPACEUSDT",
+"SPKUSDT",
+"SPXUSDT",
+"SPYUSDT",
+"SQDUSDT",
+"SSVUSDT",
+"STABLEUSDT",
+"STBLUSDT",
+"STEEMUSDT",
+"STOUSDT",
+"STRKUSDT",
+"STXUSDT",
+"SUIUSDT",
+"SUNUSDT",
+"SUPERUSDT",
+"SUSHIUSDT",
+"SYRUPUSDT",
+"TUSDT",
+"TACUSDT",
+"TAGUSDT",
+"TAIKOUSDT",
+"TAOUSDT",
+"THEUSDT",
+"THETAUSDT",
+"TIAUSDT",
+"TNSRUSDT",
+"TONUSDT",
+"TOSHIUSDT",
+"TOWNSUSDT",
+"TRBUSDT",
+"TRIAUSDT",
+"TRUMPUSDT",
+"TRXUSDT",
+"TSLAUSDT",
+"TURBOUSDT",
+"UAIUSDT",
+"UBUSDT",
+"UMAUSDT",
+"UNIUSDT",
+"USUSDT",
+"USDCUSDT",
+"USDKRWUSDT",
+"USELESSUSDT",
+"USUALUSDT",
+"VANAUSDT",
+"VANRYUSDT",
+"VETUSDT",
+"VINEUSDT",
+"VIRTUALUSDT",
+"VTHOUSDT",
+"VVVUSDT",
+"WUSDT",
+"WALUSDT",
+"WAXPUSDT",
+"WCTUSDT",
+"WETUSDT",
+"WIFUSDT",
+"WLDUSDT",
+"WLFIUSDT",
+"WOOUSDT",
+"WTIUSDT",
+"XAGUSDT",
+"XAIUSDT",
+
+"XAUTUSDT",
+"XCUUSDT",
+"XDCUSDT",
+"XLMUSDT",
+"XMRUSDT",
+"XPDUSDT",
+"XPINUSDT",
+"XPLUSDT",
+
+"XRPUSDT",
+"XTZUSDT",
+"XVGUSDT",
+"YGGUSDT",
+"YZYUSDT",
+"ZAMAUSDT",
+"ZBTUSDT",
+"ZECUSDT",
+"ZENUSDT",
+"ZEREBROUSDT",
+"ZETAUSDT",
+"ZILUSDT",
+"ZKUSDT",
+"ZKCUSDT",
+"ZKJUSDT",
+"ZKPUSDT",
+"ZORAUSDT",
+"ZROUSDT",
 }
 
 GRAN_MAP    = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
@@ -750,6 +1155,10 @@ _oi_snapshot = {}
 # PRE-PUMP ENGINE v28: ask-side liquidity snapshot for supply removal detection
 _ob_ask_snapshot = {}   # {symbol: {"ts": float, "ask_vol": float}}
 
+# v30 NEW: Rolling OI history buffer for OI Acceleration signal
+# Structure: {symbol: [{"ts": float, "oi": float}, ...]}  (up to 12 entries)
+_oi_history = {}  # {symbol: [{"ts": float, "oi": float}, ...]}
+
 def load_oi_snapshots():
     """
     FIX v18: Load OI snapshot dari disk saat startup.
@@ -780,6 +1189,45 @@ def save_oi_snapshots():
     try:
         with open(CONFIG["oi_snapshot_file"], "w") as f:
             json.dump(_oi_snapshot, f)
+    except Exception:
+        pass
+
+
+# ── v30 TASK 4: OI history persistence ───────────────────────────────────────
+
+def load_oi_history():
+    """
+    FIX v30 TASK 4: Load OI history buffer from disk on startup.
+    Prevents the 10-minute cold-start period where OI Acceleration cannot fire
+    after a process restart.  Stale entries (>20 min) are pruned on load.
+    """
+    global _oi_history
+    try:
+        p = CONFIG.get("oi_history_file", "./oi_history.json")
+        if os.path.exists(p):
+            with open(p) as f:
+                raw = json.load(f)
+            now = time.time()
+            # Prune entries older than 20 minutes (1200s) — beyond useful lookback
+            loaded = {}
+            for sym, entries in raw.items():
+                fresh = [e for e in entries if now - e.get("ts", 0) < 1200]
+                if fresh:
+                    loaded[sym] = fresh[-40:]   # enforce new cap
+            _oi_history = loaded
+            log.info(f"OI history loaded: {len(_oi_history)} symbols")
+        else:
+            _oi_history = {}
+    except Exception:
+        _oi_history = {}
+
+
+def save_oi_history():
+    """FIX v30 TASK 4: Persist OI history buffer to disk after each scan."""
+    try:
+        p = CONFIG.get("oi_history_file", "./oi_history.json")
+        with open(p, "w") as f:
+            json.dump(_oi_history, f)
     except Exception:
         pass
 
@@ -3645,6 +4093,67 @@ def detect_atr_breakout_v27(price_now, ema20_val, atr_abs_val):
     }
 
 
+def _compute_ob_imbalance_v27_from_data(bids, asks):
+    """
+    v30 TASK 5 helper: compute v27 OB imbalance from pre-fetched bids/asks lists.
+    Identical logic to get_orderbook_imbalance_v27 but operates on already-fetched
+    data instead of making a new HTTP call.  Called from master_score after the
+    single shared merge-depth fetch.
+    """
+    null = {"bid_vol": 0.0, "ask_vol": 0.0, "ratio": 1.0,
+            "is_bullish": False, "score": 0,
+            "label": "OB depth: no data", "source": "fallback"}
+    try:
+        if not bids or not asks:
+            return null
+
+        limit = CONFIG.get("v27_ob_depth_limit", 20)
+
+        bid_vol = sum(float(b[0]) * float(b[1])
+                      for b in bids[:limit] if len(b) >= 2)
+        ask_vol = sum(float(a[0]) * float(a[1])
+                      for a in asks[:limit] if len(a) >= 2)
+
+        if ask_vol <= 0:
+            return {**null, "bid_vol": bid_vol, "ratio": 2.0,
+                    "is_bullish": True,
+                    "score": CONFIG.get("v27_ob_score_strong", 15),
+                    "label": "OB depth v27: full bid wall",
+                    "source": "shared"}
+
+        ratio         = bid_vol / ask_vol
+        thresh_strong = CONFIG.get("v27_ob_ratio_strong", 1.6)
+        thresh_mild   = CONFIG.get("v27_ob_ratio_mild",   1.2)
+
+        if ratio >= thresh_strong:
+            score      = CONFIG.get("v27_ob_score_strong", 15)
+            is_bullish = True
+            label      = (f"📚 L2 OB v27: bid/ask={ratio:.2f} ≥ {thresh_strong} "
+                          f"— STRONG buy wall (+{score})")
+        elif ratio >= thresh_mild:
+            score      = CONFIG.get("v27_ob_score_mild", 7)
+            is_bullish = True
+            label      = (f"📊 L2 OB v27: bid/ask={ratio:.2f} ≥ {thresh_mild} "
+                          f"— mild imbalance (+{score})")
+        else:
+            score      = 0
+            is_bullish = False
+            label      = f"L2 OB v27: bid/ask={ratio:.2f} — balanced/bearish"
+
+        return {
+            "bid_vol":    round(bid_vol, 0),
+            "ask_vol":    round(ask_vol, 0),
+            "ratio":      round(ratio, 3),
+            "is_bullish": is_bullish,
+            "score":      score,
+            "label":      label,
+            "source":     "shared",
+        }
+    except Exception as e:
+        log.debug(f"  OB imbalance v27 compute failed: {e}")
+        return null
+
+
 def get_orderbook_imbalance_v27(symbol):
     """
     Module 5 — Real L2 Orderbook Imbalance (Bitget merge-depth).
@@ -5162,6 +5671,273 @@ def calc_entry(candles, bos_level, alert_level, vwap, price_now, atr_abs_val=Non
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  🔬  v30 NEW MICROSTRUCTURE SIGNALS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _update_oi_history(symbol, oi_now):
+    """
+    v30 helper: maintain a rolling OI history buffer per symbol.
+    Stores timestamped OI entries; trims to last 40 entries.
+    FIX v30: buffer raised 12→40 so t-10m lookback is reachable even on fast
+    scan cycles (e.g. 100-coin whitelist at 0.15s/coin ≈ 15s cycle → 40 entries
+    covers 600s, satisfying the 180s tolerance window for t-10m target).
+    Used by detect_oi_acceleration_v30 to get OI at t-5m and t-10m.
+    """
+    global _oi_history
+    if oi_now <= 0:
+        return
+    if symbol not in _oi_history:
+        _oi_history[symbol] = []
+    _oi_history[symbol].append({"ts": time.time(), "oi": oi_now})
+    # FIX v30: keep last 40 entries (was 12)
+    if len(_oi_history[symbol]) > 40:
+        _oi_history[symbol] = _oi_history[symbol][-40:]
+
+
+def detect_oi_acceleration_v30(symbol, oi_now):
+    """
+    v30 Signal 1 — Open Interest Acceleration.
+
+    Detects whales building leveraged positions before a pump.
+    Formula: oi_accel = (OI_now - OI_5m) - (OI_5m - OI_10m)
+    oi_accel_percent = oi_accel / OI_now * 100
+    Triggers when oi_accel_percent >= 2.0.
+
+    Uses rolling _oi_history buffer (updated each call via _update_oi_history).
+    Falls back gracefully if insufficient history exists.
+
+    Returns dict with is_accelerating, oi_accel_percent, score, label.
+    """
+    null = {
+        "is_accelerating": False, "oi_accel_percent": 0.0,
+        "score": 0, "label": "OI Accel v30: insufficient history",
+    }
+    if oi_now <= 0:
+        return null
+
+    history = _oi_history.get(symbol, [])
+    if len(history) < 3:
+        return null
+
+    now_ts = time.time()
+    # Find OI closest to 5 min ago and 10 min ago
+    target_5m  = now_ts - 300
+    target_10m = now_ts - 600
+
+    def _closest(entries, target_ts):
+        best = min(entries, key=lambda e: abs(e["ts"] - target_ts))
+        # Only use if within 3 minutes of target
+        if abs(best["ts"] - target_ts) > 180:
+            return None
+        return best["oi"]
+
+    oi_5m  = _closest(history, target_5m)
+    oi_10m = _closest(history, target_10m)
+
+    if oi_5m is None or oi_10m is None or oi_5m <= 0:
+        return null
+
+    oi_accel         = (oi_now - oi_5m) - (oi_5m - oi_10m)
+    oi_accel_percent = oi_accel / oi_now * 100
+
+    threshold    = CONFIG.get("v30_oi_accel_min_pct", 2.0)
+    is_accel     = oi_accel_percent >= threshold
+    score        = CONFIG.get("score_oi_acceleration", 12) if is_accel else 0
+
+    if is_accel:
+        label = (
+            f"🚀 OI Acceleration v30: +{oi_accel_percent:.2f}% "
+            f"(Δ now-5m: {(oi_now-oi_5m)/oi_now*100:+.2f}%, "
+            f"Δ 5m-10m: {(oi_5m-oi_10m)/oi_now*100:+.2f}%) "
+            f"— whale leverage build-up (+{score})"
+        )
+    else:
+        label = (
+            f"OI Accel v30: {oi_accel_percent:.2f}% "
+            f"(need ≥{threshold}%)"
+        )
+
+    return {
+        "is_accelerating":  is_accel,
+        "oi_accel_percent": round(oi_accel_percent, 3),
+        "score":            score,
+        "label":            label,
+    }
+
+
+def detect_liquidity_vacuum_v30(symbol, price_now, ob_depth_data=None):
+    """
+    v30 Signal 2 — Orderbook Liquidity Vacuum.
+
+    Detects thin ask-side liquidity where price can move quickly.
+    ask_depth = sum of ask volume between price and price * 1.005
+    bid_depth = sum of bid volume between price and price * 0.995
+    imbalance = bid_depth / ask_depth
+    Triggers when imbalance >= 2.5.
+
+    FIX v30 TASK 5: accepts pre-fetched ob_depth_data (bids/asks) so the
+    merge-depth endpoint is called only ONCE per symbol (shared with v27).
+    If ob_depth_data is None the function falls back to no-op (caller must
+    supply data — standalone calls should pass the shared payload).
+
+    FIX v30 TASK 2: Empty-band guard — if BOTH bid_depth==0 AND ask_depth==0
+    the band is empty (spread wider than 0.5%); return null without scoring.
+    Only award score when bid pressure is real (bid_depth > 0).
+
+    Returns dict with is_vacuum, imbalance, ask_depth, bid_depth, score, label.
+    """
+    null = {
+        "is_vacuum": False, "imbalance": 0.0,
+        "ask_depth": 0.0, "bid_depth": 0.0,
+        "score": 0, "label": "Liq Vacuum v30: no data",
+    }
+    if price_now <= 0:
+        return null
+
+    try:
+        if ob_depth_data is None:
+            return null
+
+        bids = ob_depth_data.get("bids", [])
+        asks = ob_depth_data.get("asks", [])
+        if not bids or not asks:
+            return null
+
+        band_pct  = CONFIG.get("v30_liq_vacuum_depth_pct", 0.005)
+        ask_upper = price_now * (1.0 + band_pct)
+        bid_lower = price_now * (1.0 - band_pct)
+
+        ask_depth = sum(
+            float(a[0]) * float(a[1])
+            for a in asks if len(a) >= 2
+            and price_now <= float(a[0]) <= ask_upper
+        )
+        bid_depth = sum(
+            float(b[0]) * float(b[1])
+            for b in bids if len(b) >= 2
+            and bid_lower <= float(b[0]) <= price_now
+        )
+
+        # FIX v30 TASK 2: guard against empty band (both sides zero = wide spread,
+        # not a vacuum). Only treat zero ask with real bid presence as vacuum.
+        if ask_depth <= 0 and bid_depth <= 0:
+            return null
+        elif ask_depth <= 0:
+            # Real bids present but no asks in band — genuine extreme vacuum
+            imbalance = 99.0
+        else:
+            imbalance = bid_depth / ask_depth
+
+        threshold  = CONFIG.get("v30_liq_vacuum_imbalance", 2.5)
+        is_vacuum  = imbalance >= threshold
+        score      = CONFIG.get("score_liquidity_vacuum", 10) if is_vacuum else 0
+
+        if is_vacuum:
+            label = (
+                f"🕳️ Liquidity Vacuum v30: bid/ask depth={imbalance:.2f}x "
+                f"(bid ${bid_depth/1e3:.1f}K vs ask ${ask_depth/1e3:.1f}K "
+                f"within ±{band_pct*100:.1f}% band) "
+                f"— thin ask wall, price can surge (+{score})"
+            )
+        else:
+            label = (
+                f"Liq Vacuum v30: imbalance {imbalance:.2f}x "
+                f"(need ≥{threshold}x)"
+            )
+
+        return {
+            "is_vacuum":  is_vacuum,
+            "imbalance":  round(imbalance, 3),
+            "ask_depth":  round(ask_depth, 0),
+            "bid_depth":  round(bid_depth, 0),
+            "score":      score,
+            "label":      label,
+        }
+    except Exception as e:
+        log.debug(f"  Liq Vacuum v30 compute failed: {e}")
+        return null
+
+
+def detect_cvd_divergence_v30(candles):
+    """
+    v30 Signal 3 — CVD Divergence.
+
+    Detects aggressive buyers absorbing sell pressure before a pump.
+    Approximates CVD from last N candles:
+      if close > open: buy_volume += volume  else: sell_volume += volume
+    cvd = buy_volume - sell_volume
+    cvd_ratio = buy_volume / sell_volume
+
+    FIX v30 TASK 1: caller must pass c5m (5-minute candles).
+    Window = 10 × 5m = 50-minute microstructure window.
+    Previous implementation used c1h (10-hour window) — corrected.
+
+    Triggers when:
+      price_change_percent <= 0.5  AND  cvd_ratio >= 1.5
+    (price flat over 50m but buyers aggressively absorbing)
+
+    Returns dict with is_divergence, cvd_ratio, price_change_pct, score, label.
+    """
+    null = {
+        "is_divergence": False, "cvd_ratio": 0.0,
+        "price_change_pct": 0.0, "buy_volume": 0.0, "sell_volume": 0.0,
+        "score": 0, "label": "CVD Divergence v30: data kurang",
+    }
+    lookback = CONFIG.get("v30_cvd_lookback", 10)
+    if len(candles) < lookback + 1:
+        return null
+
+    recent = candles[-lookback:]
+
+    buy_volume  = 0.0
+    sell_volume = 0.0
+    for c in recent:
+        vol = c.get("volume_usd", 0.0)
+        if c["close"] > c["open"]:
+            buy_volume  += vol
+        else:
+            sell_volume += vol
+
+    if sell_volume <= 0:
+        return null
+
+    cvd_ratio = buy_volume / sell_volume
+
+    price_start       = candles[-(lookback + 1)]["close"]
+    price_end         = candles[-1]["close"]
+    price_change_pct  = abs((price_end - price_start) / price_start * 100) if price_start > 0 else 99.0
+
+    price_max_pct = CONFIG.get("v30_cvd_price_change_max", 0.5)
+    cvd_min       = CONFIG.get("v30_cvd_ratio_min", 1.5)
+
+    is_divergence = (price_change_pct <= price_max_pct) and (cvd_ratio >= cvd_min)
+    score         = CONFIG.get("score_cvd_divergence", 10) if is_divergence else 0
+
+    if is_divergence:
+        label = (
+            f"📊 CVD Divergence v30: buy/sell={cvd_ratio:.2f}x "
+            f"(buy ${buy_volume/1e3:.1f}K vs sell ${sell_volume/1e3:.1f}K) "
+            f"price flat {price_change_pct:.2f}% — buyers absorbing sell pressure (+{score})"
+        )
+    else:
+        label = (
+            f"CVD Divergence v30: ratio {cvd_ratio:.2f}x, "
+            f"price Δ {price_change_pct:.2f}% "
+            f"(need ratio ≥{cvd_min} + price ≤{price_max_pct}%)"
+        )
+
+    return {
+        "is_divergence":    is_divergence,
+        "cvd_ratio":        round(cvd_ratio, 3),
+        "price_change_pct": round(price_change_pct, 3),
+        "buy_volume":       round(buy_volume, 0),
+        "sell_volume":      round(sell_volume, 0),
+        "score":            score,
+        "label":            label,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  🧠  MASTER SCORE
 # ══════════════════════════════════════════════════════════════════════════════
 def master_score(symbol, ticker):
@@ -5355,7 +6131,29 @@ def master_score(symbol, ticker):
                             price_now,
                             ema_trend.get("ema20") or 0.0,
                             atr_abs_val)
-    _v27_ob_imbal    = get_orderbook_imbalance_v27(symbol)   # 1 extra API call
+
+    # TASK 5 FIX v30: single merge-depth call with limit=50, shared by v27 and v30.
+    # Replaces the previous separate calls (v27 limit=20, v30 limit=50).
+    _ob_shared_raw = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/merge-depth",
+        params={
+            "symbol":      symbol,
+            "productType": "usdt-futures",
+            "precision":   "scale0",
+            "limit":       "50",
+        },
+    )
+    _ob_shared_depth = (
+        _ob_shared_raw.get("data", {})
+        if (_ob_shared_raw and _ob_shared_raw.get("code") == "00000")
+        else {}
+    )
+    _ob_shared_bids = _ob_shared_depth.get("bids", [])
+    _ob_shared_asks = _ob_shared_depth.get("asks", [])
+
+    # v27 OB imbalance computed from shared data (top-N levels)
+    _v27_ob_imbal    = _compute_ob_imbalance_v27_from_data(
+                           _ob_shared_bids, _ob_shared_asks)
     _v27_whale_accum = detect_whale_accumulation_v27(c1h)
     _v27_liq_sweep_up = detect_liquidity_sweep_up_v27(c1h)
 
@@ -5392,6 +6190,19 @@ def master_score(symbol, ticker):
         _v28_energy["pre_pump_energy_score"],
         _v28_expansion["expansion_potential"]
     )
+
+    # ── NEW v30 — Microstructure Signals ─────────────────────────────────────
+    # Signal 1: OI Acceleration — update rolling buffer first, then detect
+    _oi_now_v30 = oi_data.get("oi_now", 0.0)
+    _update_oi_history(symbol, _oi_now_v30)
+    _v30_oi_accel    = detect_oi_acceleration_v30(symbol, _oi_now_v30)
+
+    # Signal 2: Orderbook Liquidity Vacuum — reuses shared OB depth (TASK 5 fix)
+    _v30_liq_vacuum  = detect_liquidity_vacuum_v30(symbol, price_now,
+                           ob_depth_data=_ob_shared_depth)
+
+    # Signal 3: CVD Divergence — TASK 1 fix: use c5m (50-min window, not 1h)
+    _v30_cvd_div     = detect_cvd_divergence_v30(c5m)
 
 
     # Set energy.is_strong jika funding negatif
@@ -6104,6 +6915,25 @@ def master_score(symbol, ticker):
         )
 
     # ══════════════════════════════════════════════════════════════════════════
+    #  SCORING v30 — NEW MICROSTRUCTURE SIGNALS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # Signal 1 — OI Acceleration (+12)
+    if _v30_oi_accel.get("is_accelerating"):
+        score += _v30_oi_accel["score"]
+        signals.append(_v30_oi_accel["label"])
+
+    # Signal 2 — Orderbook Liquidity Vacuum (+10)
+    if _v30_liq_vacuum.get("is_vacuum"):
+        score += _v30_liq_vacuum["score"]
+        signals.append(_v30_liq_vacuum["label"])
+
+    # Signal 3 — CVD Divergence (+10)
+    if _v30_cvd_div.get("is_divergence"):
+        score += _v30_cvd_div["score"]
+        signals.append(_v30_cvd_div["label"])
+
+    # ══════════════════════════════════════════════════════════════════════════
     #  ALERT LEVEL v18 — feature-based probability + timing ETA
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -6354,6 +7184,13 @@ def master_score(symbol, ticker):
             "v28_pump_probability":  _v28_pump_prob,
             "pre_pump_energy_score": _v28_energy["pre_pump_energy_score"],
             "rank_pre_pump_v28":     _v28_energy["pre_pump_energy_score"],
+            # v30 microstructure debug fields (TASK 6)
+            "v30_oi_accel_fired":    bool(_v30_oi_accel.get("is_accelerating")),
+            "v30_liq_vacuum_fired":  bool(_v30_liq_vacuum.get("is_vacuum")),
+            "v30_cvd_div_fired":     bool(_v30_cvd_div.get("is_divergence")),
+            "v30_oi_accel":          _v30_oi_accel,
+            "v30_liq_vacuum":        _v30_liq_vacuum,
+            "v30_cvd_div":           _v30_cvd_div,
         }
     else:
         log.info(f"  {symbol}: Skor {score} < {min_score} (WATCHLIST threshold) — dilewati")
@@ -6812,6 +7649,9 @@ def run_scan():
     # FIX v18: load OI snapshots dari disk
     load_oi_snapshots()
 
+    # FIX v30 TASK 4: load OI history buffer from disk
+    load_oi_history()
+
     tickers = get_all_tickers()
     if not tickers:
         send_telegram("⚠️ Scanner Error: Gagal ambil data Bitget")
@@ -6865,6 +7705,10 @@ def run_scan():
     # FIX v18: simpan OI snapshots ke disk
     save_oi_snapshots()
     log.info("OI snapshots disimpan ke disk.")
+
+    # FIX v30 TASK 4: simpan OI history buffer ke disk
+    save_oi_history()
+    log.info("OI history disimpan ke disk.")
 
     # v23 — Advanced 4-key Ranking: prob → MM score → vol_zscore → OB imbalance
     if CONFIG.get("rank_v20_multi", True):
