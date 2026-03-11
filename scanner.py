@@ -153,9 +153,9 @@ CONFIG = {
     "accum_atr_lookback_short": 6,
     "accum_atr_contract_ratio": 0.75,
     "accum_max_pos_in_range":  0.70,
-    "score_accumulation":      4,
+    "score_accumulation":      10,    # FIX v30 P3: raised 4→10 — smart money accumulation is strong pre-pump signal
     # FIX v18: score_vol_compression hanya aktif jika is_accumulating=False
-    "score_vol_compression":   4,
+    "score_vol_compression":   8,     # FIX v30 P3: raised 4→8 — vol compression combined with accumulation = high-confidence setup
 
     # ── HTF Accumulation 4H ───────────────────────────────────────────────────
     "htf_atr_contract_ratio":  0.85,
@@ -286,9 +286,9 @@ CONFIG = {
 
     # ── v18 Micro Momentum (5m candles) ──────────────────────────────────────
     "micro_mom_candles":       12,       # berapa 5m candle untuk rata2 1h
-    "micro_accel_strong":      0.006,    # FIX v29 ISSUE-3: raised 0.3%→0.6% — 0.3% is trivially hit by noise candles
-    "score_micro_accel":       10,       # FIX v29 ISSUE-3: reduced 15→10 — prevents single 5m candle from dominating score
-    "score_micro_accel_pos":   4,        # FIX v29 ISSUE-3: reduced 8→4 — weak positive accel no longer scores like execution signal
+    "micro_accel_strong":      0.008,    # FIX v30 P5: raised further 0.6%→0.8% — dampen sub-0.8% 5m noise bursts
+    "score_micro_accel":       8,        # FIX v30 P5: reduced 10→8 — part of momentum cap
+    "score_micro_accel_pos":   2,        # FIX v30 P5: reduced 4→2 — weak positive micro accel is informational only
 
     # ── v18 Whale detection upgrade ──────────────────────────────────────────
     "whale_vol_mult_v18":      3.0,      # vol > 3× (bukan 5×)
@@ -341,8 +341,8 @@ CONFIG = {
     "wscore_rsi":              0.05,
 
     # STEP 5 — Logistic probability params
-    "logistic_k":              0.08,
-    "logistic_threshold":      55.0,
+    "logistic_k":              0.0693,    # FIX v30 P4: recalibrated 0.08→0.0693 (ln4/20) — score=50 now maps to 50% not 40%
+    "logistic_threshold":      50.0,      # FIX v30 P4: recentered 55→50 — curve was shifted right, inflating prob at low scores
 
     # STEP 6 — Trend filter EMAs
     "ema_fast":                20,
@@ -6048,6 +6048,85 @@ def master_score(symbol, ticker):
     # ══════════════════════════════════════════════════════════════════════════
     #  ALERT LEVEL v18 — feature-based probability + timing ETA
     # ══════════════════════════════════════════════════════════════════════════
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # FIX v30 P1+P2 — MOMENTUM CAP (25% of raw score) + VOLUME CAP (30%)
+    #
+    # Problem: with multiple momentum paths (micro_mom, mom_accel, v27_mom_accel)
+    # and multiple volume paths (vol_spike, vol_bullish, vol_accel, v27_vol_exp)
+    # these groups can each dominate total score independently.
+    #
+    # Fix: measure how much each group contributed and clamp excess.
+    # Caps are applied to the raw heuristic score before blending.
+    # Signal labels are untouched — only the numeric total is corrected.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Collect momentum contributions
+    _mom_contrib = 0
+    if micro_mom.get("is_accelerating"):
+        _mom_contrib += micro_mom.get("score", 0)
+    if mom_accel.get("is_accelerating") and not micro_mom.get("is_accelerating"):
+        _mom_contrib += mom_accel.get("score", 0)
+    if (_v27_mom_accel.get("is_accelerating")
+            and not micro_mom.get("is_accelerating")
+            and not mom_accel.get("is_accelerating")):
+        _mom_contrib += _v27_mom_accel.get("score", 0)
+
+    # Collect volume contributions
+    _vol_contrib = 0
+    if vol_spike.get("tier", 0) > 0:
+        _vol_contrib += vol_spike.get("score", 0)
+    _vol_contrib += CONFIG.get("score_vol_bullish", 2) if (
+        vol_ratio > CONFIG["vol_ratio_threshold"] and vol_consistent
+        and candle_dir_ratio >= CONFIG["vol_bullish_min_ratio"]
+    ) else 0
+    _vol_contrib += CONFIG.get("score_vol_accel", 2) if (
+        vol_accel > CONFIG["vol_accel_threshold"] and vol_consistent
+        and len(c1h) >= 1 and c1h[-1]["close"] >= c1h[-1]["open"]
+    ) else 0
+    if _v27_vol_exp.get("is_extreme"):
+        _vol_contrib += _v27_vol_exp.get("score", 0)
+
+    # Apply caps
+    _score_before_caps = score
+    _mom_cap  = max(0, round(_score_before_caps * 0.25))  # 25% max for momentum
+    _vol_cap  = max(0, round(_score_before_caps * 0.30))  # 30% max for volume
+
+    if _mom_contrib > _mom_cap and _mom_cap > 0:
+        _mom_excess = _mom_contrib - _mom_cap
+        score -= _mom_excess
+        signals.append(
+            f"⚙️ Momentum cap applied: contrib {_mom_contrib} → capped at {_mom_cap} (-{_mom_excess})"
+        )
+
+    if _vol_contrib > _vol_cap and _vol_cap > 0:
+        _vol_excess = _vol_contrib - _vol_cap
+        score -= _vol_excess
+        signals.append(
+            f"⚙️ Volume cap applied: contrib {_vol_contrib} → capped at {_vol_cap} (-{_vol_excess})"
+        )
+
+    # FIX v30 P3 — ACCUMULATION COMBO BONUS
+    # If BB squeeze + ATR contraction both active → award structural compression bonus.
+    # This ensures a coin in true volatility squeeze competes against execution signals.
+    _bb_active  = bbw < CONFIG["bb_squeeze_threshold"]
+    _atr_active = atr_contr.get("is_contracting", False)
+    _energy_active = energy.get("is_buildup", False)
+    _htf_active = htf_accum.get("is_htf_accum", False)
+
+    _accum_combo_count = sum([_bb_active, _atr_active, _energy_active, _htf_active])
+    if _accum_combo_count >= 3:
+        _accum_bonus = 12
+        score += _accum_bonus
+        signals.append(
+            f"🏗️ Accumulation Combo ({_accum_combo_count}/4 signals) — compression bonus +{_accum_bonus}"
+        )
+    elif _accum_combo_count == 2:
+        _accum_bonus = 6
+        score += _accum_bonus
+        signals.append(
+            f"🏗️ Accumulation Combo ({_accum_combo_count}/4 signals) — compression bonus +{_accum_bonus}"
+        )
 
     # STEP 4 v19: AI Weighted Score (hybrid dengan heuristic score)
     ai_score_data = calc_ai_weighted_score(
