@@ -91,7 +91,7 @@ CONFIG = {
     "vwap_gate_tolerance":      0.97,   # price > vwap * 0.97
 
     # ── Gate uptrend usia ─────────────────────────────────────────────────────
-    "gate_uptrend_max_hours":   10,
+    "gate_uptrend_max_hours":   20,    # FIX v29 ISSUE-5: raised 10h→20h — 10h rejected coins just beginning breakout from multi-day accumulation
 
     # ── Gate RSI overbought ───────────────────────────────────────────────────
     "gate_rsi_max":             72.0,
@@ -106,7 +106,7 @@ CONFIG = {
     "funding_streak_min":       5,
 
     # ── Candle limits ─────────────────────────────────────────────────────────
-    "candle_1h":               168,
+    "candle_1h":               210,    # FIX v29 ISSUE-6: raised 168→210 — EMA200 requires 200 candles; 168 meant calc_ema200_distance always returned null
     "candle_4h":                48,
 
     # ── Entry / SL ────────────────────────────────────────────────────────────
@@ -134,17 +134,17 @@ CONFIG = {
 
     # ── BB Squeeze ────────────────────────────────────────────────────────────
     "bb_squeeze_threshold":    0.04,
-    "score_bb_squeeze":        4,
+    "score_bb_squeeze":        12,    # FIX v29 ISSUE-4: raised 4→12 — BB squeeze is primary accumulation signal
 
     # ── ATR Contracting ───────────────────────────────────────────────────────
     "atr_contract_ratio":      0.75,
-    "score_atr_contracting":   3,
+    "score_atr_contracting":   9,    # FIX v29 ISSUE-4: raised 3→9 — ATR contraction confirms squeeze
 
     # ── Energy Build-Up ───────────────────────────────────────────────────────
     "energy_oi_change_min":    5.0,
     "energy_vol_ratio_min":    1.5,
     "energy_range_max_pct":    2.5,
-    "score_energy_buildup":    4,
+    "score_energy_buildup":    12,    # FIX v29 ISSUE-4: raised 4→12 — energy buildup is core pre-pump signal
 
     # ── Smart Money Accumulation ──────────────────────────────────────────────
     "accum_vol_ratio":         1.5,
@@ -162,7 +162,7 @@ CONFIG = {
     "htf_vol_ratio_min":       1.3,
     "htf_range_max_pct":       3.0,
     "htf_max_pos_in_range":    0.75,
-    "score_htf_accumulation":  3,
+    "score_htf_accumulation":  10,    # FIX v29 ISSUE-4: raised 3→10 — HTF accumulation is multi-day confirmation
 
     # ── Liquidity Sweep ───────────────────────────────────────────────────────
     "liq_sweep_lookback":      20,
@@ -225,9 +225,9 @@ CONFIG = {
     "vol_spike_low":           1.5,      # threshold low  → +8
     "vol_spike_mid":           2.0,      # threshold mid  → +15
     "vol_spike_high":          3.0,      # threshold high → +22
-    "score_vol_spike_low":     8,
-    "score_vol_spike_mid":     15,
-    "score_vol_spike_high":    22,
+    "score_vol_spike_low":     6,     # FIX v29 ISSUE-7: reduced 8→6
+    "score_vol_spike_mid":     11,    # FIX v29 ISSUE-7: reduced 15→11
+    "score_vol_spike_high":    16,    # FIX v29 ISSUE-7: reduced 22→16 — vol spike alone was enough to dominate blended score
 
     # ── Momentum Acceleration (Phase 3 pre-pump) ──────────────────────────────
     # acceleration = (price_now-price_3h) - (price_3h-price_6h)
@@ -241,9 +241,9 @@ CONFIG = {
     "buy_pressure_low":        0.55,     # >55% accumulation → +6
     "buy_pressure_mid":        0.65,     # >65% whale activity → +12
     "buy_pressure_high":       0.75,     # >75% pump phase → +20
-    "score_buy_pressure_low":  6,
-    "score_buy_pressure_mid":  12,
-    "score_buy_pressure_high": 20,
+    "score_buy_pressure_low":  5,     # FIX v29 ISSUE-7: reduced 6→5
+    "score_buy_pressure_mid":  9,     # FIX v29 ISSUE-7: reduced 12→9
+    "score_buy_pressure_high": 14,    # FIX v29 ISSUE-7: reduced 20→14 — execution-phase buy pressure was overwhelming accumulation signals
 
     # ── Whale Order Detection ─────────────────────────────────────────────────
     # Deteksi via volume spike besar pada 15m candle terbaru
@@ -286,9 +286,9 @@ CONFIG = {
 
     # ── v18 Micro Momentum (5m candles) ──────────────────────────────────────
     "micro_mom_candles":       12,       # berapa 5m candle untuk rata2 1h
-    "micro_accel_strong":      0.003,    # 0.3% acceleration = strong
-    "score_micro_accel":       15,       # strong micro accel score
-    "score_micro_accel_pos":   8,        # positive micro accel score
+    "micro_accel_strong":      0.006,    # FIX v29 ISSUE-3: raised 0.3%→0.6% — 0.3% is trivially hit by noise candles
+    "score_micro_accel":       10,       # FIX v29 ISSUE-3: reduced 15→10 — prevents single 5m candle from dominating score
+    "score_micro_accel_pos":   4,        # FIX v29 ISSUE-3: reduced 8→4 — weak positive accel no longer scores like execution signal
 
     # ── v18 Whale detection upgrade ──────────────────────────────────────────
     "whale_vol_mult_v18":      3.0,      # vol > 3× (bukan 5×)
@@ -351,7 +351,7 @@ CONFIG = {
 
     # STEP 8 — Momentum validation (5m price change)
     # FIX v23: dilonggarkan 0.0 → -0.005 (-0.5%) — flat coins tidak dibuang
-    "momentum_val_reject":    -0.005,    # reject only if price_chg_5m < -0.5%
+    "momentum_val_reject":    -0.010,    # FIX v29 ISSUE-5: tightened -0.5%→-1.0% — sideways/compression coins had -0.5% swings that triggered false rejection
 
     # STEP 9 — Wick ratio filter
     "wick_ratio_max":          0.4,      # reject if (high-close)/(high-low) > 0.4
@@ -646,414 +646,30 @@ EXCLUDED_KEYWORDS = ["XAU", "PAXG", "BTC", "ETH", "USDC", "DAI", "BUSD", "UST"]
 #  📋  WHITELIST
 # ══════════════════════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
-     "4USDT",
-"0GUSDT",
-"1000BONKUSDT",
-"1000PEPEUSDT",
-"1000RATSUSDT",
-"1000SHIBUSDT",
-"1000XECUSDT",
-"1INCHUSDT",
-"1MBABYDOGEUSDT",
-"2ZUSDT",
+    # ── Tier 1: Large Cap Altcoin (OI & volume tertinggi) ────────────────────
+    "DOGEUSDT", "ADAUSDT", "XMRUSDT", "LINKUSDT", "XLMUSDT", "HBARUSDT",
+    "LTCUSDT", "AVAXUSDT", "SHIBUSDT", "SUIUSDT", "TONUSDT",
+    "UNIUSDT", "DOTUSDT", "TAOUSDT", "AAVEUSDT", "PEPEUSDT",
+    "ETCUSDT", "NEARUSDT", "ONDOUSDT", "POLUSDT", "ICPUSDT", "ATOMUSDT",
+    "ENAUSDT", "KASUSDT", "ALGOUSDT", "RENDERUSDT", "FILUSDT", "APTUSDT",
+    "ARBUSDT", "JUPUSDT", "SEIUSDT", "STXUSDT", "DYDXUSDT", "VIRTUALUSDT",
 
-"AAVEUSDT",
-"ACEUSDT",
-"ACHUSDT",
-"ACTUSDT",
-"ADAUSDT",
-"AEROUSDT",
-"AGLDUSDT",
-"AINUSDT",
-"AIOUSDT",
-"AIXBTUSDT",
-"AKTUSDT",
-"ALCHUSDT",
-"ALGOUSDT",
-"ALICEUSDT",
-"ALLOUSDT",
-"ALTUSDT",
-"AMZNUSDT",
-"ANIMEUSDT",
-"ANKRUSDT",
-"APEUSDT",
-"APEXUSDT",
-"API3USDT",
-"APRUSDT",
-"APTUSDT",
-"ARUSDT",
-"ARBUSDT",
-"ARCUSDT",
-"ARIAUSDT",
-"ARKUSDT",
-"ARKMUSDT",
-"ARPAUSDT",
-"ASTERUSDT",
-"ATUSDT",
-"ATHUSDT",
-"ATOMUSDT",
-"AUCTIONUSDT",
-"AVAXUSDT",
-"AVNTUSDT",
-"AWEUSDT",
-"AXLUSDT",
-"AXSUSDT",
-"AZTECUSDT",
-"BUSDT",
-"B2USDT",
-"BABAUSDT",
-"BABYUSDT",
-"BANUSDT",
-"BANANAUSDT",
-"BANANAS31USDT",
-"BANKUSDT",
-"BARDUSDT",
-"BATUSDT",
-"BCHUSDT",
-"BEATUSDT",
-"BERAUSDT",
-"BGBUSDT",
-"BIGTIMEUSDT",
-"BIOUSDT",
-"BIRBUSDT",
-"BLASTUSDT",
-"BLESSUSDT",
-"BLURUSDT",
-"BNBUSDT",
-"BOMEUSDT",
-"BRETTUSDT",
-"BREVUSDT",
-"BROCCOLIUSDT",
-"BSVUSDT",
-"BTCUSDT",
-"BULLAUSDT",
-"C98USDT",
-"CAKEUSDT",
-"CCUSDT",
-"CELOUSDT",
-"CFXUSDT",
-"CHILLGUYUSDT",
-"CHZUSDT",
-"CLUSDT",
-"CLANKERUSDT",
-"CLOUSDT",
-"COAIUSDT",
-"COINUSDT",
-"COMPUSDT",
-"COOKIEUSDT",
-"COWUSDT",
-"CRCLUSDT",
-"CROUSDT",
-"CROSSUSDT",
-"CRVUSDT",
-"CTKUSDT",
-"CVCUSDT",
-"CVXUSDT",
-"CYBERUSDT",
-"CYSUSDT",
-"DASHUSDT",
-"DEEPUSDT",
-"DENTUSDT",
-"DEXEUSDT",
-"DOGEUSDT",
-"DOLOUSDT",
-"DOODUSDT",
-"DOTUSDT",
-"DRIFTUSDT",
-"DYDXUSDT",
-"DYMUSDT",
-"EGLDUSDT",
-"EIGENUSDT",
-"ENAUSDT",
-"ENJUSDT",
-"ENSUSDT",
-"ENSOUSDT",
-"EPICUSDT",
-"ESPUSDT",
-"ETCUSDT",
-"ETHUSDT",
-"ETHFIUSDT",
-"EURUSDUSDT",
-"FUSDT",
-"FARTCOINUSDT",
-"FETUSDT",
-"FFUSDT",
-"FIDAUSDT",
-"FILUSDT",
-"FLOKIUSDT",
-"FLUIDUSDT",
-"FOGOUSDT",
-"FOLKSUSDT",
-"FORMUSDT",
-"GALAUSDT",
-"GASUSDT",
-"GBPUSDUSDT",
-"GIGGLEUSDT",
-"GLMUSDT",
-"GMTUSDT",
-"GMXUSDT",
-"GOATUSDT",
+    # ── Tier 2: Mid Cap (OI signifikan, aktif di futures) ────────────────────
+    "FETUSDT", "INJUSDT", "PYTHUSDT", "GRTUSDT", "TIAUSDT", "LDOUSDT",
+    "OPUSDT", "ENSUSDT", "AXSUSDT", "PENDLEUSDT", "WIFUSDT", "SANDUSDT",
+    "MANAUSDT", "COMPUSDT", "GALAUSDT", "RAYUSDT", "RUNEUSDT", "EGLDUSDT",
+    "SNXUSDT", "ARUSDT", "CRVUSDT", "IMXUSDT", "EIGENUSDT", "JTOUSDT",
+    "CELOUSDT", "MASKUSDT", "APEUSDT", "MOVEUSDT", "MINAUSDT", "SONICUSDT",
+    "KAIAUSDT", "HYPEUSDT", "WLDUSDT", "STRKUSDT", "CFXUSDT", "BOMEUSDT",
 
-"GPSUSDT",
-"GRASSUSDT",
-"GRIFFAINUSDT",
-"GRTUSDT",
-"GUNUSDT",
-"GWEIUSDT",
-"HUSDT",
-"HBARUSDT",
-"HEIUSDT",
-"HEMIUSDT",
-"HMSTRUSDT",
-"HOLOUSDT",
-"HOMEUSDT",
-"HOODUSDT",
-"HYPEUSDT",
-"HYPERUSDT",
-"ICNTUSDT",
-"ICPUSDT",
-"IDOLUSDT",
-"ILVUSDT",
-"IMXUSDT",
-"INITUSDT",
-"INJUSDT",
-"INTCUSDT",
-"INXUSDT",
-"IOUSDT",
-"IOTAUSDT",
-"IOTXUSDT",
-"IPUSDT",
-"JASMYUSDT",
-"JCTUSDT",
-"JSTUSDT",
-"JTOUSDT",
-"JUPUSDT",
-"KAIAUSDT",
-"KAITOUSDT",
-"KASUSDT",
-"KAVAUSDT",
-"kBONKUSDT",
-"KERNELUSDT",
-"KGENUSDT",
-"KITEUSDT",
-"kPEPEUSDT",
-"kSHIBUSDT",
-"LAUSDT",
-"LABUSDT",
-"LAYERUSDT",
-"LDOUSDT",
-"LIGHTUSDT",
-"LINEAUSDT",
-"LINKUSDT",
-"LITUSDT",
-"LPTUSDT",
-"LSKUSDT",
-"LTCUSDT",
-"LUNAUSDT",
-"LUNCUSDT",
-"LYNUSDT",
-"MUSDT",
-"MAGICUSDT",
-"MAGMAUSDT",
-"MANAUSDT",
-"MANTAUSDT",
-"MANTRAUSDT",
-"MASKUSDT",
-"MAVUSDT",
-"MAVIAUSDT",
-"MBOXUSDT",
-"MEUSDT",
-"MEGAUSDT",
-"MELANIAUSDT",
-"MEMEUSDT",
-"MERLUSDT",
-"METUSDT",
-"METAUSDT",
-"MEWUSDT",
-"MINAUSDT",
-"MMTUSDT",
-"MNTUSDT",
-"MONUSDT",
-"MOODENGUSDT",
-"MORPHOUSDT",
-"MOVEUSDT",
-"MOVRUSDT",
-"MSFTUSDT",
-"MSTRUSDT",
-"MUUSDT",
-"MUBARAKUSDT",
-"MYXUSDT",
-"NAORISUSDT",
-"NEARUSDT",
-"NEIROCTOUSDT",
-"NEOUSDT",
-"NEWTUSDT",
-"NILUSDT",
-"NMRUSDT",
-"NOMUSDT",
-"NOTUSDT",
-
-"NXPCUSDT",
-"ONDOUSDT",
-"ONGUSDT",
-"ONTUSDT",
-"OPUSDT",
-"OPENUSDT",
-"OPNUSDT",
-"ORCAUSDT",
-"ORCLUSDT",
-"ORDIUSDT",
-"OXTUSDT",
-"PARTIUSDT",
-"PAXGUSDT",
-"PENDLEUSDT",
-"PENGUUSDT",
-"PEOPLEUSDT",
-"PEPEUSDT",
-"PHAUSDT",
-"PIEVERSEUSDT",
-"PIPPINUSDT",
-"PLTRUSDT",
-"PLUMEUSDT",
-"PNUTUSDT",
-"POLUSDT",
-"POLYXUSDT",
-"POPCATUSDT",
-"POWERUSDT",
-"PROMPTUSDT",
-"PROVEUSDT",
-"PUMPUSDT",
-"PURRUSDT",
-"PYTHUSDT",
-"QUSDT",
-"QNTUSDT",
-"QQQUSDT",
-"RAVEUSDT",
-"RAYUSDT",
-"RDDTUSDT",
-"RECALLUSDT",
-"RENDERUSDT",
-"RESOLVUSDT",
-"REZUSDT",
-"RIVERUSDT",
-"ROBOUSDT",
-"ROSEUSDT",
-"RPLUSDT",
-"RSRUSDT",
-"RUNEUSDT",
-"SUSDT",
-"SAGAUSDT",
-"SAHARAUSDT",
-"SAMSUNGUSDT",
-"SANDUSDT",
-"SAPIENUSDT",
-"SEIUSDT",
-"SENTUSDT",
-"SHIBUSDT",
-"SIGNUSDT",
-"SIRENUSDT",
-"SKHYNIXUSDT",
-"SKRUSDT",
-"SKYUSDT",
-"SKYAIUSDT",
-"SLPUSDT",
-"SNXUSDT",
-"SOLUSDT",
-"SOMIUSDT",
-"SONICUSDT",
-"SOONUSDT",
-"SOPHUSDT",
-"SPACEUSDT",
-"SPKUSDT",
-"SPXUSDT",
-"SPYUSDT",
-"SQDUSDT",
-"SSVUSDT",
-"STABLEUSDT",
-"STBLUSDT",
-"STEEMUSDT",
-"STOUSDT",
-"STRKUSDT",
-"STXUSDT",
-"SUIUSDT",
-"SUNUSDT",
-"SUPERUSDT",
-"SUSHIUSDT",
-"SYRUPUSDT",
-"TUSDT",
-"TACUSDT",
-"TAGUSDT",
-"TAIKOUSDT",
-"TAOUSDT",
-"THEUSDT",
-"THETAUSDT",
-"TIAUSDT",
-"TNSRUSDT",
-"TONUSDT",
-"TOSHIUSDT",
-"TOWNSUSDT",
-"TRBUSDT",
-"TRIAUSDT",
-"TRUMPUSDT",
-"TRXUSDT",
-"TSLAUSDT",
-"TURBOUSDT",
-"UAIUSDT",
-"UBUSDT",
-"UMAUSDT",
-"UNIUSDT",
-"USUSDT",
-"USDCUSDT",
-"USDKRWUSDT",
-"USELESSUSDT",
-"USUALUSDT",
-"VANAUSDT",
-"VANRYUSDT",
-"VETUSDT",
-"VINEUSDT",
-"VIRTUALUSDT",
-"VTHOUSDT",
-"VVVUSDT",
-"WUSDT",
-"WALUSDT",
-"WAXPUSDT",
-"WCTUSDT",
-"WETUSDT",
-"WIFUSDT",
-"WLDUSDT",
-"WLFIUSDT",
-"WOOUSDT",
-"WTIUSDT",
-"XAGUSDT",
-"XAIUSDT",
-
-"XAUTUSDT",
-"XCUUSDT",
-"XDCUSDT",
-"XLMUSDT",
-"XMRUSDT",
-"XPDUSDT",
-"XPINUSDT",
-"XPLUSDT",
-
-"XRPUSDT",
-"XTZUSDT",
-"XVGUSDT",
-"YGGUSDT",
-"YZYUSDT",
-"ZAMAUSDT",
-"ZBTUSDT",
-"ZECUSDT",
-"ZENUSDT",
-"ZEREBROUSDT",
-"ZETAUSDT",
-"ZILUSDT",
-"ZKUSDT",
-"ZKCUSDT",
-"ZKJUSDT",
-"ZKPUSDT",
-"ZORAUSDT",
-"ZROUSDT",
+    # ── Tier 3: Aktif trading, OI > threshold ────────────────────────────────
+    "FLOKIUSDT", "CAKEUSDT", "CHZUSDT", "HNTUSDT", "ROSEUSDT", "IOTXUSDT",
+    "ANKRUSDT", "ZILUSDT", "ONTUSDT", "ENJUSDT", "GMTUSDT", "NOTUSDT",
+    "PEOPLEUSDT", "METISUSDT", "AIXBTUSDT", "GOATUSDT", "PNUTUSDT",
+    "GRASSUSDT", "POPCATUSDT", "ORDIUSDT", "MOODENGUSDT", "BIOUSDT",
+    "MAGICUSDT", "REZUSDT", "ARPAUSDT", "ACTUSDT", "USUALUSDT",
+    "SLPUSDT", "XAIUSDT", "BLURUSDT", "ARKMUSDT", "API3USDT", "AGLDUSDT",
+    "TNSRUSDT", "LAYERUSDT", "ANIMEUSDT", "YGGUSDT", "THEUSDT",
 }
 
 GRAN_MAP    = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
@@ -6333,7 +5949,14 @@ def master_score(symbol, ticker):
     # ══════════════════════════════════════════════════════════════════════════
 
     # Module 1 — Multi-TF Momentum Acceleration
-    if _v27_mom_accel.get("is_accelerating"):
+    # FIX v29 ISSUE-2: guard against triple-count. micro_mom (0c) already scores
+    # 5m/15m/1h acceleration. mom_accel (0d) already guards against micro_mom.
+    # v27 Module 1 had no such guard, so when micro_mom fired, momentum was
+    # effectively scored 3 times (micro_mom + mom_accel bypass + v27_mom_accel).
+    # Guard: v27 Module 1 only fires when neither of the earlier paths is active.
+    if (_v27_mom_accel.get("is_accelerating")
+            and not micro_mom.get("is_accelerating")
+            and not mom_accel.get("is_accelerating")):
         score += _v27_mom_accel["score"]
         signals.append(_v27_mom_accel["label"])
 
@@ -6375,26 +5998,26 @@ def master_score(symbol, ticker):
     #  SCORING v28 — PRE-PUMP ENERGY BONUSES
     # ══════════════════════════════════════════════════════════════════════════
 
-    # Add component bonuses to heuristic score
-    # PRE-PUMP ENGINE v28
+    # FIX v29 ISSUE-1: v28 component bonuses removed from pre-blend heuristic.
+    # These 5 components are already summed into pre_pump_energy_score, which is
+    # added post-blend via _v28_energy_contrib. Scoring them here AND post-blend
+    # created a ~1.65x effective multiplier on every v28 signal, causing the
+    # system to over-prioritise execution-phase coins with active energy.
+    # Signal labels are preserved so Telegram alerts continue to surface them.
+    # PRE-PUMP ENGINE v28 — label collection only (score increments removed)
     if _v28_energy["compression_score"] > 0:
-        score += _v28_energy["compression_score"]
         signals.append(_v28_compress["label"])
 
     if _v28_energy["absorption_score"] > 0:
-        score += _v28_energy["absorption_score"]
         signals.append(_v28_absorb["label"])
 
     if _v28_energy["orderbook_support_score"] > 0:
-        score += _v28_energy["orderbook_support_score"]
         signals.append(_v28_ob_sup["label"])
 
     if _v28_energy["liquidity_sweep_score"] > 0:
-        score += _v28_energy["liquidity_sweep_score"]
         signals.append(_v28_wick_sweep["label"])
 
     if _v28_energy["supply_removal_score"] > 0:
-        score += _v28_energy["supply_removal_score"]
         signals.append(_v28_supply_rem["label"])
 
     # Pre-pump energy label (always show if any component fired)
