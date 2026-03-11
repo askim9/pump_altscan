@@ -153,9 +153,9 @@ CONFIG = {
     "accum_atr_lookback_short": 6,
     "accum_atr_contract_ratio": 0.75,
     "accum_max_pos_in_range":  0.70,
-    "score_accumulation":      10,    # FIX v30 P3: raised 4→10 — smart money accumulation is strong pre-pump signal
+    "score_accumulation":      4,
     # FIX v18: score_vol_compression hanya aktif jika is_accumulating=False
-    "score_vol_compression":   8,     # FIX v30 P3: raised 4→8 — vol compression combined with accumulation = high-confidence setup
+    "score_vol_compression":   4,
 
     # ── HTF Accumulation 4H ───────────────────────────────────────────────────
     "htf_atr_contract_ratio":  0.85,
@@ -252,8 +252,8 @@ CONFIG = {
 
     # ── Fake Pump Filter ──────────────────────────────────────────────────────
     # Harga naik tapi buy_ratio < 50% → spoof / distribusi
-    "fake_pump_price_min":     0.3,      # price naik minimal 0.3% dalam 3h
-    "fake_pump_buy_max":       0.50,     # buy_ratio < 50%
+    "fake_pump_price_min":     0.3,      # price naik minimal 0.3% dalam 3h  (legacy — not used by v30 logic)
+    "fake_pump_buy_max":       0.45,     # FIX-G3: tightened 0.50→0.45 per spec
     "penalty_fake_pump":       -10,
 
     # ── Logistic Probability Model ────────────────────────────────────────────
@@ -274,7 +274,7 @@ CONFIG = {
     "entry_breakout_atr_mult": 0.15,     # entry = resistance + 0.15×ATR
     "entry_mean_rev_atr_mult": 0.20,     # entry = support + 0.20×ATR
     "sl_atr_base":             2.5,      # SL = entry - ATR × 2.5
-    "sl_atr_volatile":         3.0,      # SL untuk coin volatile
+    "sl_atr_volatile":         3.0,      # SL untuk coin volatile (≥ 2.5 per FIX-G7)
     "tp1_atr_mult":            1.5,      # v18: TP1 = entry + ATR × 1.5
     "tp2_atr_mult":            3.0,      # v18: TP2 = entry + ATR × 3
     "tp3_atr_mult":            5.0,      # v18: TP3 = entry + ATR × 5
@@ -286,9 +286,9 @@ CONFIG = {
 
     # ── v18 Micro Momentum (5m candles) ──────────────────────────────────────
     "micro_mom_candles":       12,       # berapa 5m candle untuk rata2 1h
-    "micro_accel_strong":      0.008,    # FIX v30 P5: raised further 0.6%→0.8% — dampen sub-0.8% 5m noise bursts
-    "score_micro_accel":       8,        # FIX v30 P5: reduced 10→8 — part of momentum cap
-    "score_micro_accel_pos":   2,        # FIX v30 P5: reduced 4→2 — weak positive micro accel is informational only
+    "micro_accel_strong":      0.006,    # FIX v29 ISSUE-3: raised 0.3%→0.6% — 0.3% is trivially hit by noise candles
+    "score_micro_accel":       10,       # FIX v29 ISSUE-3: reduced 15→10 — prevents single 5m candle from dominating score
+    "score_micro_accel_pos":   4,        # FIX v29 ISSUE-3: reduced 8→4 — weak positive accel no longer scores like execution signal
 
     # ── v18 Whale detection upgrade ──────────────────────────────────────────
     "whale_vol_mult_v18":      3.0,      # vol > 3× (bukan 5×)
@@ -316,8 +316,8 @@ CONFIG = {
     "timing_eta_60min":        0.20,     # timing > 0.20 → ETA 60 min
 
     # ── v18 Fake Pump upgrade ─────────────────────────────────────────────────
-    "fake_price_spike_min":    0.005,    # harga naik > 0.5% dalam 3h
-    "fake_oi_flat_max":        1.5,      # OI change < 1.5% = OI flat
+    "fake_price_spike_min":    0.020,    # FIX-G3: raised 0.5%→2.0% — filter must require real spike
+    "fake_oi_flat_max":        1.0,      # FIX-G3: tightened 1.5%→1.0% per spec
     "fake_sell_press_max":     0.48,     # buy_ratio < 48% = sell pressure
     "fake_penalty_mild":      -5,        # 2 kondisi fake
     "fake_penalty_strong":    -12,       # 3 kondisi fake
@@ -341,8 +341,8 @@ CONFIG = {
     "wscore_rsi":              0.05,
 
     # STEP 5 — Logistic probability params
-    "logistic_k":              0.0693,    # FIX v30 P4: recalibrated 0.08→0.0693 (ln4/20) — score=50 now maps to 50% not 40%
-    "logistic_threshold":      50.0,      # FIX v30 P4: recentered 55→50 — curve was shifted right, inflating prob at low scores
+    "logistic_k":              0.0833,  # FIX-G2: scale = 1/12 ≈ 0.0833 (prob_scale=12)
+    "logistic_threshold":      65.0,    # FIX-G2: center raised 55→65 per spec
 
     # STEP 6 — Trend filter EMAs
     "ema_fast":                20,
@@ -646,414 +646,30 @@ EXCLUDED_KEYWORDS = ["XAU", "PAXG", "BTC", "ETH", "USDC", "DAI", "BUSD", "UST"]
 #  📋  WHITELIST
 # ══════════════════════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
-     "4USDT",
-"0GUSDT",
-"1000BONKUSDT",
-"1000PEPEUSDT",
-"1000RATSUSDT",
-"1000SHIBUSDT",
-"1000XECUSDT",
-"1INCHUSDT",
-"1MBABYDOGEUSDT",
-"2ZUSDT",
+    # ── Tier 1: Large Cap Altcoin (OI & volume tertinggi) ────────────────────
+    "DOGEUSDT", "ADAUSDT", "XMRUSDT", "LINKUSDT", "XLMUSDT", "HBARUSDT",
+    "LTCUSDT", "AVAXUSDT", "SHIBUSDT", "SUIUSDT", "TONUSDT",
+    "UNIUSDT", "DOTUSDT", "TAOUSDT", "AAVEUSDT", "PEPEUSDT",
+    "ETCUSDT", "NEARUSDT", "ONDOUSDT", "POLUSDT", "ICPUSDT", "ATOMUSDT",
+    "ENAUSDT", "KASUSDT", "ALGOUSDT", "RENDERUSDT", "FILUSDT", "APTUSDT",
+    "ARBUSDT", "JUPUSDT", "SEIUSDT", "STXUSDT", "DYDXUSDT", "VIRTUALUSDT",
 
-"AAVEUSDT",
-"ACEUSDT",
-"ACHUSDT",
-"ACTUSDT",
-"ADAUSDT",
-"AEROUSDT",
-"AGLDUSDT",
-"AINUSDT",
-"AIOUSDT",
-"AIXBTUSDT",
-"AKTUSDT",
-"ALCHUSDT",
-"ALGOUSDT",
-"ALICEUSDT",
-"ALLOUSDT",
-"ALTUSDT",
-"AMZNUSDT",
-"ANIMEUSDT",
-"ANKRUSDT",
-"APEUSDT",
-"APEXUSDT",
-"API3USDT",
-"APRUSDT",
-"APTUSDT",
-"ARUSDT",
-"ARBUSDT",
-"ARCUSDT",
-"ARIAUSDT",
-"ARKUSDT",
-"ARKMUSDT",
-"ARPAUSDT",
-"ASTERUSDT",
-"ATUSDT",
-"ATHUSDT",
-"ATOMUSDT",
-"AUCTIONUSDT",
-"AVAXUSDT",
-"AVNTUSDT",
-"AWEUSDT",
-"AXLUSDT",
-"AXSUSDT",
-"AZTECUSDT",
-"BUSDT",
-"B2USDT",
-"BABAUSDT",
-"BABYUSDT",
-"BANUSDT",
-"BANANAUSDT",
-"BANANAS31USDT",
-"BANKUSDT",
-"BARDUSDT",
-"BATUSDT",
-"BCHUSDT",
-"BEATUSDT",
-"BERAUSDT",
-"BGBUSDT",
-"BIGTIMEUSDT",
-"BIOUSDT",
-"BIRBUSDT",
-"BLASTUSDT",
-"BLESSUSDT",
-"BLURUSDT",
-"BNBUSDT",
-"BOMEUSDT",
-"BRETTUSDT",
-"BREVUSDT",
-"BROCCOLIUSDT",
-"BSVUSDT",
-"BTCUSDT",
-"BULLAUSDT",
-"C98USDT",
-"CAKEUSDT",
-"CCUSDT",
-"CELOUSDT",
-"CFXUSDT",
-"CHILLGUYUSDT",
-"CHZUSDT",
-"CLUSDT",
-"CLANKERUSDT",
-"CLOUSDT",
-"COAIUSDT",
-"COINUSDT",
-"COMPUSDT",
-"COOKIEUSDT",
-"COWUSDT",
-"CRCLUSDT",
-"CROUSDT",
-"CROSSUSDT",
-"CRVUSDT",
-"CTKUSDT",
-"CVCUSDT",
-"CVXUSDT",
-"CYBERUSDT",
-"CYSUSDT",
-"DASHUSDT",
-"DEEPUSDT",
-"DENTUSDT",
-"DEXEUSDT",
-"DOGEUSDT",
-"DOLOUSDT",
-"DOODUSDT",
-"DOTUSDT",
-"DRIFTUSDT",
-"DYDXUSDT",
-"DYMUSDT",
-"EGLDUSDT",
-"EIGENUSDT",
-"ENAUSDT",
-"ENJUSDT",
-"ENSUSDT",
-"ENSOUSDT",
-"EPICUSDT",
-"ESPUSDT",
-"ETCUSDT",
-"ETHUSDT",
-"ETHFIUSDT",
-"EURUSDUSDT",
-"FUSDT",
-"FARTCOINUSDT",
-"FETUSDT",
-"FFUSDT",
-"FIDAUSDT",
-"FILUSDT",
-"FLOKIUSDT",
-"FLUIDUSDT",
-"FOGOUSDT",
-"FOLKSUSDT",
-"FORMUSDT",
-"GALAUSDT",
-"GASUSDT",
-"GBPUSDUSDT",
-"GIGGLEUSDT",
-"GLMUSDT",
-"GMTUSDT",
-"GMXUSDT",
-"GOATUSDT",
+    # ── Tier 2: Mid Cap (OI signifikan, aktif di futures) ────────────────────
+    "FETUSDT", "INJUSDT", "PYTHUSDT", "GRTUSDT", "TIAUSDT", "LDOUSDT",
+    "OPUSDT", "ENSUSDT", "AXSUSDT", "PENDLEUSDT", "WIFUSDT", "SANDUSDT",
+    "MANAUSDT", "COMPUSDT", "GALAUSDT", "RAYUSDT", "RUNEUSDT", "EGLDUSDT",
+    "SNXUSDT", "ARUSDT", "CRVUSDT", "IMXUSDT", "EIGENUSDT", "JTOUSDT",
+    "CELOUSDT", "MASKUSDT", "APEUSDT", "MOVEUSDT", "MINAUSDT", "SONICUSDT",
+    "KAIAUSDT", "HYPEUSDT", "WLDUSDT", "STRKUSDT", "CFXUSDT", "BOMEUSDT",
 
-"GPSUSDT",
-"GRASSUSDT",
-"GRIFFAINUSDT",
-"GRTUSDT",
-"GUNUSDT",
-"GWEIUSDT",
-"HUSDT",
-"HBARUSDT",
-"HEIUSDT",
-"HEMIUSDT",
-"HMSTRUSDT",
-"HOLOUSDT",
-"HOMEUSDT",
-"HOODUSDT",
-"HYPEUSDT",
-"HYPERUSDT",
-"ICNTUSDT",
-"ICPUSDT",
-"IDOLUSDT",
-"ILVUSDT",
-"IMXUSDT",
-"INITUSDT",
-"INJUSDT",
-"INTCUSDT",
-"INXUSDT",
-"IOUSDT",
-"IOTAUSDT",
-"IOTXUSDT",
-"IPUSDT",
-"JASMYUSDT",
-"JCTUSDT",
-"JSTUSDT",
-"JTOUSDT",
-"JUPUSDT",
-"KAIAUSDT",
-"KAITOUSDT",
-"KASUSDT",
-"KAVAUSDT",
-"kBONKUSDT",
-"KERNELUSDT",
-"KGENUSDT",
-"KITEUSDT",
-"kPEPEUSDT",
-"kSHIBUSDT",
-"LAUSDT",
-"LABUSDT",
-"LAYERUSDT",
-"LDOUSDT",
-"LIGHTUSDT",
-"LINEAUSDT",
-"LINKUSDT",
-"LITUSDT",
-"LPTUSDT",
-"LSKUSDT",
-"LTCUSDT",
-"LUNAUSDT",
-"LUNCUSDT",
-"LYNUSDT",
-"MUSDT",
-"MAGICUSDT",
-"MAGMAUSDT",
-"MANAUSDT",
-"MANTAUSDT",
-"MANTRAUSDT",
-"MASKUSDT",
-"MAVUSDT",
-"MAVIAUSDT",
-"MBOXUSDT",
-"MEUSDT",
-"MEGAUSDT",
-"MELANIAUSDT",
-"MEMEUSDT",
-"MERLUSDT",
-"METUSDT",
-"METAUSDT",
-"MEWUSDT",
-"MINAUSDT",
-"MMTUSDT",
-"MNTUSDT",
-"MONUSDT",
-"MOODENGUSDT",
-"MORPHOUSDT",
-"MOVEUSDT",
-"MOVRUSDT",
-"MSFTUSDT",
-"MSTRUSDT",
-"MUUSDT",
-"MUBARAKUSDT",
-"MYXUSDT",
-"NAORISUSDT",
-"NEARUSDT",
-"NEIROCTOUSDT",
-"NEOUSDT",
-"NEWTUSDT",
-"NILUSDT",
-"NMRUSDT",
-"NOMUSDT",
-"NOTUSDT",
-
-"NXPCUSDT",
-"ONDOUSDT",
-"ONGUSDT",
-"ONTUSDT",
-"OPUSDT",
-"OPENUSDT",
-"OPNUSDT",
-"ORCAUSDT",
-"ORCLUSDT",
-"ORDIUSDT",
-"OXTUSDT",
-"PARTIUSDT",
-"PAXGUSDT",
-"PENDLEUSDT",
-"PENGUUSDT",
-"PEOPLEUSDT",
-"PEPEUSDT",
-"PHAUSDT",
-"PIEVERSEUSDT",
-"PIPPINUSDT",
-"PLTRUSDT",
-"PLUMEUSDT",
-"PNUTUSDT",
-"POLUSDT",
-"POLYXUSDT",
-"POPCATUSDT",
-"POWERUSDT",
-"PROMPTUSDT",
-"PROVEUSDT",
-"PUMPUSDT",
-"PURRUSDT",
-"PYTHUSDT",
-"QUSDT",
-"QNTUSDT",
-"QQQUSDT",
-"RAVEUSDT",
-"RAYUSDT",
-"RDDTUSDT",
-"RECALLUSDT",
-"RENDERUSDT",
-"RESOLVUSDT",
-"REZUSDT",
-"RIVERUSDT",
-"ROBOUSDT",
-"ROSEUSDT",
-"RPLUSDT",
-"RSRUSDT",
-"RUNEUSDT",
-"SUSDT",
-"SAGAUSDT",
-"SAHARAUSDT",
-"SAMSUNGUSDT",
-"SANDUSDT",
-"SAPIENUSDT",
-"SEIUSDT",
-"SENTUSDT",
-"SHIBUSDT",
-"SIGNUSDT",
-"SIRENUSDT",
-"SKHYNIXUSDT",
-"SKRUSDT",
-"SKYUSDT",
-"SKYAIUSDT",
-"SLPUSDT",
-"SNXUSDT",
-"SOLUSDT",
-"SOMIUSDT",
-"SONICUSDT",
-"SOONUSDT",
-"SOPHUSDT",
-"SPACEUSDT",
-"SPKUSDT",
-"SPXUSDT",
-"SPYUSDT",
-"SQDUSDT",
-"SSVUSDT",
-"STABLEUSDT",
-"STBLUSDT",
-"STEEMUSDT",
-"STOUSDT",
-"STRKUSDT",
-"STXUSDT",
-"SUIUSDT",
-"SUNUSDT",
-"SUPERUSDT",
-"SUSHIUSDT",
-"SYRUPUSDT",
-"TUSDT",
-"TACUSDT",
-"TAGUSDT",
-"TAIKOUSDT",
-"TAOUSDT",
-"THEUSDT",
-"THETAUSDT",
-"TIAUSDT",
-"TNSRUSDT",
-"TONUSDT",
-"TOSHIUSDT",
-"TOWNSUSDT",
-"TRBUSDT",
-"TRIAUSDT",
-"TRUMPUSDT",
-"TRXUSDT",
-
-"TURBOUSDT",
-"UAIUSDT",
-"UBUSDT",
-"UMAUSDT",
-"UNIUSDT",
-"USUSDT",
-"USDCUSDT",
-"USDKRWUSDT",
-"USELESSUSDT",
-"USUALUSDT",
-"VANAUSDT",
-"VANRYUSDT",
-"VETUSDT",
-"VINEUSDT",
-"VIRTUALUSDT",
-"VTHOUSDT",
-"VVVUSDT",
-"WUSDT",
-"WALUSDT",
-"WAXPUSDT",
-"WCTUSDT",
-"WETUSDT",
-"WIFUSDT",
-"WLDUSDT",
-"WLFIUSDT",
-"WOOUSDT",
-"WTIUSDT",
-"XAGUSDT",
-"XAIUSDT",
-
-"XAUTUSDT",
-"XCUUSDT",
-"XDCUSDT",
-"XLMUSDT",
-"XMRUSDT",
-"XPDUSDT",
-"XPINUSDT",
-"XPLUSDT",
-
-"XRPUSDT",
-"XTZUSDT",
-"XVGUSDT",
-"YGGUSDT",
-"YZYUSDT",
-"ZAMAUSDT",
-"ZBTUSDT",
-"ZECUSDT",
-"ZENUSDT",
-"ZEREBROUSDT",
-"ZETAUSDT",
-"ZILUSDT",
-"ZKUSDT",
-"ZKCUSDT",
-"ZKJUSDT",
-"ZKPUSDT",
-"ZORAUSDT",
-"ZROUSDT",
+    # ── Tier 3: Aktif trading, OI > threshold ────────────────────────────────
+    "FLOKIUSDT", "CAKEUSDT", "CHZUSDT", "HNTUSDT", "ROSEUSDT", "IOTXUSDT",
+    "ANKRUSDT", "ZILUSDT", "ONTUSDT", "ENJUSDT", "GMTUSDT", "NOTUSDT",
+    "PEOPLEUSDT", "METISUSDT", "AIXBTUSDT", "GOATUSDT", "PNUTUSDT",
+    "GRASSUSDT", "POPCATUSDT", "ORDIUSDT", "MOODENGUSDT", "BIOUSDT",
+    "MAGICUSDT", "REZUSDT", "ARPAUSDT", "ACTUSDT", "USUALUSDT",
+    "SLPUSDT", "XAIUSDT", "BLURUSDT", "ARKMUSDT", "API3USDT", "AGLDUSDT",
+    "TNSRUSDT", "LAYERUSDT", "ANIMEUSDT", "YGGUSDT", "THEUSDT",
 }
 
 GRAN_MAP    = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
@@ -1690,38 +1306,51 @@ def calc_micro_momentum(candles_5m):
 
 def calc_momentum_acceleration(candles):
     """
-    1h momentum acceleration (dipertahankan sebagai secondary signal).
-    Digunakan sebagai input pump probability dan timing model.
+    FIX-G4 v30 — Short-term momentum acceleration using 15m window.
+
+    Formula per spec:
+      accel = (price_15m - price_30m) - (price_30m - price_45m)
+
+    candles should be 15m candles (c15m):
+      candles[-1] = now (price_now)
+      candles[-2] = 15m ago
+      candles[-3] = 30m ago
+      candles[-4] = 45m ago
+
+    Scoring weights unchanged from v18.
     """
-    if len(candles) < 7:
+    if len(candles) < 4:
         return {"acceleration": 0.0, "score": 0, "label": "Data kurang",
                 "is_accelerating": False, "is_strong": False,
                 "momentum1": 0.0, "momentum2": 0.0}
-    price_now = candles[-1]["close"]
-    price_3h  = candles[-4]["close"]
-    price_6h  = candles[-7]["close"]
-    if price_3h <= 0 or price_6h <= 0:
+    price_15m = candles[-2]["close"]
+    price_30m = candles[-3]["close"]
+    price_45m = candles[-4]["close"]
+    if price_30m <= 0 or price_45m <= 0:
         return {"acceleration": 0.0, "score": 0, "label": "Data invalid",
                 "is_accelerating": False, "is_strong": False,
                 "momentum1": 0.0, "momentum2": 0.0}
-    momentum1    = (price_now - price_3h) / price_3h
-    momentum2    = (price_3h  - price_6h) / price_6h
-    acceleration = momentum1 - momentum2
+    # Per spec: accel = (price_15m - price_30m) - (price_30m - price_45m)
+    momentum1    = price_15m - price_30m    # recent 15m move
+    momentum2    = price_30m - price_45m    # prior  15m move
+    acceleration = momentum1 - momentum2    # change in momentum
+    # Normalise by price for threshold comparison
+    accel_pct    = acceleration / price_30m if price_30m > 0 else 0.0
     strong_th    = CONFIG["accel_strong_threshold"]
-    if acceleration > strong_th:
+    if accel_pct > strong_th:
         score, is_accel, is_strong = CONFIG["score_accel_strong"], True, True
-        label = (f"⚡ 1h Momentum Accel KUAT {acceleration*100:+.2f}% — "
-                 f"m1={momentum1*100:+.2f}% > m2={momentum2*100:+.2f}%")
-    elif acceleration > 0:
+        label = (f"⚡ 15m Momentum Accel KUAT {accel_pct*100:+.3f}% — "
+                 f"m1={momentum1:.6g} > m2={momentum2:.6g}")
+    elif accel_pct > 0:
         score, is_accel, is_strong = CONFIG["score_accel_positive"], True, False
-        label = f"📈 1h Momentum Accel {acceleration*100:+.2f}%"
+        label = f"📈 15m Momentum Accel {accel_pct*100:+.3f}%"
     else:
         score, is_accel, is_strong = 0, False, False
-        label = f"Momentum 1h melambat {acceleration*100:+.2f}%"
+        label = f"15m Momentum flat/neg {accel_pct*100:+.3f}%"
     return {
-        "acceleration":    round(acceleration, 5),
-        "momentum1":       round(momentum1, 5),
-        "momentum2":       round(momentum2, 5),
+        "acceleration":    round(accel_pct, 5),
+        "momentum1":       round(momentum1, 8),
+        "momentum2":       round(momentum2, 8),
         "score":           score,
         "label":           label,
         "is_accelerating": is_accel,
@@ -1835,16 +1464,17 @@ def detect_whale_order(candles_15m, oi_data):
 
 def detect_fake_pump(candles, buy_pressure_ratio, oi_data):
     """
-    FIX v18 #7 — Fake Pump Filter Diperkuat.
+    FIX-G3 v30 — Fake Pump Filter rewritten per spec.
 
-    v18: price_up AND buy<50% → fake (terlalu sederhana)
-    v18: fake_score berbasis 4 kondisi bertingkat:
-      1. price_spike: harga naik > 0.5% dalam 3h
-      2. vol_spike: volume naik tapi buy rendah
-      3. OI_flat: OI tidak naik (tidak ada posisi baru)
-      4. sell_pressure: buy_ratio < 48%
+    Condition (all three must be true simultaneously):
+      price_change  >= 2.0%        (fake_price_spike_min)
+      buy_ratio     <= 0.45        (fake_buy_ratio_max)
+      abs(oi_change) <= 1.0%       (fake_oi_flat_max)
 
-    Penalti proporsional: 2 kondisi→−5, 3 kondisi→−12, 4 kondisi→−20
+    Penalty: -20 fixed when all three conditions met.
+
+    Legacy 4-condition tiered logic retained as secondary path
+    for partial conditions (n_cond < 3 primary conditions).
     """
     if len(candles) < 4:
         return {"is_fake": False, "penalty": 0, "label": "", "n_cond": 0}
@@ -1855,29 +1485,44 @@ def detect_fake_pump(candles, buy_pressure_ratio, oi_data):
         return {"is_fake": False, "penalty": 0, "label": "", "n_cond": 0}
 
     price_chg_3h = (price_now - price_3h) / price_3h
+    oi_change    = abs(oi_data.get("change_pct", 0)) if not oi_data.get("is_new", True) else 0.0
 
-    # Kondisi 1: Price spike
-    cond_price_spike = price_chg_3h > CONFIG["fake_price_spike_min"]
+    # FIX-G3: Primary 3-condition check per spec
+    cond_price_spike  = price_chg_3h >= CONFIG["fake_price_spike_min"]     # >= 2.0%
+    cond_low_buy      = buy_pressure_ratio <= CONFIG["fake_pump_buy_max"]  # <= 0.45
+    cond_oi_flat      = oi_change <= CONFIG["fake_oi_flat_max"]            # <= 1.0%
 
-    # Kondisi 2: Volume anomali (vol naik tapi bukan buy)
+    if cond_price_spike and cond_low_buy and cond_oi_flat:
+        penalty  = -20
+        severity = "SEVERE"
+        label = (
+            f"⚠️ FAKE PUMP SEVERE — harga +{price_chg_3h*100:.2f}% "
+            f"tapi buy={buy_pressure_ratio*100:.0f}%≤45% & OI±{oi_change:.2f}%≤1%"
+        )
+        return {
+            "is_fake":           True,
+            "penalty":           penalty,
+            "label":             label,
+            "n_cond":            3,
+            "severity":          severity,
+            "price_chg_3h":      round(price_chg_3h * 100, 2),
+            "cond_price_spike":  cond_price_spike,
+            "cond_low_buy":      cond_low_buy,
+            "cond_oi_flat":      cond_oi_flat,
+        }
+
+    # Secondary: legacy volume-anomaly + sell-pressure tiered check
     vol_anomaly = False
     if len(candles) >= 8:
         avg_vol = sum(c["volume_usd"] for c in candles[-8:-3]) / 5
         cur_vol = sum(c["volume_usd"] for c in candles[-3:]) / 3
         vol_anomaly = cur_vol > avg_vol * 1.5 and buy_pressure_ratio < 0.55
 
-    # Kondisi 3: OI flat (tidak ada posisi baru = tidak ada institutional)
-    oi_flat = (oi_data.get("is_new", True) or
-               abs(oi_data.get("change_pct", 0)) < CONFIG["fake_oi_flat_max"])
-
-    # Kondisi 4: Sell pressure dominan
     sell_pressure = buy_pressure_ratio < CONFIG["fake_sell_press_max"]
 
-    # Hitung n kondisi yang aktif
-    conditions = [cond_price_spike, vol_anomaly, oi_flat, sell_pressure]
+    conditions = [cond_price_spike, vol_anomaly, cond_oi_flat, sell_pressure]
     n_cond = sum(conditions)
 
-    # Hanya flag sebagai fake jika minimal price_spike + 1 kondisi lain
     if not cond_price_spike or n_cond < 2:
         return {"is_fake": False, "penalty": 0, "label": "", "n_cond": n_cond}
 
@@ -1894,7 +1539,7 @@ def detect_fake_pump(candles, buy_pressure_ratio, oi_data):
     label = (
         f"⚠️ FAKE PUMP {severity} ({n_cond}/4 cond) — "
         f"harga +{price_chg_3h*100:.2f}% tapi: "
-        f"vol_anomaly={vol_anomaly}, OI_flat={oi_flat}, "
+        f"vol_anomaly={vol_anomaly}, OI_flat={cond_oi_flat}, "
         f"sell_press={sell_pressure} (buy={buy_pressure_ratio*100:.0f}%)"
     )
 
@@ -1907,7 +1552,7 @@ def detect_fake_pump(candles, buy_pressure_ratio, oi_data):
         "price_chg_3h":      round(price_chg_3h * 100, 2),
         "cond_price_spike":  cond_price_spike,
         "cond_vol_anomaly":  vol_anomaly,
-        "cond_oi_flat":      oi_flat,
+        "cond_oi_flat":      cond_oi_flat,
         "cond_sell_pressure": sell_pressure,
     }
 
@@ -2092,14 +1737,18 @@ def calc_entry_v18(candles, vwap, price_now, atr_abs_val, market_regime, sr,
                           if rv["level"] > price_now * 0.998]
         if res_levels:
             breakout_lvl = min(res_levels)
-            entry        = breakout_lvl * (1.0 + CONFIG["entry_retest_buffer"])
-            entry_reason = f"BREAKOUT retest — R1 {_fmt_price(breakout_lvl)} + buffer"
+            # FIX-G6: entry = breakout_level * 0.995 (pullback entry below breakout)
+            entry        = breakout_lvl * 0.995
+            entry_reason = f"BREAKOUT pullback — R1 {_fmt_price(breakout_lvl)} × 0.995"
         elif bos_level > 0 and bos_level < price_now * 1.05:
-            entry        = bos_level * (1.0 + CONFIG["entry_bos_buffer"])
-            entry_reason = "BREAKOUT — BOS retest"
+            breakout_lvl = bos_level
+            # FIX-G6: pullback entry for BOS breakout
+            entry        = breakout_lvl * 0.995
+            entry_reason = f"BREAKOUT BOS pullback — {_fmt_price(breakout_lvl)} × 0.995"
         else:
-            entry        = price_now * 1.001
-            entry_reason = "BREAKOUT — market"
+            breakout_lvl = price_now
+            entry        = breakout_lvl * 0.995
+            entry_reason = "BREAKOUT market — pullback 0.5%"
 
     else:  # NEUTRAL
         sup_levels = []
@@ -2124,10 +1773,10 @@ def calc_entry_v18(candles, vwap, price_now, atr_abs_val, market_regime, sr,
     if sl >= entry:
         sl = entry * 0.975
 
-    # ── TP v18: 1.5× / 3× / 5× ATR (diperlebar) ──────────────────────────────
-    tp1 = entry + atr * CONFIG["tp1_atr_mult"]   # 1.5×
-    tp2 = entry + atr * CONFIG["tp2_atr_mult"]   # 3.0×
-    tp3 = entry + atr * CONFIG["tp3_atr_mult"]   # 5.0×
+    # ── TP v30 FIX-G8: fixed % partial targets (5% / 12% / 25%) ──────────────
+    tp1 = entry * 1.05   # +5%
+    tp2 = entry * 1.12   # +12%
+    tp3 = entry * 1.25   # +25%
 
     # TP3 cek liquidity void: area tanpa resistance signifikan
     if sr and sr.get("resistance"):
@@ -2176,10 +1825,11 @@ def calc_entry_v18(candles, vwap, price_now, atr_abs_val, market_regime, sr,
         "market_regime": market_regime,
         "trail_note":    "Trailing: TP1→SL=Entry | TP2→SL=TP1 | TP3 free run",
         "used_resistance": bool(sr and sr.get("resistance")),
-        "t1_source":     f"ATR×{CONFIG['tp1_atr_mult']}",
-        "t2_source":     f"ATR×{CONFIG['tp2_atr_mult']}",
-        "t3_source":     f"ATR×{CONFIG['tp3_atr_mult']} / Liq Void",
+        "t1_source":     "entry×1.05 (+5%)",     # FIX-G8
+        "t2_source":     "entry×1.12 (+12%)",    # FIX-G8
+        "t3_source":     "entry×1.25 (+25%)",    # FIX-G8
         "atr_pct_abs":   round(atr / entry * 100, 2) if entry > 0 else 0.0,
+        "breakout_level": round(locals().get("breakout_lvl", 0.0), 8),  # FIX-G6: breakout reference price
     }
 
 
@@ -4894,6 +4544,7 @@ def calc_entry_v19(candles, vwap, price_now, atr_abs_val, market_regime, sr,
         "t2_source":     f"ATR×{CONFIG['tp2_v19_mult']}",
         "t3_source":     f"ATR×{CONFIG['tp3_v19_mult']} / Liq Void",
         "atr_pct_abs":   round(atr / entry * 100, 2) if entry > 0 else 0.0,
+        "breakout_level": round(locals().get("breakout_lvl", 0.0), 8),  # FIX-G6: breakout reference price
     }
 
 
@@ -5592,7 +5243,7 @@ def master_score(symbol, ticker):
     # ── NEW v18/v19: Phase 1-2-3 + Micro Momentum + Timing + v19 signals ────
     vol_spike    = calc_volume_spike(c1h)
     micro_mom    = calc_micro_momentum(c5m)          # v18: 5m micro momentum
-    mom_accel    = calc_momentum_acceleration(c1h)   # 1h secondary signal
+    mom_accel    = calc_momentum_acceleration(c15m)  # FIX-G4: use 15m candles for short-term accel
     buy_press    = calc_buy_pressure(c15m)
     whale_order  = detect_whale_order(c15m, oi_data) # v18: upgraded whale
     fake_pump    = detect_fake_pump(c1h, buy_press["buy_ratio"], oi_data)  # v18: upgraded fake
@@ -5906,10 +5557,23 @@ def master_score(symbol, ticker):
             f"⚠️ Wick trap {wick_filter['ratio']:.2f} — penalti {_wick_penalty}"
         )
 
-    # ── 0a. Volume Spike (Phase 1) ────────────────────────────────────────────
+    # ── 0a. Volume Spike (Phase 1) — FIX-G5: require price move ≥1.5% AND OI ≥2% ─
     if vol_spike["tier"] > 0:
-        score += vol_spike["score"]
-        signals.append(vol_spike["label"])
+        _vs_price_ok = abs(price_chg) >= 1.5
+        _vs_oi_ok    = (not oi_data.get("is_new", True)
+                        and oi_data.get("change_pct", 0.0) >= 2.0)
+        if vol_spike["ratio"] >= CONFIG["vol_spike_high"] and _vs_price_ok and _vs_oi_ok:
+            # Full high-tier score only when all conditions confirmed
+            score += vol_spike["score"]
+            signals.append(vol_spike["label"])
+        elif vol_spike["tier"] > 0 and (_vs_price_ok or _vs_oi_ok):
+            # Partial: one confirmation missing — award half score
+            _partial = max(1, vol_spike["score"] // 2)
+            score += _partial
+            signals.append(vol_spike["label"] + f" [partial {_partial}pts — vol only]")
+        else:
+            # Volume ratio without price/OI confirmation — label only, no score
+            signals.append(vol_spike["label"] + " [unconfirmed — no price/OI confirm]")
 
     # ── 0a+. FIX v23: BB Breakout bonus (replaces hard reject from GATE 5) ───
     if _bb_breakout_bonus > 0:
@@ -5998,56 +5662,66 @@ def master_score(symbol, ticker):
             f"price>VWAP, pos {price_pos_48:.0%}<40%, micro_mom aktif"
         )
 
-    # ── 1. BB Squeeze ─────────────────────────────────────────────────────────
+    # ── 1–5. COMPRESSION SCORE — FIX-G1: normalized (max not sum) ───────────
+    # Compute each sub-signal's score independently, then take the maximum.
+    # This prevents correlated compression signals from inflating the score.
+    # All labels still surface so Telegram alerts remain informative.
+
     bb_squeeze = bbw < CONFIG["bb_squeeze_threshold"]
+    _bb_score  = CONFIG["score_bb_squeeze"] if bb_squeeze else 0
+
+    _atr_score = CONFIG["score_atr_contracting"] if atr_contr["is_contracting"] else 0
+
+    _energy_score = 0
+    if energy["is_buildup"]:
+        _energy_score = CONFIG["score_energy_buildup"]
+        if energy["is_strong"]:
+            _energy_score += 2   # strong energy bonus retained
+
+    _accum_score = 0
+    if accum["is_accumulating"] and accum["is_vol_compress"]:
+        _accum_score = CONFIG["score_accumulation"] + CONFIG["score_vol_compression"]
+    elif accum["is_accumulating"]:
+        _accum_score = CONFIG["score_accumulation"]
+    elif accum["is_vol_compress"]:
+        _accum_score = CONFIG["score_vol_compression"]
+
+    _htf_score = CONFIG["score_htf_accumulation"] if htf_accum["is_htf_accum"] else 0
+
+    # FIX-G1: take maximum, not sum
+    compression_score = max(_bb_score, _atr_score, _energy_score, _accum_score, _htf_score)
+    score += compression_score
+
+    # ── Signal labels (always appended when active, regardless of which won max) ──
     if bb_squeeze:
-        score += CONFIG["score_bb_squeeze"]
         signals.append(
             f"🗜️ BB Squeeze aktif (BBW {bbw*100:.2f}% < {CONFIG['bb_squeeze_threshold']*100:.0f}%) "
             f"— kompresi energi sebelum breakout"
         )
-
-    # ── 2. ATR Contracting ────────────────────────────────────────────────────
     if atr_contr["is_contracting"]:
-        score += CONFIG["score_atr_contracting"]
         signals.append(
             f"📉 ATR Menyempit — rasio {atr_contr['ratio']:.2f} "
             f"(ATR 6c = {atr_contr['ratio']*100:.0f}% dari ATR 24c) — energi menumpuk"
         )
-
-    # ── 3. Energy Build-Up ────────────────────────────────────────────────────
     if energy["is_buildup"]:
-        score += CONFIG["score_energy_buildup"]
         signals.append(energy["label"])
         if energy["is_strong"]:
-            score   += 2
             signals.append("⭐ Energy Build-Up + Funding Negatif = squeeze probability tinggi")
-
-    # ── 4. Smart Money Accumulation + Volatility Compression ─────────────────
-    # FIX v18: isolasi scoring — vol_compression TIDAK dapat skor jika
-    # is_accumulating sudah aktif (mencegah double counting sinyal ATR).
     if accum["is_accumulating"] and accum["is_vol_compress"]:
-        score += CONFIG["score_accumulation"] + CONFIG["score_vol_compression"]
         signals.append(
             f"🏦 AKUMULASI + VOL COMPRESSION — vol {accum['vol_ratio_4h']:.1f}x, "
             f"range {accum['price_range_pct']:.1f}%, pos {accum['price_pos']:.0%}"
         )
     elif accum["is_accumulating"]:
-        score += CONFIG["score_accumulation"]
         signals.append(
             f"📦 Smart Money Accumulation — vol {accum['vol_ratio_4h']:.1f}x, "
             f"sideways {accum['price_range_pct']:.1f}%, pos {accum['price_pos']:.0%}"
         )
     elif accum["is_vol_compress"]:
-        # FIX v18: hanya aktif jika is_accumulating=False
-        score += CONFIG["score_vol_compression"]
         signals.append(
             f"🗜️ Volatility Compression — ATR {accum['atr_contract']:.2f}x dari baseline"
         )
-
-    # ── 5. HTF Accumulation 4H ────────────────────────────────────────────────
     if htf_accum["is_htf_accum"]:
-        score += CONFIG["score_htf_accumulation"]
         signals.append(htf_accum["label"])
 
     # ── 6. Liquidity Sweep ────────────────────────────────────────────────────
@@ -6432,85 +6106,6 @@ def master_score(symbol, ticker):
     # ══════════════════════════════════════════════════════════════════════════
     #  ALERT LEVEL v18 — feature-based probability + timing ETA
     # ══════════════════════════════════════════════════════════════════════════
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # FIX v30 P1+P2 — MOMENTUM CAP (25% of raw score) + VOLUME CAP (30%)
-    #
-    # Problem: with multiple momentum paths (micro_mom, mom_accel, v27_mom_accel)
-    # and multiple volume paths (vol_spike, vol_bullish, vol_accel, v27_vol_exp)
-    # these groups can each dominate total score independently.
-    #
-    # Fix: measure how much each group contributed and clamp excess.
-    # Caps are applied to the raw heuristic score before blending.
-    # Signal labels are untouched — only the numeric total is corrected.
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # Collect momentum contributions
-    _mom_contrib = 0
-    if micro_mom.get("is_accelerating"):
-        _mom_contrib += micro_mom.get("score", 0)
-    if mom_accel.get("is_accelerating") and not micro_mom.get("is_accelerating"):
-        _mom_contrib += mom_accel.get("score", 0)
-    if (_v27_mom_accel.get("is_accelerating")
-            and not micro_mom.get("is_accelerating")
-            and not mom_accel.get("is_accelerating")):
-        _mom_contrib += _v27_mom_accel.get("score", 0)
-
-    # Collect volume contributions
-    _vol_contrib = 0
-    if vol_spike.get("tier", 0) > 0:
-        _vol_contrib += vol_spike.get("score", 0)
-    _vol_contrib += CONFIG.get("score_vol_bullish", 2) if (
-        vol_ratio > CONFIG["vol_ratio_threshold"] and vol_consistent
-        and candle_dir_ratio >= CONFIG["vol_bullish_min_ratio"]
-    ) else 0
-    _vol_contrib += CONFIG.get("score_vol_accel", 2) if (
-        vol_accel > CONFIG["vol_accel_threshold"] and vol_consistent
-        and len(c1h) >= 1 and c1h[-1]["close"] >= c1h[-1]["open"]
-    ) else 0
-    if _v27_vol_exp.get("is_extreme"):
-        _vol_contrib += _v27_vol_exp.get("score", 0)
-
-    # Apply caps
-    _score_before_caps = score
-    _mom_cap  = max(0, round(_score_before_caps * 0.25))  # 25% max for momentum
-    _vol_cap  = max(0, round(_score_before_caps * 0.30))  # 30% max for volume
-
-    if _mom_contrib > _mom_cap and _mom_cap > 0:
-        _mom_excess = _mom_contrib - _mom_cap
-        score -= _mom_excess
-        signals.append(
-            f"⚙️ Momentum cap applied: contrib {_mom_contrib} → capped at {_mom_cap} (-{_mom_excess})"
-        )
-
-    if _vol_contrib > _vol_cap and _vol_cap > 0:
-        _vol_excess = _vol_contrib - _vol_cap
-        score -= _vol_excess
-        signals.append(
-            f"⚙️ Volume cap applied: contrib {_vol_contrib} → capped at {_vol_cap} (-{_vol_excess})"
-        )
-
-    # FIX v30 P3 — ACCUMULATION COMBO BONUS
-    # If BB squeeze + ATR contraction both active → award structural compression bonus.
-    # This ensures a coin in true volatility squeeze competes against execution signals.
-    _bb_active  = bbw < CONFIG["bb_squeeze_threshold"]
-    _atr_active = atr_contr.get("is_contracting", False)
-    _energy_active = energy.get("is_buildup", False)
-    _htf_active = htf_accum.get("is_htf_accum", False)
-
-    _accum_combo_count = sum([_bb_active, _atr_active, _energy_active, _htf_active])
-    if _accum_combo_count >= 3:
-        _accum_bonus = 12
-        score += _accum_bonus
-        signals.append(
-            f"🏗️ Accumulation Combo ({_accum_combo_count}/4 signals) — compression bonus +{_accum_bonus}"
-        )
-    elif _accum_combo_count == 2:
-        _accum_bonus = 6
-        score += _accum_bonus
-        signals.append(
-            f"🏗️ Accumulation Combo ({_accum_combo_count}/4 signals) — compression bonus +{_accum_bonus}"
-        )
 
     # STEP 4 v19: AI Weighted Score (hybrid dengan heuristic score)
     ai_score_data = calc_ai_weighted_score(
