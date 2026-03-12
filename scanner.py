@@ -1,23 +1,23 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  QUANTITATIVE PUMP DETECTION SCANNER v28 — PRE-PUMP ENERGY ENGINE           ║
+║  QUANTITATIVE PUMP DETECTION SCANNER v31 — FORENSIC AUDIT FIXES             ║
 ║                                                                              ║
-║  INHERITED FROM v27 (7 pre-pump intelligence modules confirmed working):    ║
+║  INHERITED FROM v30 (all modules retained):                                 ║
 ║    Vol4x +20 ✅ | OI5% +20 ✅ | L2-OB +15 ✅ | Whale +15 ✅                ║
 ║    MomAccel +10 ✅ | ATRbreak +10 ✅ | SweepUP +10 ✅                        ║
+║    Pre-Pump Energy Engine v28 ✅ | Microstructure v30 ✅                     ║
 ║                                                                              ║
-║  NEW v28 — Pre-Pump Energy Engine (§12 simplified alert format):            ║
-║    Compression Score    (BBW<3.5%+ATR%<2.5%+range 1h/4h)    0–30          ║
-║    Absorption Score     (vol>1.5× + price<1.5%)              0–20          ║
-║    OB Support Score     (L2 bid/ask ≥ 1.5/1.2, reused)       0–20          ║
-║    Wick Sweep Score     (lower_wick≥2×body, bullish candle)   0–15          ║
-║    Supply Removal Score (ask depth drop ≥5%, cross-scan)     0–15          ║
-║    ─────────────────────────────────────────────────────────────────────    ║
-║    pre_pump_energy_score   sum → 0–100                                       ║
-║    pump_probability_v28    energy + expansion runway                         ║
-║    Expansion gate          < 8% to R1 → penalise –15                        ║
-║    Telegram               build_pre_pump_alert() if energy ≥ 60             ║
-║    Ranking                energy_v28 → pump_v27 → score × prob              ║
+║  v31 FORENSIC AUDIT FIXES (10 targeted changes):                            ║
+║    P1a: SL floor ATR×0.9 removed → minimum ATR×2.0                         ║
+║    P1b: Switched entry to calc_entry_v18 (pullback entry, FIX-G6)           ║
+║    P1c: Volume multi-layer normalization — single max() contribution        ║
+║    P2a: v23 sigmoid replaced with zero-floored probability model            ║
+║    P2b: Sustained volume requirement — 4/6 candles above 1.3× baseline     ║
+║    P2c: 12h price-gain gate added (>5% in 12h → reject)                    ║
+║    P2d: Gate 3 uptrend max age 20h → 12h                                    ║
+║    P2e: Pre-filter chg_24h gate disabled (removed hard reject)              ║
+║    P3a: micro_accel_strong 0.006→0.015; score_micro_accel_pos 4→0           ║
+║    P3b: early_pump: vol_accel>0.3→0.5, pos<40%→25%, require bb_squeeze     ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -55,13 +55,13 @@ _ch.setFormatter(_log_fmt)
 _log_root.addHandler(_ch)
 
 _fh = _lh.RotatingFileHandler(
-    "/tmp/scanner_v28.log", maxBytes=10 * 1024 * 1024, backupCount=3
+    "/tmp/scanner_v31.log", maxBytes=10 * 1024 * 1024, backupCount=3
 )
 _fh.setFormatter(_log_fmt)
 _log_root.addHandler(_fh)
 
 log = logging.getLogger(__name__)
-log.info("Scanner v28 — log aktif: /tmp/scanner_v28.log")
+log.info("Scanner v31 — log aktif: /tmp/scanner_v31.log")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ⚙️  CONFIG
@@ -91,7 +91,7 @@ CONFIG = {
     "vwap_gate_tolerance":      0.97,   # price > vwap * 0.97
 
     # ── Gate uptrend usia ─────────────────────────────────────────────────────
-    "gate_uptrend_max_hours":   20,    # FIX v29 ISSUE-5: raised 10h→20h — 10h rejected coins just beginning breakout from multi-day accumulation
+    "gate_uptrend_max_hours":   12,    # FIX v31 P2d: lowered 20h→12h — 20h allows coins already +15-25% into pump (forensic audit)
 
     # ── Gate RSI overbought ───────────────────────────────────────────────────
     "gate_rsi_max":             72.0,
@@ -288,9 +288,9 @@ CONFIG = {
 
     # ── v18 Micro Momentum (5m candles) ──────────────────────────────────────
     "micro_mom_candles":       12,       # berapa 5m candle untuk rata2 1h
-    "micro_accel_strong":      0.006,    # FIX v29 ISSUE-3: raised 0.3%→0.6% — 0.3% is trivially hit by noise candles
-    "score_micro_accel":       10,       # FIX v29 ISSUE-3: reduced 15→10 — prevents single 5m candle from dominating score
-    "score_micro_accel_pos":   4,        # FIX v29 ISSUE-3: reduced 8→4 — weak positive accel no longer scores like execution signal
+    "micro_accel_strong":      0.015,    # FIX v31 P3a: raised 0.006→0.015 — 0.6% fired on any 0.4% 5m noise candle (forensic audit)
+    "score_micro_accel":       8,        # FIX v29 ISSUE-3: reduced 15→10 — prevents single 5m candle from dominating score
+    "score_micro_accel_pos":   0,        # FIX v31 P3a: reduced 4→0 — "accel>0" tier fired on noise; eliminated (forensic audit)
 
     # ── v18 Whale detection upgrade ──────────────────────────────────────────
     "whale_vol_mult_v18":      3.0,      # vol > 3× (bukan 5×)
@@ -667,414 +667,30 @@ EXCLUDED_KEYWORDS = ["XAU", "PAXG", "BTC", "ETH", "USDC", "DAI", "BUSD", "UST"]
 #  📋  WHITELIST
 # ══════════════════════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
-       "4USDT",
-"0GUSDT",
-"1000BONKUSDT",
-"1000PEPEUSDT",
-"1000RATSUSDT",
-"1000SHIBUSDT",
-"1000XECUSDT",
-"1INCHUSDT",
-"1MBABYDOGEUSDT",
-"2ZUSDT",
+    # ── Tier 1: Large Cap Altcoin (OI & volume tertinggi) ────────────────────
+    "DOGEUSDT", "ADAUSDT", "XMRUSDT", "LINKUSDT", "XLMUSDT", "HBARUSDT",
+    "LTCUSDT", "AVAXUSDT", "SHIBUSDT", "SUIUSDT", "TONUSDT",
+    "UNIUSDT", "DOTUSDT", "TAOUSDT", "AAVEUSDT", "PEPEUSDT",
+    "ETCUSDT", "NEARUSDT", "ONDOUSDT", "POLUSDT", "ICPUSDT", "ATOMUSDT",
+    "ENAUSDT", "KASUSDT", "ALGOUSDT", "RENDERUSDT", "FILUSDT", "APTUSDT",
+    "ARBUSDT", "JUPUSDT", "SEIUSDT", "STXUSDT", "DYDXUSDT", "VIRTUALUSDT",
 
-"AAVEUSDT",
-"ACEUSDT",
-"ACHUSDT",
-"ACTUSDT",
-"ADAUSDT",
-"AEROUSDT",
-"AGLDUSDT",
-"AINUSDT",
-"AIOUSDT",
-"AIXBTUSDT",
-"AKTUSDT",
-"ALCHUSDT",
-"ALGOUSDT",
-"ALICEUSDT",
-"ALLOUSDT",
-"ALTUSDT",
-"AMZNUSDT",
-"ANIMEUSDT",
-"ANKRUSDT",
-"APEUSDT",
-"APEXUSDT",
-"API3USDT",
-"APRUSDT",
-"APTUSDT",
-"ARUSDT",
-"ARBUSDT",
-"ARCUSDT",
-"ARIAUSDT",
-"ARKUSDT",
-"ARKMUSDT",
-"ARPAUSDT",
-"ASTERUSDT",
-"ATUSDT",
-"ATHUSDT",
-"ATOMUSDT",
-"AUCTIONUSDT",
-"AVAXUSDT",
-"AVNTUSDT",
-"AWEUSDT",
-"AXLUSDT",
-"AXSUSDT",
-"AZTECUSDT",
-"BUSDT",
-"B2USDT",
-"BABAUSDT",
-"BABYUSDT",
-"BANUSDT",
-"BANANAUSDT",
-"BANANAS31USDT",
-"BANKUSDT",
-"BARDUSDT",
-"BATUSDT",
-"BCHUSDT",
-"BEATUSDT",
-"BERAUSDT",
-"BGBUSDT",
-"BIGTIMEUSDT",
-"BIOUSDT",
-"BIRBUSDT",
-"BLASTUSDT",
-"BLESSUSDT",
-"BLURUSDT",
-"BNBUSDT",
-"BOMEUSDT",
-"BRETTUSDT",
-"BREVUSDT",
-"BROCCOLIUSDT",
-"BSVUSDT",
-"BTCUSDT",
-"BULLAUSDT",
-"C98USDT",
-"CAKEUSDT",
-"CCUSDT",
-"CELOUSDT",
-"CFXUSDT",
-"CHILLGUYUSDT",
-"CHZUSDT",
-"CLUSDT",
-"CLANKERUSDT",
-"CLOUSDT",
-"COAIUSDT",
-"COINUSDT",
-"COMPUSDT",
-"COOKIEUSDT",
-"COWUSDT",
-"CRCLUSDT",
-"CROUSDT",
-"CROSSUSDT",
-"CRVUSDT",
-"CTKUSDT",
-"CVCUSDT",
-"CVXUSDT",
-"CYBERUSDT",
-"CYSUSDT",
-"DASHUSDT",
-"DEEPUSDT",
-"DENTUSDT",
-"DEXEUSDT",
-"DOGEUSDT",
-"DOLOUSDT",
-"DOODUSDT",
-"DOTUSDT",
-"DRIFTUSDT",
-"DYDXUSDT",
-"DYMUSDT",
-"EGLDUSDT",
-"EIGENUSDT",
-"ENAUSDT",
-"ENJUSDT",
-"ENSUSDT",
-"ENSOUSDT",
-"EPICUSDT",
-"ESPUSDT",
-"ETCUSDT",
-"ETHUSDT",
-"ETHFIUSDT",
-"EURUSDUSDT",
-"FUSDT",
-"FARTCOINUSDT",
-"FETUSDT",
-"FFUSDT",
-"FIDAUSDT",
-"FILUSDT",
-"FLOKIUSDT",
-"FLUIDUSDT",
-"FOGOUSDT",
-"FOLKSUSDT",
-"FORMUSDT",
-"GALAUSDT",
-"GASUSDT",
-"GBPUSDUSDT",
-"GIGGLEUSDT",
-"GLMUSDT",
-"GMTUSDT",
-"GMXUSDT",
-"GOATUSDT",
+    # ── Tier 2: Mid Cap (OI signifikan, aktif di futures) ────────────────────
+    "FETUSDT", "INJUSDT", "PYTHUSDT", "GRTUSDT", "TIAUSDT", "LDOUSDT",
+    "OPUSDT", "ENSUSDT", "AXSUSDT", "PENDLEUSDT", "WIFUSDT", "SANDUSDT",
+    "MANAUSDT", "COMPUSDT", "GALAUSDT", "RAYUSDT", "RUNEUSDT", "EGLDUSDT",
+    "SNXUSDT", "ARUSDT", "CRVUSDT", "IMXUSDT", "EIGENUSDT", "JTOUSDT",
+    "CELOUSDT", "MASKUSDT", "APEUSDT", "MOVEUSDT", "MINAUSDT", "SONICUSDT",
+    "KAIAUSDT", "HYPEUSDT", "WLDUSDT", "STRKUSDT", "CFXUSDT", "BOMEUSDT",
 
-"GPSUSDT",
-"GRASSUSDT",
-"GRIFFAINUSDT",
-"GRTUSDT",
-"GUNUSDT",
-"GWEIUSDT",
-"HUSDT",
-"HBARUSDT",
-"HEIUSDT",
-"HEMIUSDT",
-"HMSTRUSDT",
-"HOLOUSDT",
-"HOMEUSDT",
-"HOODUSDT",
-"HYPEUSDT",
-"HYPERUSDT",
-"ICNTUSDT",
-"ICPUSDT",
-"IDOLUSDT",
-"ILVUSDT",
-"IMXUSDT",
-"INITUSDT",
-"INJUSDT",
-"INTCUSDT",
-"INXUSDT",
-"IOUSDT",
-"IOTAUSDT",
-"IOTXUSDT",
-"IPUSDT",
-"JASMYUSDT",
-"JCTUSDT",
-"JSTUSDT",
-"JTOUSDT",
-"JUPUSDT",
-"KAIAUSDT",
-"KAITOUSDT",
-"KASUSDT",
-"KAVAUSDT",
-"kBONKUSDT",
-"KERNELUSDT",
-"KGENUSDT",
-"KITEUSDT",
-"kPEPEUSDT",
-"kSHIBUSDT",
-"LAUSDT",
-"LABUSDT",
-"LAYERUSDT",
-"LDOUSDT",
-"LIGHTUSDT",
-"LINEAUSDT",
-"LINKUSDT",
-"LITUSDT",
-"LPTUSDT",
-"LSKUSDT",
-"LTCUSDT",
-"LUNAUSDT",
-"LUNCUSDT",
-"LYNUSDT",
-"MUSDT",
-"MAGICUSDT",
-"MAGMAUSDT",
-"MANAUSDT",
-"MANTAUSDT",
-"MANTRAUSDT",
-"MASKUSDT",
-"MAVUSDT",
-"MAVIAUSDT",
-"MBOXUSDT",
-"MEUSDT",
-"MEGAUSDT",
-"MELANIAUSDT",
-"MEMEUSDT",
-"MERLUSDT",
-"METUSDT",
-"METAUSDT",
-"MEWUSDT",
-"MINAUSDT",
-"MMTUSDT",
-"MNTUSDT",
-"MONUSDT",
-"MOODENGUSDT",
-"MORPHOUSDT",
-"MOVEUSDT",
-"MOVRUSDT",
-"MSFTUSDT",
-"MSTRUSDT",
-"MUUSDT",
-"MUBARAKUSDT",
-"MYXUSDT",
-"NAORISUSDT",
-"NEARUSDT",
-"NEIROCTOUSDT",
-"NEOUSDT",
-"NEWTUSDT",
-"NILUSDT",
-"NMRUSDT",
-"NOMUSDT",
-"NOTUSDT",
-
-"NXPCUSDT",
-"ONDOUSDT",
-"ONGUSDT",
-"ONTUSDT",
-"OPUSDT",
-"OPENUSDT",
-"OPNUSDT",
-"ORCAUSDT",
-"ORCLUSDT",
-"ORDIUSDT",
-"OXTUSDT",
-"PARTIUSDT",
-"PAXGUSDT",
-"PENDLEUSDT",
-"PENGUUSDT",
-"PEOPLEUSDT",
-"PEPEUSDT",
-"PHAUSDT",
-"PIEVERSEUSDT",
-"PIPPINUSDT",
-"PLTRUSDT",
-"PLUMEUSDT",
-"PNUTUSDT",
-"POLUSDT",
-"POLYXUSDT",
-"POPCATUSDT",
-"POWERUSDT",
-"PROMPTUSDT",
-"PROVEUSDT",
-"PUMPUSDT",
-"PURRUSDT",
-"PYTHUSDT",
-"QUSDT",
-"QNTUSDT",
-"QQQUSDT",
-"RAVEUSDT",
-"RAYUSDT",
-"RDDTUSDT",
-"RECALLUSDT",
-"RENDERUSDT",
-"RESOLVUSDT",
-"REZUSDT",
-"RIVERUSDT",
-"ROBOUSDT",
-"ROSEUSDT",
-"RPLUSDT",
-"RSRUSDT",
-"RUNEUSDT",
-"SUSDT",
-"SAGAUSDT",
-"SAHARAUSDT",
-"SAMSUNGUSDT",
-"SANDUSDT",
-"SAPIENUSDT",
-"SEIUSDT",
-"SENTUSDT",
-"SHIBUSDT",
-"SIGNUSDT",
-"SIRENUSDT",
-"SKHYNIXUSDT",
-"SKRUSDT",
-"SKYUSDT",
-"SKYAIUSDT",
-"SLPUSDT",
-"SNXUSDT",
-"SOLUSDT",
-"SOMIUSDT",
-"SONICUSDT",
-"SOONUSDT",
-"SOPHUSDT",
-"SPACEUSDT",
-"SPKUSDT",
-"SPXUSDT",
-"SPYUSDT",
-"SQDUSDT",
-"SSVUSDT",
-"STABLEUSDT",
-"STBLUSDT",
-"STEEMUSDT",
-"STOUSDT",
-"STRKUSDT",
-"STXUSDT",
-"SUIUSDT",
-"SUNUSDT",
-"SUPERUSDT",
-"SUSHIUSDT",
-"SYRUPUSDT",
-"TUSDT",
-"TACUSDT",
-"TAGUSDT",
-"TAIKOUSDT",
-"TAOUSDT",
-"THEUSDT",
-"THETAUSDT",
-"TIAUSDT",
-"TNSRUSDT",
-"TONUSDT",
-"TOSHIUSDT",
-"TOWNSUSDT",
-"TRBUSDT",
-"TRIAUSDT",
-"TRUMPUSDT",
-"TRXUSDT",
-"TSLAUSDT",
-"TURBOUSDT",
-"UAIUSDT",
-"UBUSDT",
-"UMAUSDT",
-"UNIUSDT",
-"USUSDT",
-"USDCUSDT",
-"USDKRWUSDT",
-"USELESSUSDT",
-"USUALUSDT",
-"VANAUSDT",
-"VANRYUSDT",
-"VETUSDT",
-"VINEUSDT",
-"VIRTUALUSDT",
-"VTHOUSDT",
-"VVVUSDT",
-"WUSDT",
-"WALUSDT",
-"WAXPUSDT",
-"WCTUSDT",
-"WETUSDT",
-"WIFUSDT",
-"WLDUSDT",
-"WLFIUSDT",
-"WOOUSDT",
-"WTIUSDT",
-"XAGUSDT",
-"XAIUSDT",
-
-"XAUTUSDT",
-"XCUUSDT",
-"XDCUSDT",
-"XLMUSDT",
-"XMRUSDT",
-"XPDUSDT",
-"XPINUSDT",
-"XPLUSDT",
-
-"XRPUSDT",
-"XTZUSDT",
-"XVGUSDT",
-"YGGUSDT",
-"YZYUSDT",
-"ZAMAUSDT",
-"ZBTUSDT",
-"ZECUSDT",
-"ZENUSDT",
-"ZEREBROUSDT",
-"ZETAUSDT",
-"ZILUSDT",
-"ZKUSDT",
-"ZKCUSDT",
-"ZKJUSDT",
-"ZKPUSDT",
-"ZORAUSDT",
-"ZROUSDT",
+    # ── Tier 3: Aktif trading, OI > threshold ────────────────────────────────
+    "FLOKIUSDT", "CAKEUSDT", "CHZUSDT", "HNTUSDT", "ROSEUSDT", "IOTXUSDT",
+    "ANKRUSDT", "ZILUSDT", "ONTUSDT", "ENJUSDT", "GMTUSDT", "NOTUSDT",
+    "PEOPLEUSDT", "METISUSDT", "AIXBTUSDT", "GOATUSDT", "PNUTUSDT",
+    "GRASSUSDT", "POPCATUSDT", "ORDIUSDT", "MOODENGUSDT", "BIOUSDT",
+    "MAGICUSDT", "REZUSDT", "ARPAUSDT", "ACTUSDT", "USUALUSDT",
+    "SLPUSDT", "XAIUSDT", "BLURUSDT", "ARKMUSDT", "API3USDT", "AGLDUSDT",
+    "TNSRUSDT", "LAYERUSDT", "ANIMEUSDT", "YGGUSDT", "THEUSDT",
 }
 
 GRAN_MAP    = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
@@ -3910,17 +3526,19 @@ def calc_mm_score_v23(liq_sweep_v23, whale_abs_v23, vol_comp_v23,
 
 def calc_pump_probability_v23(mm_score):
     """
-    v23 — Pump Probability via Sigmoid function.
+    v31 FIX P2a — Pump Probability: zero-floored linear model.
 
-    probability = 1 / (1 + exp(-mm_score / 8)) * 100
+    Replaces the v23 sigmoid which had a 50% floor for mm_score=0,
+    making probability sorting meaningless (any coin scored ≥44%).
 
-    Gives strong separation: mm_score=50 → ~73%, mm_score=30 → ~48%
+    New formula: prob = max(0, (mm_score - 20) / 80 * 100)
+    Result: mm=0→0%, mm=20→0%, mm=50→37.5%, mm=80→75%, mm=100→100%
+
+    This gives a true 0–100% range so ranking by pump_prob is meaningful.
+    (forensic audit CFP-D / P2a)
     """
-    try:
-        prob = 1.0 / (1.0 + math.exp(-mm_score / 8.0))
-    except OverflowError:
-        prob = 0.0 if mm_score < 0 else 1.0
-    return round(prob * 100, 1)
+    prob = max(0.0, (mm_score - 20.0) / 80.0 * 100.0)
+    return round(min(prob, 100.0), 1)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  🚀  v27 — PRE-PUMP INTELLIGENCE MODULES (7 modules)
@@ -6221,6 +5839,21 @@ def master_score(symbol, ticker):
     if len(c1h) >= 2 and c1h[-2]["close"] > 0:
         price_chg = (c1h[-1]["close"] - c1h[-2]["close"]) / c1h[-2]["close"] * 100
 
+    # ── GATE 2b: 12h Price-Gain Gate — FIX v31 P2c ───────────────────────────
+    # Reject coins that have already moved >5% in the last 12 hours.
+    # These coins have already executed their move; entry is late-cycle.
+    # (forensic audit CFP-A/P2c)
+    if len(c1h) >= 13:
+        _price_12h_ago = c1h[-13]["close"]
+        if _price_12h_ago > 0:
+            _price_chg_12h = (price_now - _price_12h_ago) / _price_12h_ago * 100
+            if _price_chg_12h > 5.0:
+                log.info(
+                    f"  {symbol}: Harga sudah naik {_price_chg_12h:.1f}% dalam 12h — "
+                    f"coin sudah run, bukan pre-pump (GATE GAGAL v31 P2c)"
+                )
+                return None
+
     # ── GATE 3: Uptrend tidak terlalu tua ────────────────────────────────────
     if uptrend["is_late"]:
         log.info(
@@ -6368,22 +6001,49 @@ def master_score(symbol, ticker):
             f"⚠️ Wick trap {wick_filter['ratio']:.2f} — penalti {_wick_penalty}"
         )
 
-    # ── 0a. Volume Spike (Phase 1) — FIX-G5: require price move ≥1.5% AND OI ≥2% ─
+    # ── 0a. Volume Spike (Phase 1) — FIX v31 P1c + P2b ──────────────────────
+    # P2b: Sustained volume check — require 4/6 recent candles above 1.3× baseline.
+    # A single candle spike = retail noise. Institutional volume is sustained.
+    # P1c: Volume normalization — vol_spike contributes ONCE to heuristic score.
+    # Layers 0h (vol_zscore), v20 bonus, 0j (candle_imbal), v26 OB proxy, and
+    # v27 Module 2 are all downstream of the same volume event. To prevent 7-layer
+    # stacking (~81 pts from one market event), vol_spike is scored here only;
+    # layers 0h, v20 vol bonus, and v27 Module 2 are guarded below. (forensic audit CFP-A)
+    _vol_sustained = False
+    if vol_spike["tier"] > 0 and len(c1h) >= 6:
+        _avg_vol_baseline = vol_spike.get("avg_vol", 0.0)
+        if _avg_vol_baseline > 0:
+            _sustained_count = sum(
+                1 for c in c1h[-6:]
+                if c.get("volume_usd", 0) > _avg_vol_baseline * 1.3
+            )
+            _vol_sustained = _sustained_count >= 4
+        else:
+            _vol_sustained = False
+
     if vol_spike["tier"] > 0:
         _vs_price_ok = abs(price_chg) >= 1.5
         _vs_oi_ok    = (not oi_data.get("is_new", True)
                         and oi_data.get("change_pct", 0.0) >= 2.0)
-        if vol_spike["ratio"] >= CONFIG["vol_spike_high"] and _vs_price_ok and _vs_oi_ok:
-            # Full high-tier score only when all conditions confirmed
+        _vs_absorb_ok = bb_squeeze or atr_contr["is_contracting"]   # absorption context
+        if not _vol_sustained:
+            # Single spike — not sustained — label only, no heuristic score
+            signals.append(vol_spike["label"] + " [single spike — not sustained, no score v31]")
+        elif vol_spike["ratio"] >= CONFIG["vol_spike_high"] and _vs_price_ok and _vs_oi_ok:
+            # Sustained + full confirmation
             score += vol_spike["score"]
             signals.append(vol_spike["label"])
-        elif vol_spike["tier"] > 0 and (_vs_price_ok or _vs_oi_ok):
-            # Partial: one confirmation missing — award half score
+        elif _vs_absorb_ok:
+            # Sustained absorption: high vol + flat price during squeeze = pre-pump signal
+            _partial = max(1, vol_spike["score"] // 2)
+            score += _partial
+            signals.append(vol_spike["label"] + f" [absorption context +{_partial}pts v31]")
+        elif _vs_price_ok or _vs_oi_ok:
+            # Sustained + one confirmation
             _partial = max(1, vol_spike["score"] // 2)
             score += _partial
             signals.append(vol_spike["label"] + f" [partial {_partial}pts — vol only]")
         else:
-            # Volume ratio without price/OI confirmation — label only, no score
             signals.append(vol_spike["label"] + " [unconfirmed — no price/OI confirm]")
 
     # ── 0a+. FIX v23: BB Breakout bonus (replaces hard reject from GATE 5) ───
@@ -6426,7 +6086,9 @@ def master_score(symbol, ticker):
         signals.append(ema_trend["label"])
 
     # ── 0h. NEW v19: Volume Z-Score boost (STEP 10) ───────────────────────────
-    if vol_zscore["is_anomaly"]:
+    # FIX v31 P1c: only fires when vol_spike did NOT already contribute a score.
+    # Prevents double-counting the same volume event across two layers. (forensic audit CFP-A)
+    if vol_zscore["is_anomaly"] and not (vol_spike["tier"] > 0 and _vol_sustained):
         score += vol_zscore["boost"]
         signals.append(vol_zscore["label"])
 
@@ -6459,18 +6121,21 @@ def master_score(symbol, ticker):
         score += wick_filter["penalty"]
         signals.append(wick_filter["label"])
 
-    # ── 0m. NEW v19: Early Pump Detection (STEP 14) ──────────────────────────
+    # ── 0m. NEW v19: Early Pump Detection (STEP 14) — FIX v31 P3b ───────────
+    # P3b: Tightened conditions to require genuine compression context.
+    # Old: vol_accel>0.3, pos<40%, micro_mom active (fired on noise cascade)
+    # New: vol_accel>0.5, pos<25%, bb_squeeze required (forensic audit CFP-N/P3b)
     early_pump_detected = (
-        vol_accel > 0.3
+        vol_accel > 0.5                                    # raised from 0.3
         and price_now > vwap
-        and price_pos_48 < CONFIG["early_pump_range_pos_max"]
-        and micro_mom.get("is_accelerating", False)
+        and price_pos_48 < 0.25                            # tightened from 0.40
+        and bb_squeeze                                     # require compression context
     )
     if early_pump_detected:
         score += CONFIG["score_early_pump"]
         signals.append(
             f"⚡ EARLY PUMP SIGNAL — vol_accel {vol_accel*100:.0f}%, "
-            f"price>VWAP, pos {price_pos_48:.0%}<40%, micro_mom aktif"
+            f"price>VWAP, pos {price_pos_48:.0%}<25%, BB squeeze aktif"
         )
 
     # ── 1–5. COMPRESSION SCORE — FIX-G1: normalized (max not sum) ───────────
@@ -6830,7 +6495,10 @@ def master_score(symbol, ticker):
         signals.append(_v27_mom_accel["label"])
 
     # Module 2 — Extreme Volume Expansion (>4×)
-    if _v27_vol_exp.get("is_extreme"):
+    # FIX v31 P1c: only fires when vol_spike tier < 3 to prevent double-counting
+    # the same volume event (vol_spike tier 3 already scores the same event at +16).
+    # (forensic audit CFP-A)
+    if _v27_vol_exp.get("is_extreme") and vol_spike["tier"] < 3:
         score += _v27_vol_exp["score"]
         signals.append(_v27_vol_exp["label"])
 
@@ -7048,11 +6716,16 @@ def master_score(symbol, ticker):
     else:
         alert_level = "LOW"
 
-    # ── Entry & Target v19 — Adaptive Entry + Liquidity SL + Dynamic TP ─────
+    # ── Entry & Target v31 — FIX P1b: switched to calc_entry_v18 ─────────────
+    # calc_entry_v18 uses pullback entry (FIX-G6: breakout_lvl × 0.995) and
+    # ATR-based SL without the sl_v22 (ATR×0.9) forced minimum that caused
+    # guaranteed SL hits. calc_entry_v19 was active since v19 but had dead-code
+    # FIX-G6 and imposed a 1.8% SL floor that was too tight for 3-5% retraces.
+    # (forensic audit CFP-B / CFP-C / P1a / P1b)
     market_regime = calc_market_regime(
         c1h, vwap, buy_press["buy_ratio"], vol_ratio, rsi, price_pos_48
     )
-    entry_data = calc_entry_v19(
+    entry_data = calc_entry_v18(
         c1h, vwap, price_now, atr_abs_val, market_regime, sr,
         rsi, buy_press["buy_ratio"], vol_ratio, price_pos_48,
         alert_level_v19, bos_level, liq_sweep
@@ -7595,10 +7268,14 @@ def build_candidate_list(tickers):
             filtered_stats["vol_too_high"] += 1
             continue
 
-        # FIX v18: dilonggarkan dari 5% → 8%
-        if chg > CONFIG["gate_chg_24h_max"]:
-            filtered_stats["change_too_high"] += 1
-            continue
+        # FIX v31 P2e: pre-filter chg_24h_max hard reject DISABLED.
+        # Previously: coins >8% daily change were silently dropped before deep scan.
+        # This blocked all big pump candidates (which often have a +5-12% first leg
+        # before the explosive second leg). Removed hard reject; gate_chg_24h_max
+        # config key retained but no longer enforced here. (forensic audit CFP-1/P2e)
+        # if chg > CONFIG["gate_chg_24h_max"]:
+        #     filtered_stats["change_too_high"] += 1
+        #     continue
 
         if chg < CONFIG["gate_chg_24h_min"]:
             filtered_stats["dump_too_deep"] += 1
@@ -7618,7 +7295,7 @@ def build_candidate_list(tickers):
                      if k not in ("excluded_keyword", "manual_exclude"))
     accounted  = will_scan + n_excluded + n_filtered + len(not_found)
 
-    log.info(f"\n📊 SCAN SUMMARY Scanner v28:")
+    log.info(f"\n📊 SCAN SUMMARY Scanner v31:")
     log.info(f"   Whitelist total  : {total} coins")
     log.info(f"   ✅ Will scan     : {will_scan} ({will_scan/total*100:.1f}%)")
     log.info(f"   🚫 Excluded kw   : {n_excluded}")
@@ -7641,7 +7318,7 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== QUANTITATIVE PUMP DETECTION SCANNER v28 — {utc_now()} ===")
+    log.info(f"=== QUANTITATIVE PUMP DETECTION SCANNER v31 — {utc_now()} ===")
 
     load_funding_snapshots()
     log.info(f"Funding snapshots loaded: {len(_funding_snapshots)} coins di memori")
@@ -7737,7 +7414,7 @@ def run_scan():
     _n_alert   = sum(1 for r in results if r.get("alert_level_v19") == "ALERT")
     _n_watch   = _n_pass - _n_strong - _n_alert
     log.info(
-        f"\n📊 SCAN FUNNEL v25:\n"
+        f"\n📊 SCAN FUNNEL v31:\n"
         f"   {_n_scanned} scanned → "
         f"{_n_scanned - _n_pass - _n_err} filtered → "
         f"{_n_pass} watchlist → "
@@ -7773,17 +7450,18 @@ def run_scan():
             )
         time.sleep(2)
 
-    log.info(f"=== SELESAI Scanner v28 — {len(top)} alert terkirim ===")
+    log.info(f"=== SELESAI Scanner v31 — {len(top)} alert terkirim ===")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ▶️  ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔══════════════════════════════════════════════════════════════╗")
-    log.info("║  QUANTITATIVE PUMP DETECTION SCANNER v28                   ║")
-    log.info("║  PRE-PUMP INTELLIGENCE EDITION — 7 new modules             ║")
-    log.info("║  Vol4x+20 | OI5%+20 | L2-OB+15 | Whale+15                ║")
-    log.info("║  MomAccel+10 | ATRbreak+10 | SweepUP+10 | prob_score 0-90 ║")
+    log.info("║  QUANTITATIVE PUMP DETECTION SCANNER v31                   ║")
+    log.info("║  FORENSIC AUDIT FIXES EDITION                              ║")
+    log.info("║  P1: SL fix + entry_v18 + vol normalization                ║")
+    log.info("║  P2: prob model + sustained vol + 12h gate + uptrend 12h   ║")
+    log.info("║  P3: micro_mom threshold + early_pump tightened            ║")
     log.info("╚══════════════════════════════════════════════════════════════╝")
 
     if not BOT_TOKEN or not CHAT_ID:
