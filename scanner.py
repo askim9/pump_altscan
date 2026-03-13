@@ -82,9 +82,9 @@ CONFIG = {
     "w_orderflow":                    1.8,
     "w_supply_removal":               2.0,
     "w_total":                        6.6,
-    "prob_watchlist":                 30,
-    "prob_alert":                     50,
-    "prob_strong_alert":              70,
+    "prob_watchlist":                 50,
+    "prob_alert":                     70,
+    "prob_strong_alert":              80,
 
     # Classify regime thresholds
     "regime_ignition_compression":    20,
