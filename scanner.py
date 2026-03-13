@@ -1,4 +1,3 @@
-
 import requests
 import time
 import os
@@ -1402,6 +1401,77 @@ def calculate_ignition_probability(compression, oi_conviction, orderflow, supply
     return round(prob, 1)
 
 
+def _calculate_swing_low(candles, lookback=20):
+    """
+    Hitung swing low (support terdekat) dari candle 1h.
+
+    Parameter:
+        candles  (list): list candle 1h
+        lookback (int):  jumlah candle yang dilihat ke belakang (default 20)
+
+    Return:
+        float: nilai low terendah dalam window lookback
+    """
+    if len(candles) < lookback:
+        lookback = len(candles)
+    lows = [c["low"] for c in candles[-lookback:]]
+    return min(lows)
+
+
+def calculate_entry_sl_tp(candles, price, atr_abs):
+    """
+    Hitung level entry, stop loss, dan target profit berdasarkan data pasar.
+
+    Parameter:
+        candles (list):  list candle 1h (untuk swing low)
+        price   (float): harga saat ini sebagai entry
+        atr_abs (float): ATR absolut (periode 14) dari candle 1h
+
+    Return:
+        dict: {
+            "entry"    : float,  # harga entry (= harga saat ini)
+            "sl"       : float,  # stop loss (di bawah swing low - 0.5 ATR, maks 5% dari entry)
+            "tp1"      : float,  # target profit 1 (entry + 1.5 ATR)
+            "tp2"      : float,  # target profit 2 (entry + 3.0 ATR)
+            "tp3"      : float,  # target profit 3 (entry + 5.0 ATR)
+            "sl_pct"   : float,  # jarak SL dari entry dalam persen
+            "tp1_pct"  : float,  # jarak TP1 dari entry dalam persen
+            "tp2_pct"  : float,  # jarak TP2 dari entry dalam persen
+            "tp3_pct"  : float,  # jarak TP3 dari entry dalam persen
+        }
+    """
+    swing_low = _calculate_swing_low(candles, 20)
+
+    # Entry: harga saat ini
+    entry = price
+
+    # Stop loss: di bawah swing low dengan buffer 0.5 ATR
+    sl = swing_low - 0.5 * atr_abs
+
+    # Pastikan SL tidak terlalu jauh (maksimal 5% dari entry)
+    max_sl_pct = 5.0
+    min_sl = entry * (1 - max_sl_pct / 100)
+    if sl < min_sl:
+        sl = min_sl
+
+    # Target profit berdasarkan kelipatan ATR
+    tp1 = entry + 1.5 * atr_abs
+    tp2 = entry + 3.0 * atr_abs
+    tp3 = entry + 5.0 * atr_abs
+
+    return {
+        "entry":    round(entry, 8),
+        "sl":       round(sl, 8),
+        "tp1":      round(tp1, 8),
+        "tp2":      round(tp2, 8),
+        "tp3":      round(tp3, 8),
+        "sl_pct":   round((entry - sl) / entry * 100, 2),
+        "tp1_pct":  round((tp1 - entry) / entry * 100, 2),
+        "tp2_pct":  round((tp2 - entry) / entry * 100, 2),
+        "tp3_pct":  round((tp3 - entry) / entry * 100, 2),
+    }
+
+
 def master_score_v2(symbol, ticker):
     """
     Master scoring function v2 — deteksi fase ignition lengkap.
@@ -1426,6 +1496,10 @@ def master_score_v2(symbol, ticker):
     if not c1h or not c4h:
         log.warning(f"master_score_v2 {symbol}: candle data tidak tersedia")
         return None
+
+    # ── 1b. ATR absolut dan level entry/SL/TP ────────────────────────────────
+    atr_abs    = _calc_atr(c1h, 14)
+    entry_data = calculate_entry_sl_tp(c1h, price, atr_abs)
 
     # ── 2. Compression ────────────────────────────────────────────────────────
     compression = detect_compression_phase(c1h, c4h)
@@ -1497,6 +1571,8 @@ def master_score_v2(symbol, ticker):
         "funding":             round(funding, 6),
         "oi_now":              round(oi_now, 2),
         "timestamp":           utc_now(),
+        # Entry, Stop Loss, Target Profit
+        "entry_data":          entry_data,
     }
 
 
@@ -1568,6 +1644,17 @@ def build_ignition_alert(r):
         f"  OI Conviction:<code>{oi['conviction_score']}/100</code>\n"
         f"  Orderflow:    <code>{flow['weighted_imbalance']:.3f}×</code>\n"
         f"  Supply Rmvl:  <code>{sup['removal_score']}/20</code>\n"
+    )
+
+    if "entry_data" in r:
+        ed = r["entry_data"]
+        msg += f"\n💰 <b>Entry:</b> <code>${ed['entry']:,.6g}</code>"
+        msg += f"\n🛑 <b>SL:</b> <code>${ed['sl']:,.6g}</code> ({ed['sl_pct']}%)"
+        msg += f"\n🎯 <b>TP1:</b> <code>${ed['tp1']:,.6g}</code> (+{ed['tp1_pct']}%)"
+        msg += f"\n🎯 <b>TP2:</b> <code>${ed['tp2']:,.6g}</code> (+{ed['tp2_pct']}%)"
+        msg += f"\n🎯 <b>TP3:</b> <code>${ed['tp3']:,.6g}</code> (+{ed['tp3_pct']}%)\n"
+
+    msg += (
         f"\n"
         f"📡 <b>Sinyal Aktif:</b>\n{signals_text}\n"
         f"\n"
@@ -1651,15 +1738,11 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    log.info("Scanner v34 dimulai — interval scan: %ds", CONFIG["scan_interval"])
-    while True:
-        try:
-            run_scan()
-        except KeyboardInterrupt:
-            log.info("Dihentikan oleh user.")
-            break
-        except Exception as e:
-            log.error(f"run_scan error (outer): {e}", exc_info=True)
-
-        log.info(f"Menunggu {CONFIG['scan_interval']}s sebelum scan berikutnya...")
-        time.sleep(CONFIG["scan_interval"])
+    log.info("Scanner v34 dimulai — mode sekali jalan")
+    try:
+        run_scan()
+    except KeyboardInterrupt:
+        log.info("Dihentikan oleh user.")
+    except Exception as e:
+        log.error(f"run_scan error: {e}", exc_info=True)
+    log.info("Scanner selesai.")
