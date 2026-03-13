@@ -10,13 +10,13 @@ import numpy as np
 from datetime import datetime, timezone
 from collections import defaultdict
 
-# v36: Perbaikan kritis:
-# 1. OI slope threshold diturunkan menjadi 0.005
-# 2. Filter imbalance ekstrem (>1000) -> set ke netral (1.0) dan raw volume diabaikan
-# 3. Hasil scan disimpan ke file scan_results.json untuk validasi
+# v37: 
+# 1. Menambahkan filter retracement (10% - 40%) di master_score_v2
+# 2. Hanya kirim alert ke Telegram jika prob >= 50% (ALERT atau STRONG ALERT)
+# 3. Mempertahankan semua perbaikan v36: OI slope threshold 0.005, filter imbalance ekstrem, penyimpanan hasil
 
 _http_session = requests.Session()
-_http_session.headers.update({"User-Agent": "CryptoScanner/36.0", "Accept-Encoding": "gzip"})
+_http_session.headers.update({"User-Agent": "CryptoScanner/37.0", "Accept-Encoding": "gzip"})
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -36,13 +36,13 @@ _ch.setFormatter(_log_fmt)
 _log_root.addHandler(_ch)
 
 _fh = _lh.RotatingFileHandler(
-    "/tmp/scanner_v36.log", maxBytes=10 * 1024 * 1024, backupCount=3
+    "/tmp/scanner_v37.log", maxBytes=10 * 1024 * 1024, backupCount=3
 )
 _fh.setFormatter(_log_fmt)
 _log_root.addHandler(_fh)
 
 log = logging.getLogger(__name__)
-log.info("Scanner v36 — log aktif: /tmp/scanner_v36.log")
+log.info("Scanner v37 — log aktif: /tmp/scanner_v37.log")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ⚙️  CONFIG
@@ -63,14 +63,14 @@ CONFIG = {
     # OI history
     "oi_history_max_entries": 40,
 
-    # Ignition detection thresholds (WAJIB — JANGAN DIUBAH)
+    # Ignition detection thresholds
     "bbw_percentile_threshold":       20,     # ≤ persentil ke-20
     "atr_ratio_threshold":            0.75,   # ATR(6)/ATR(24) < 0.75
     "range_4h_threshold":             0.025,  # (high-low)/close < 2.5%
     "compression_score_bb":           15,
     "compression_score_atr":          10,
     "compression_score_range":        5,
-    "oi_slope_threshold":             0.005,  # <--- diturunkan dari 0.01
+    "oi_slope_threshold":             0.005,  # diturunkan dari 0.01
     "oi_burst_ratio_threshold":       1.5,    # burst ratio > 1.5
     "oi_conviction_formula_mult":     1000,   # min(100, slope * 1000)
     "orderflow_accum_imbalance":      1.2,    # weighted_imbalance > 1.2
@@ -103,10 +103,14 @@ CONFIG = {
     # Order flow time decay
     "orderflow_half_life_sec":        30,
     "orderflow_window_sec":           60,
+
+    # Filter retracement (baru)
+    "retracement_min":                 10,   # minimal 10%
+    "retracement_max":                 40,   # maksimal 40%
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  📋  WHITELIST
+#  📋  WHITELIST (sama seperti v35/v36, tidak diubah)
 # ══════════════════════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
    "4USDT",
@@ -1492,14 +1496,28 @@ def master_score_v2(symbol, ticker):
 
     Return:
         dict lengkap berisi semua komponen deteksi, probabilitas, regime, dan alert level.
-        Return None jika data fundamental tidak tersedia.
+        Return None jika data fundamental tidak tersedia atau gagal filter retracement.
     """
     try:
         price = float(ticker.get("lastPr", ticker.get("last", 0)) or 0)
     except Exception:
         price = 0.0
 
-    # ── 1. Ambil candles ──────────────────────────────────────────────────────
+    # ── FILTER RETRACEMENT (baru) ─────────────────────────────────────────────
+    # Ambil high dan low 24h dari ticker
+    high_24h = float(ticker.get("high24h", 0))
+    low_24h = float(ticker.get("low24h", 0))
+    if high_24h > low_24h and price > 0:
+        retracement = (high_24h - price) / (high_24h - low_24h) * 100
+        # Jika di luar rentang 10%–40%, filter out
+        if not (CONFIG["retracement_min"] <= retracement <= CONFIG["retracement_max"]):
+            log.info(f"master_score_v2 {symbol}: FILTERED — RETRACEMENT_OOB: retracement={retracement:.2f}% (acceptable {CONFIG['retracement_min']}%–{CONFIG['retracement_max']}%)")
+            return None
+    else:
+        # Jika data high/low tidak tersedia, lewati filter (tetap diproses)
+        log.debug(f"master_score_v2 {symbol}: data high/low 24h tidak lengkap, lewati filter retracement")
+
+    # ── Ambil candles ─────────────────────────────────────────────────────────
     c1h = get_candles(symbol, "1h",  limit=80)   # 80 candle: cukup untuk BBW(20)+history(50)+ATR(24)
     c4h = get_candles(symbol, "4h",  limit=10)
 
@@ -1507,15 +1525,14 @@ def master_score_v2(symbol, ticker):
         log.warning(f"master_score_v2 {symbol}: candle data tidak tersedia")
         return None
 
-    # ── 1b. ATR absolut dan level entry/SL/TP ────────────────────────────────
+    # ── ATR absolut dan level entry/SL/TP ─────────────────────────────────────
     atr_abs    = _calc_atr(c1h, 14)
     entry_data = calculate_entry_sl_tp(c1h, price, atr_abs)
 
-    # ── 2. Compression ────────────────────────────────────────────────────────
+    # ── Compression ────────────────────────────────────────────────────────────
     compression = detect_compression_phase(c1h, c4h)
 
-    # ── 3. OI Trend ───────────────────────────────────────────────────────────
-    # Update _oi_history sebelum analyze
+    # ── OI Trend ──────────────────────────────────────────────────────────────
     oi_now = get_open_interest(symbol)
     if oi_now > 0:
         if symbol not in _oi_history:
@@ -1527,26 +1544,26 @@ def master_score_v2(symbol, ticker):
 
     oi_trend = analyze_oi_trend(symbol)
 
-    # ── 4. Order Flow ─────────────────────────────────────────────────────────
+    # ── Order Flow ────────────────────────────────────────────────────────────
     orderflow = get_order_flow_imbalance(symbol)
 
-    # ── 5. Order Book Snapshot → Supply Removal ───────────────────────────────
+    # ── Order Book Snapshot → Supply Removal ──────────────────────────────────
     current_ob = get_orderbook_snapshot(symbol)
     supply     = detect_supply_removal(symbol, current_ob)
 
-    # ── 6. Funding ────────────────────────────────────────────────────────────
+    # ── Funding ───────────────────────────────────────────────────────────────
     funding = get_funding(symbol)
     add_funding_snapshot(symbol, funding)
 
-    # ── 7. Regime ─────────────────────────────────────────────────────────────
+    # ── Regime ────────────────────────────────────────────────────────────────
     regime = classify_regime(
         compression["compression_score"], oi_trend, funding, orderflow
     )
 
-    # ── 8. Probabilitas Ignition ──────────────────────────────────────────────
+    # ── Probabilitas Ignition ─────────────────────────────────────────────────
     prob = calculate_ignition_probability(compression, oi_trend, orderflow, supply)
 
-    # ── 9. Alert Level ────────────────────────────────────────────────────────
+    # ── Alert Level ───────────────────────────────────────────────────────────
     if prob >= CONFIG["prob_strong_alert"]:
         alert_level = "STRONG ALERT"
     elif prob >= CONFIG["prob_alert"]:
@@ -1680,7 +1697,7 @@ def build_ignition_alert(r):
 def run_scan():
     """
     Loop utama scanner. Jalankan scan untuk semua symbol di whitelist,
-    kirim alert Telegram jika prob ignition memenuhi threshold.
+    kirim alert Telegram jika prob ignition >= 50% (ALERT atau STRONG ALERT) dan tidak dalam cooldown.
     """
     log.info("=== run_scan START ===")
 
@@ -1710,8 +1727,8 @@ def run_scan():
             results.append(r)
             scanned += 1
 
-            # Kirim alert jika threshold terpenuhi dan tidak dalam cooldown
-            if r["alert_level"] in ("STRONG ALERT", "ALERT", "WATCHLIST"):
+            # Kirim alert jika threshold >= 50% (ALERT atau STRONG ALERT) dan tidak dalam cooldown
+            if r["alert_level"] in ("STRONG ALERT", "ALERT"):   # Hanya untuk prob >= 50%
                 if not is_cooldown(sym):
                     msg = build_ignition_alert(r)
                     sent = send_telegram(msg)
@@ -1754,15 +1771,14 @@ def run_scan():
     except Exception as e:
         log.error(f"Gagal menyimpan hasil scan: {e}")
 
-    # Ringkasan
-    alerts = [r for r in results if r["alert_level"] != "IGNORE"]
+    # Ringkasan (hitung alert dengan level ALERT atau STRONG ALERT)
+    high_alerts = [r for r in results if r["alert_level"] in ("STRONG ALERT", "ALERT")]
     log.info(
         f"=== run_scan SELESAI === "
         f"Scanned: {scanned} | "
-        f"Alerts: {len(alerts)} | "
-        f"(SA={sum(1 for r in alerts if r['alert_level']=='STRONG ALERT')} "
-        f"A={sum(1 for r in alerts if r['alert_level']=='ALERT')} "
-        f"W={sum(1 for r in alerts if r['alert_level']=='WATCHLIST')})"
+        f"High alerts (>=50%): {len(high_alerts)} | "
+        f"(SA={sum(1 for r in high_alerts if r['alert_level']=='STRONG ALERT')} "
+        f"A={sum(1 for r in high_alerts if r['alert_level']=='ALERT')})"
     )
 
 
@@ -1771,7 +1787,7 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    log.info("Scanner v36 dimulai — mode sekali jalan")
+    log.info("Scanner v37 dimulai — mode sekali jalan")
     try:
         run_scan()
     except KeyboardInterrupt:
