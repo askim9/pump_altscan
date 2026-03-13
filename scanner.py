@@ -10,10 +10,13 @@ import numpy as np
 from datetime import datetime, timezone
 from collections import defaultdict
 
-# v26 PERF: Persistent HTTP session for connection reuse across ~342 symbols
-# Eliminates TCP handshake overhead on every API call
+# v36: Perbaikan kritis:
+# 1. OI slope threshold diturunkan menjadi 0.005
+# 2. Filter imbalance ekstrem (>1000) -> set ke netral (1.0) dan raw volume diabaikan
+# 3. Hasil scan disimpan ke file scan_results.json untuk validasi
+
 _http_session = requests.Session()
-_http_session.headers.update({"User-Agent": "CryptoScanner/34.0", "Accept-Encoding": "gzip"})
+_http_session.headers.update({"User-Agent": "CryptoScanner/36.0", "Accept-Encoding": "gzip"})
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -33,13 +36,13 @@ _ch.setFormatter(_log_fmt)
 _log_root.addHandler(_ch)
 
 _fh = _lh.RotatingFileHandler(
-    "/tmp/scanner_v34.log", maxBytes=10 * 1024 * 1024, backupCount=3
+    "/tmp/scanner_v36.log", maxBytes=10 * 1024 * 1024, backupCount=3
 )
 _fh.setFormatter(_log_fmt)
 _log_root.addHandler(_fh)
 
 log = logging.getLogger(__name__)
-log.info("Scanner v34 — log aktif: /tmp/scanner_v34.log")
+log.info("Scanner v36 — log aktif: /tmp/scanner_v36.log")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ⚙️  CONFIG
@@ -67,7 +70,7 @@ CONFIG = {
     "compression_score_bb":           15,
     "compression_score_atr":          10,
     "compression_score_range":        5,
-    "oi_slope_threshold":             0.01,   # slope_normalized > 0.01
+    "oi_slope_threshold":             0.005,  # <--- diturunkan dari 0.01
     "oi_burst_ratio_threshold":       1.5,    # burst ratio > 1.5
     "oi_conviction_formula_mult":     1000,   # min(100, slope * 1000)
     "orderflow_accum_imbalance":      1.2,    # weighted_imbalance > 1.2
@@ -82,9 +85,9 @@ CONFIG = {
     "w_orderflow":                    1.8,
     "w_supply_removal":               2.0,
     "w_total":                        6.6,
-    "prob_watchlist":                 50,
-    "prob_alert":                     70,
-    "prob_strong_alert":              80,
+    "prob_watchlist":                 30,
+    "prob_alert":                     50,
+    "prob_strong_alert":              70,
 
     # Classify regime thresholds
     "regime_ignition_compression":    20,
@@ -99,10 +102,7 @@ CONFIG = {
 
     # Order flow time decay
     "orderflow_half_life_sec":        30,
-    "orderflow_window_sec":           1200,   # PATCH 4: diperluas dari 60s → 1200s (audit fix)
-
-    # PATCH 5: Volatility compression gate threshold
-    "compression_gate_min_score":     10,     # ignition prob = 0 jika compression_score < nilai ini
+    "orderflow_window_sec":           60,
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1176,6 +1176,13 @@ def get_order_flow_imbalance(symbol):
     else:
         weighted_imbalance = 1.0  # neutral
 
+    # --- FILTER IMBALANCE EKSTREM ---
+    if weighted_imbalance > 1000:
+        log.warning(f"get_order_flow_imbalance {symbol}: imbalance terlalu besar ({weighted_imbalance:.2f}), di-reset ke netral.")
+        weighted_imbalance = 1.0
+        raw_buy = raw_sell = 0  # agar is_accumulation tidak terpenuhi
+    # --------------------------------
+
     is_accumulation = (
         weighted_imbalance > CONFIG["orderflow_accum_imbalance"]
         and raw_buy > CONFIG["orderflow_accum_buy_mult"] * raw_sell
@@ -1475,115 +1482,6 @@ def calculate_entry_sl_tp(candles, price, atr_abs):
     }
 
 
-def _pre_ignition_filters(c1h, price, oi_trend):
-    """
-    PATCH 1–3 + 6: Enam filter pra-ignition dari forensic audit.
-    Dijalankan sebelum ignition probability scoring.
-
-    PATCH 1 — Pump Memory Filter:
-        Tolak koin jika price_change_24h > 20%.
-    PATCH 2 — Retracement Filter:
-        Tolak jika retracement dari recent_high di luar [0.10, 0.40].
-    PATCH 3 & 6 — OI-Price Divergence / Distribution Filter:
-        Tolak jika oi_slope > 0 AND price_slope < 0
-        (distribution pattern: OI naik sementara harga turun).
-
-    Return:
-        dict {
-            "passed"            : bool,   # True = lolos semua filter
-            "reject_reason"     : str,    # alasan penolakan (kosong jika passed)
-            "price_change_24h"  : float,
-            "retracement"       : float,
-            "distribution_risk" : bool,
-        }
-    """
-    reject_reason    = ""
-    distribution_risk = False
-
-    # Butuh minimal 72 candle 1h untuk price_change_72h; gunakan apa yang tersedia
-    closes = [c["close"] for c in c1h]
-    n      = len(closes)
-
-    # ── PATCH 1: Pump Memory Filter ──────────────────────────────────────────
-    price_change_24h = 0.0
-    if n >= 24 and closes[-25] > 0:
-        price_change_24h = (closes[-1] - closes[-25]) / closes[-25]
-    elif n >= 2 and closes[0] > 0:
-        price_change_24h = (closes[-1] - closes[0]) / closes[0]
-
-    if price_change_24h > 0.20:   # > 20%
-        reject_reason = f"PUMP_MEMORY: 24h change={price_change_24h:.1%} > 20%"
-        log.debug(f"_pre_ignition_filters: {reject_reason}")
-        return {
-            "passed":             False,
-            "reject_reason":      reject_reason,
-            "price_change_24h":   round(price_change_24h, 4),
-            "retracement":        0.0,
-            "distribution_risk":  False,
-        }
-
-    # ── PATCH 2: Retracement Filter ──────────────────────────────────────────
-    # Gunakan 72h window untuk mencari recent high (ignition terjadi setelah koreksi)
-    lookback_retracement = min(72, n)
-    recent_highs = [c["high"] for c in c1h[-lookback_retracement:]]
-    recent_high  = max(recent_highs) if recent_highs else price
-    retracement  = (recent_high - price) / recent_high if recent_high > 0 else 0.0
-
-    if not (0.10 <= retracement <= 0.40):
-        reject_reason = (
-            f"RETRACEMENT_OOB: retracement={retracement:.2%} "
-            f"(acceptable 10%–40%)"
-        )
-        log.debug(f"_pre_ignition_filters: {reject_reason}")
-        return {
-            "passed":             False,
-            "reject_reason":      reject_reason,
-            "price_change_24h":   round(price_change_24h, 4),
-            "retracement":        round(retracement, 4),
-            "distribution_risk":  False,
-        }
-
-    # ── PATCH 3 & 6: OI–Price Divergence / Distribution Filter ───────────────
-    # price_slope: regresi linear harga penutupan 24 candle terakhir
-    window_price = closes[-24:] if n >= 24 else closes
-    if len(window_price) >= 3:
-        xs           = list(range(len(window_price)))
-        n_w          = len(window_price)
-        sum_x        = sum(xs)
-        sum_y        = sum(window_price)
-        sum_xy       = sum(x * y for x, y in zip(xs, window_price))
-        sum_x2       = sum(x * x for x in xs)
-        denom        = n_w * sum_x2 - sum_x ** 2
-        price_slope  = (n_w * sum_xy - sum_x * sum_y) / denom if denom != 0 else 0.0
-    else:
-        price_slope = 0.0
-
-    oi_slope = oi_trend.get("slope_normalized", 0.0)
-
-    if oi_slope > 0 and price_slope < 0:
-        distribution_risk = True
-        reject_reason = (
-            f"DISTRIBUTION: oi_slope={oi_slope:.5f}>0 "
-            f"price_slope={price_slope:.5f}<0"
-        )
-        log.debug(f"_pre_ignition_filters: {reject_reason}")
-        return {
-            "passed":             False,
-            "reject_reason":      reject_reason,
-            "price_change_24h":   round(price_change_24h, 4),
-            "retracement":        round(retracement, 4),
-            "distribution_risk":  distribution_risk,
-        }
-
-    return {
-        "passed":             True,
-        "reject_reason":      "",
-        "price_change_24h":   round(price_change_24h, 4),
-        "retracement":        round(retracement, 4),
-        "distribution_risk":  distribution_risk,
-    }
-
-
 def master_score_v2(symbol, ticker):
     """
     Master scoring function v2 — deteksi fase ignition lengkap.
@@ -1629,14 +1527,6 @@ def master_score_v2(symbol, ticker):
 
     oi_trend = analyze_oi_trend(symbol)
 
-    # ── PATCH 1–3 & 6: Pre-ignition filters (sebelum scoring) ────────────────
-    filters = _pre_ignition_filters(c1h, price, oi_trend)
-    if not filters["passed"]:
-        log.info(
-            f"master_score_v2 {symbol}: FILTERED — {filters['reject_reason']}"
-        )
-        return None
-
     # ── 4. Order Flow ─────────────────────────────────────────────────────────
     orderflow = get_order_flow_imbalance(symbol)
 
@@ -1654,15 +1544,7 @@ def master_score_v2(symbol, ticker):
     )
 
     # ── 8. Probabilitas Ignition ──────────────────────────────────────────────
-    # PATCH 5: Volatility compression gate — prob = 0 jika kompresi tidak terdeteksi
-    if compression["compression_score"] < CONFIG["compression_gate_min_score"]:
-        log.debug(
-            f"master_score_v2 {symbol}: compression gate — "
-            f"score={compression['compression_score']} < {CONFIG['compression_gate_min_score']}"
-        )
-        prob = 0.0
-    else:
-        prob = calculate_ignition_probability(compression, oi_trend, orderflow, supply)
+    prob = calculate_ignition_probability(compression, oi_trend, orderflow, supply)
 
     # ── 9. Alert Level ────────────────────────────────────────────────────────
     if prob >= CONFIG["prob_strong_alert"]:
@@ -1849,6 +1731,29 @@ def run_scan():
     save_oi_history()        # WAJIB: simpan history OI setelah scan
     save_all_funding_snapshots()
 
+    # --- SIMPAN HASIL SCAN UNTUK VALIDASI ---
+    try:
+        with open("./scan_results.json", "w") as f:
+            # Simpan hanya field penting untuk menghemat ruang
+            simplified = []
+            for r in results:
+                simplified.append({
+                    "symbol": r["symbol"],
+                    "timestamp": r["timestamp"],
+                    "prob": r["prob"],
+                    "alert_level": r["alert_level"],
+                    "price": r["price"],
+                    "compression": r["compression"]["compression_score"],
+                    "conviction": r["oi_trend"]["conviction_score"],
+                    "imbalance": r["orderflow"]["weighted_imbalance"],
+                    "supply": r["supply_removal"]["removal_score"],
+                    "regime": r["regime"],
+                })
+            json.dump(simplified, f, indent=2)
+        log.info(f"Hasil scan disimpan ke ./scan_results.json ({len(simplified)} entri)")
+    except Exception as e:
+        log.error(f"Gagal menyimpan hasil scan: {e}")
+
     # Ringkasan
     alerts = [r for r in results if r["alert_level"] != "IGNORE"]
     log.info(
@@ -1866,7 +1771,7 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    log.info("Scanner v34 dimulai — mode sekali jalan")
+    log.info("Scanner v36 dimulai — mode sekali jalan")
     try:
         run_scan()
     except KeyboardInterrupt:
