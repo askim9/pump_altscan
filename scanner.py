@@ -1,3 +1,4 @@
+
 import requests
 import time
 import os
@@ -106,7 +107,7 @@ CONFIG = {
 #  📋  WHITELIST
 # ══════════════════════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
-"4USDT",
+   "4USDT",
 "0GUSDT",
 "1000BONKUSDT",
 "1000PEPEUSDT",
@@ -400,7 +401,6 @@ WHITELIST_SYMBOLS = {
 "SUSDT",
 "SAGAUSDT",
 "SAHARAUSDT",
-"SAMSUNGUSDT",
 "SANDUSDT",
 "SAPIENUSDT",
 "SEIUSDT",
@@ -452,7 +452,6 @@ WHITELIST_SYMBOLS = {
 "TRIAUSDT",
 "TRUMPUSDT",
 "TRXUSDT",
-"TSLAUSDT",
 "TURBOUSDT",
 "UAIUSDT",
 "UBUSDT",
@@ -1361,7 +1360,7 @@ def classify_regime(compression_score, oi_trend, funding, orderflow):
 
 def calculate_ignition_probability(compression, oi_conviction, orderflow, supply_removal):
     """
-    Hitung probabilitas ignition menggunakan Bayesian-style weighted scoring.
+    Hitung probabilitas ignition menggunakan weighted scoring langsung.
 
     Parameter:
         compression    (dict): output dari detect_compression_phase
@@ -1370,19 +1369,16 @@ def calculate_ignition_probability(compression, oi_conviction, orderflow, supply
         supply_removal (dict): output dari detect_supply_removal
 
     Return:
-        float: probabilitas ignition dalam persen (0.0 – 95.0)
+        float: probabilitas ignition dalam persen (0.0 – 100.0)
 
     Formula:
-        Prior = 0.15
         L_comp    = compression_score / 30          (bobot 1.5)
         L_oi      = conviction_score / 100          (bobot 1.3)
         L_flow    = weighted_imbalance / 2.0        (bobot 1.8, capped 1.0)
         L_supply  = removal_score / 20              (bobot 2.0)
-        posterior = prior * (1.5*L_comp + 1.3*L_oi + 1.8*L_flow + 2.0*L_supply) / 6.6
-        result    = min(0.95, max(0.0, posterior)) * 100
+        raw_score = 1.5*L_comp + 1.3*L_oi + 1.8*L_flow + 2.0*L_supply
+        prob      = min(100, (raw_score / 6.6) * 100)
     """
-    prior = CONFIG["ignition_prior"]
-
     L_comp   = compression["compression_score"] / 30.0
     L_oi     = oi_conviction["conviction_score"] / 100.0
     L_flow   = min(1.0, orderflow["weighted_imbalance"] / 2.0)
@@ -1394,16 +1390,16 @@ def calculate_ignition_probability(compression, oi_conviction, orderflow, supply
     w_supply = CONFIG["w_supply_removal"]
     w_total  = CONFIG["w_total"]
 
-    posterior = prior * (
+    raw_score = (
         w_comp   * L_comp  +
         w_oi     * L_oi    +
         w_flow   * L_flow  +
         w_supply * L_supply
-    ) / w_total
+    )
 
-    posterior = min(0.95, max(0.0, posterior))
+    prob = min(100.0, (raw_score / w_total) * 100.0)
 
-    return round(posterior * 100, 1)
+    return round(prob, 1)
 
 
 def master_score_v2(symbol, ticker):
