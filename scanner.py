@@ -255,13 +255,19 @@ CONFIG = {
     # berdasarkan forensik 4 pump nyata (PIXEL, TRUMP, ORCA, VVV).
     #
     # vol_len=2: window filter vol (vol_hi = highest(delta_vol/2.5, 2))
-    # cp_lookback=20: pivot lookback (sama dengan ChartPrime default)
+    # cp_lookback=30: pivot lookback (naik dari 20 — tangkap pivot lebih historis)
     # cp_atr_mult=1.0: lebar box (sama dengan ChartPrime box_width=1)
-    "cp_lookback":              20,   # pivot lookback
+    "cp_lookback":              30,   # FIX-CP-4: 20→30 pivot lookback
     "cp_vol_len":                4,   # FIX-CP-2: delta volume filter window (2→4)
     "cp_atr_mult":             1.0,   # box width multiplier
-    "cp_sup_holds_lookback":    20,   # berapa candle terakhir cek sup_holds
+    "cp_sup_holds_lookback":    30,   # FIX: candle terakhir cek sup_holds (20→30)
     "cp_brekout_window":         3,   # FIX-CP-6: brekout valid dalam N candle
+    # ── Support Health System (v32b NEW) ──────────────────────────────────────
+    "sup_health_block_score":  -20,   # kurangi score jika risk CRITICAL
+    "sup_health_warn_score":   -10,   # kurangi score jika risk HIGH
+    "sup_health_at_support_bonus": 8, # bonus jika harga dalam 3% dari support
+    "sup_health_at_support_pct": 0.03,# threshold "dekat support" = 3%
+    "sup_health_critical_block": True,# hard-reject saat CRITICAL + squeeze
     # Score untuk ChartPrime signals — berdasarkan forensik:
     # "Break Res" = trigger utama semua pump, harus score tertinggi
     "score_cp_break_res":       20,   # Break Res = resistance patah → pump
@@ -3610,7 +3616,224 @@ def check_dump_trap_v22(candles, ema200_dist_data, vol_zscore_v20_data):
     )
 
 
-def calc_improved_reversal_v22(price_now, vwap, ema20_slope_data, vol_zscore_v20_data):
+# ══════════════════════════════════════════════════════════════════════════════
+#  🛡️  v32b: SUPPORT HEALTH SYSTEM — Deteksi Preventif Support Jebol
+# ══════════════════════════════════════════════════════════════════════════════
+def calc_support_health(candles, cp_sr, vol_zscore_v20, oi_data):
+    """
+    v32b — Support Health System: 7 lapis deteksi preventif SEBELUM support jebol.
+
+    Berbeda dari dump_filter (deteksi dump AKTIF) dan dump_trap (butuh price<EMA200),
+    fungsi ini mendeteksi tanda-tanda PELEMAHAN support secara dini saat harga
+    masih di atas support — sehingga scanner bisa menolak atau memberi peringatan
+    SEBELUM trader masuk posisi.
+
+    7 Indikator:
+    1. Support stress test: harga menyentuh support berulang (3x+) tanpa BOS ke atas
+       → setiap sentuhan memperlemah support (distribusi tersembunyi)
+    2. Negative volume spike mendekati support: seller agresif di dekat support
+       → tanda institusi sedang menembus support
+    3. Consecutive bearish candles menuju support: momentum turun yang konsisten
+       → buyer tidak ada tenaga untuk mempertahankan support
+    4. SL gap terlalu kecil: jarak entry ke support < 1.5%
+       → tidak ada ruang breathing, noise biasa bisa trigger stop
+    5. OI naik + harga turun menuju support: short buildup aktif
+       → institusi membangun posisi short, bukan akumulasi long
+    6. CVD negatif konsisten di dekat support: seller dominan di zona support
+       → kontradiksi langsung dengan asumsi support kuat
+    7. Failed bounce pattern: 2x menyentuh support, bounce makin lemah
+       → exhausted support, siap jebol
+
+    Return: dict dengan health_score (0-100), risk_level, signals, dan
+            should_warn / should_block flags.
+    """
+    signals     = []
+    penalties   = []
+    health      = 100   # mulai dari sehat, kurangi per indikator negatif
+
+    price_now   = candles[-1]["close"] if candles else 0
+    if price_now <= 0 or len(candles) < 20:
+        return _support_health_empty()
+
+    cp_sup_level  = cp_sr["support"]["level"]   if (cp_sr and cp_sr.get("support"))  else 0.0
+    cp_sup_level1 = cp_sr["support"]["level_1"] if (cp_sr and cp_sr.get("support"))  else 0.0
+
+    # Fallback ke swing_low jika tidak ada CP support
+    if cp_sup_level <= 0:
+        cp_sup_level = min(c["low"] for c in candles[-20:])
+
+    if cp_sup_level <= 0:
+        return _support_health_empty()
+
+    dist_to_sup = (price_now - cp_sup_level) / price_now   # fraksi jarak
+
+    # ── Indikator 1: Support stress test (sentuhan berulang) ─────────────────
+    # Hitung berapa kali low candle menyentuh zona support (dalam 2% dari level)
+    touch_zone  = cp_sup_level * 1.02
+    n_touches   = sum(1 for c in candles[-30:] if c["low"] <= touch_zone)
+    # Cek apakah ada BOS ke atas setelah sentuhan (bounce valid)
+    bos_after   = False
+    for i in range(len(candles) - 10, len(candles)):
+        if i >= 1 and candles[i]["high"] > max(c["high"] for c in candles[max(0,i-8):i]):
+            bos_after = True
+            break
+
+    if n_touches >= 3 and not bos_after:
+        # Makin banyak sentuhan tanpa BOS = makin lemah
+        pen = min(25, n_touches * 6)
+        health -= pen
+        penalties.append(pen)
+        signals.append(
+            f"⚠️ Support stress: {n_touches}x disentuh tanpa BOS ke atas "
+            f"— distribusi tersembunyi (penalti -{pen})"
+        )
+
+    # ── Indikator 2: Volume negatif spike mendekati support ──────────────────
+    # Cek 5 candle terbaru: apakah ada vol negatif besar (>2x baseline) saat
+    # harga dalam 5% dari support?
+    if len(candles) >= 25:
+        vol_baseline = sum(abs(c["volume_usd"]) for c in candles[-25:-5]) / 20
+        for c in candles[-5:]:
+            c_dist = (c["low"] - cp_sup_level) / price_now
+            if c_dist < 0.05:   # dalam 5% dari support
+                dv  = _delta_volume(c)
+                if dv < 0 and abs(dv) > vol_baseline * 2.0:
+                    pen = 20
+                    health -= pen
+                    penalties.append(pen)
+                    signals.append(
+                        f"🚨 Negative vol spike {abs(dv)/1e3:.0f}K ({abs(dv)/vol_baseline:.1f}x baseline) "
+                        f"dekat support — seller agresif (penalti -{pen})"
+                    )
+                    break
+
+    # ── Indikator 3: Consecutive bearish menuju support ───────────────────────
+    # 3+ candle merah berturut-turut, setiap close lebih rendah
+    recent6 = candles[-6:]
+    bearish_streak = 0
+    for i in range(1, len(recent6)):
+        if recent6[i]["close"] < recent6[i]["open"] and recent6[i]["close"] < recent6[i-1]["close"]:
+            bearish_streak += 1
+        else:
+            bearish_streak = 0
+    if bearish_streak >= 3:
+        pen = 15
+        health -= pen
+        penalties.append(pen)
+        signals.append(
+            f"📉 {bearish_streak} candle merah berturut-turut menuju support "
+            f"— momentum turun (penalti -{pen})"
+        )
+
+    # ── Indikator 4: SL gap terlalu kecil ────────────────────────────────────
+    # Jika jarak dari entry ke support < 1.5%, noise bisa trigger SL
+    if dist_to_sup < 0.015 and dist_to_sup > 0:
+        pen = 10
+        health -= pen
+        penalties.append(pen)
+        signals.append(
+            f"⚠️ Jarak ke support hanya {dist_to_sup*100:.2f}% "
+            f"— SL gap terlalu sempit, rawan noise (penalti -{pen})"
+        )
+
+    # ── Indikator 5: OI naik + harga turun ke support ────────────────────────
+    # OI bertambah sementara harga turun = short building
+    oi_chg  = oi_data.get("change_pct", 0) if oi_data else 0
+    harga_turun = len(candles) >= 4 and candles[-1]["close"] < candles[-4]["close"]
+    if oi_chg > 3.0 and harga_turun and dist_to_sup < 0.08:
+        pen = 15
+        health -= pen
+        penalties.append(pen)
+        signals.append(
+            f"🚨 OI +{oi_chg:.1f}% + harga turun menuju support "
+            f"— short buildup aktif (penalti -{pen})"
+        )
+
+    # ── Indikator 6: CVD negatif konsisten di dekat support ──────────────────
+    # CVD = cumulative delta vol 8 candle terakhir, saat harga dekat support
+    if len(candles) >= 10 and dist_to_sup < 0.05:
+        dv_recent = [_delta_volume(c) for c in candles[-8:]]
+        cvd_sum   = sum(dv_recent)
+        cvd_neg   = sum(1 for d in dv_recent if d < 0)
+        if cvd_neg >= 6 and cvd_sum < 0:
+            pen = 18
+            health -= pen
+            penalties.append(pen)
+            signals.append(
+                f"📊 CVD negatif: {cvd_neg}/8 candle seller dominan di dekat support "
+                f"— support lemah (penalti -{pen})"
+            )
+
+    # ── Indikator 7: Failed bounce pattern ───────────────────────────────────
+    # Cari 2 titik dimana low menyentuh support zone, lalu cek apakah
+    # bounce setelahnya makin lemah (each bounce high < prev bounce high)
+    if len(candles) >= 20:
+        touch_indices = [
+            i for i, c in enumerate(candles[-20:])
+            if c["low"] <= cp_sup_level * 1.015
+        ]
+        if len(touch_indices) >= 2:
+            # Ambil high setelah masing-masing touch
+            bounce_highs = []
+            for ti in touch_indices[-2:]:
+                real_idx = len(candles) - 20 + ti
+                # High maksimum dalam 3 candle setelah touch
+                window = candles[real_idx: min(real_idx + 4, len(candles))]
+                bounce_highs.append(max(c["high"] for c in window) if window else 0)
+            if len(bounce_highs) == 2 and bounce_highs[1] < bounce_highs[0] * 0.995:
+                pen = 12
+                health -= pen
+                penalties.append(pen)
+                signals.append(
+                    f"⚠️ Failed bounce: bounce ke-2 ({bounce_highs[1]:.6g}) "
+                    f"< bounce ke-1 ({bounce_highs[0]:.6g}) — support melemah (penalti -{pen})"
+                )
+
+    # ── Tentukan risk level dan flags ─────────────────────────────────────────
+    health      = max(0, health)
+    total_pen   = sum(penalties)
+    n_warnings  = len(penalties)
+
+    if health <= 30 or total_pen >= 40:
+        risk_level   = "CRITICAL"
+        should_block = True
+        should_warn  = True
+    elif health <= 55 or total_pen >= 25:
+        risk_level   = "HIGH"
+        should_block = False
+        should_warn  = True
+    elif health <= 75 or total_pen >= 15:
+        risk_level   = "MEDIUM"
+        should_block = False
+        should_warn  = True
+    else:
+        risk_level   = "LOW"
+        should_block = False
+        should_warn  = False
+
+    return {
+        "ok":            True,
+        "health":        health,
+        "risk_level":    risk_level,
+        "total_penalty": total_pen,
+        "n_warnings":    n_warnings,
+        "signals":       signals,
+        "should_block":  should_block,
+        "should_warn":   should_warn,
+        "dist_to_sup":   round(dist_to_sup * 100, 2),
+        "cp_sup_level":  cp_sup_level,
+        "n_touches":     n_touches,
+    }
+
+
+def _support_health_empty():
+    """Return default jika tidak ada data support."""
+    return {
+        "ok": False, "health": 100, "risk_level": "UNKNOWN",
+        "total_penalty": 0, "n_warnings": 0,
+        "signals": [], "should_block": False, "should_warn": False,
+        "dist_to_sup": 0.0, "cp_sup_level": 0.0, "n_touches": 0,
+    }
     """
     FIX 08 v22 — Improved Reversal Filter.
     Allows reversal pumps ONLY when conditions confirm genuine reversal.
@@ -5302,7 +5525,10 @@ def calc_chartprime_sr(candles):
         return _cp_sr_empty()
 
     dv_series = [_delta_volume(c) for c in candles]
-    atr_val   = _atr_n(candles, min(200, len(candles) - 1))
+
+    # FIX-CP-7: ATR 20 untuk box width — lebih responsif dari ATR 200
+    # ATR 200 saat squeeze masih tinggi karena mencakup periode pre-squeeze
+    atr_val   = _atr_n(candles, min(20, len(candles) - 1))
     withd     = atr_val * CONFIG.get("cp_atr_mult", 1.0)
 
     support_levels    = []
@@ -6013,6 +6239,9 @@ def master_score(symbol, ticker):
     uptrend          = calc_uptrend_age(c1h, squeeze_active=squeeze_active)
     sr               = calc_support_resistance(c1h)
     cp_sr            = calc_chartprime_sr(c1h)      # v32: ChartPrime volume-weighted SR
+    sup_health       = calc_support_health(         # v32b: support break prevention
+        c1h, cp_sr, None, oi_data               # vol_zscore passed later via scoring
+    )
     btc_candles      = get_btc_candles_cached(48)
     btc_corr         = calc_btc_correlation(c1h, btc_candles, lookback=24)
     accum            = calc_accumulation_phase(c1h, squeeze_active=squeeze_active)
@@ -6699,7 +6928,57 @@ def master_score(symbol, ticker):
             f"  {symbol}: ChartPrime SR → {_cp_label} | score_delta={_cp_score:+d}"
         )
 
-    # ── 13. Funding rate ──────────────────────────────────────────────────────
+    # ── 12d. v32b: Support Health System — 7 lapis preventif ────────────────
+    # Hard-block jika CRITICAL + squeeze (false signal paling berbahaya).
+    # Penalty bertingkat untuk HIGH/MEDIUM. Bonus jika harga di support.
+    if sup_health.get("ok"):
+        sh_risk  = sup_health.get("risk_level", "LOW")
+        sh_dist  = sup_health.get("dist_to_sup", 99.0)
+        sh_block = sup_health.get("should_block", False)
+
+        # Hard-block: CRITICAL + squeeze = sinyal palsu paling berbahaya
+        if sh_block and squeeze_active and CONFIG.get("sup_health_critical_block", True):
+            log.info(
+                f"  {symbol}: Support Health CRITICAL ({sup_health['health']}/100) "
+                f"+ squeeze aktif — GATE GAGAL (support melemah, squeeze = false signal)"
+            )
+            return None
+
+        # Penalty bertingkat
+        if sh_risk == "CRITICAL":
+            _sh_pen = CONFIG.get("sup_health_block_score", -20)
+            score  += _sh_pen
+            for sig in sup_health["signals"][:3]:
+                signals.append(sig)
+            signals.append(
+                f"🚨 Support Health CRITICAL ({sup_health['health']}/100) "
+                f"— {sup_health['n_warnings']} peringatan aktif ({_sh_pen})"
+            )
+        elif sh_risk == "HIGH":
+            _sh_pen = CONFIG.get("sup_health_warn_score", -10)
+            score  += _sh_pen
+            for sig in sup_health["signals"][:2]:
+                signals.append(sig)
+            signals.append(
+                f"⚠️ Support Health HIGH ({sup_health['health']}/100) ({_sh_pen})"
+            )
+        elif sh_risk == "MEDIUM":
+            for sig in sup_health["signals"][:2]:
+                signals.append(sig)
+
+        # Bonus setup ideal: harga dekat support
+        _sup_prox = CONFIG.get("sup_health_at_support_pct", 0.03)
+        if 0 < sh_dist / 100 <= _sup_prox:
+            _sh_bonus = CONFIG.get("sup_health_at_support_bonus", 8)
+            score    += _sh_bonus
+            signals.append(
+                f"✅ Harga dekat support ({sh_dist:.2f}%) — entry ideal (+{_sh_bonus})"
+            )
+
+        log.debug(
+            f"  {symbol}: SuppHealth={sup_health['health']}/100 "
+            f"risk={sh_risk} dist={sh_dist:.1f}% warns={sup_health['n_warnings']}"
+        )
     # FIX v18: mutual exclusion guard — funding_neg_pct dan funding_streak
     # hanya aktif jika funding_avg_neg TIDAK aktif, mencegah double scoring
     # dari sumber yang sama (funding negatif) hingga +8 poin.
@@ -7279,6 +7558,8 @@ def master_score(symbol, ticker):
             "cp_sr":            cp_sr,
             "cp_label":         _cp_label,
             "cp_score":         _cp_score,
+            # v32b new fields — Support Health
+            "sup_health":       sup_health,
         }
     else:
         log.info(f"  {symbol}: Skor {score} < {min_score} (WATCHLIST threshold) — dilewati")
@@ -7482,6 +7763,26 @@ def build_alert(r, rank=None):
             msg += "  ⚠️ <b>BREAK SUP — support patah, hati-hati!</b>\n"
         elif cp.get("near_res"):
             msg += f"  📍 Jarak ke resistance: {cp['near_res_pct']:.2f}% (siap break)\n"
+
+    # v32b: Support Health section
+    sh = r.get("sup_health", {})
+    if sh and sh.get("ok") and sh.get("should_warn"):
+        sh_risk  = sh.get("risk_level", "LOW")
+        sh_score = sh.get("health", 100)
+        sh_dist  = sh.get("dist_to_sup", 0)
+        sh_icon  = "🚨" if sh_risk == "CRITICAL" else "⚠️"
+        msg += "━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"{sh_icon} <b>Support Health [{sh_risk}]:</b> {sh_score}/100\n"
+        msg += f"  Jarak ke support: {sh_dist:.2f}%\n"
+        for sig in sh.get("signals", [])[:3]:
+            msg += f"  • {sig[:85]}\n"
+        if sh_risk == "CRITICAL":
+            msg += "  <b>⛔ PERINGATAN: Support rentan jebol — pertimbangkan skip</b>\n"
+        # Tampilkan jika ada SR flip (resistance lama jadi support / sebaliknya)
+        n_flip_r = cp.get("n_flipped_res", 0)
+        n_flip_s = cp.get("n_flipped_sup", 0)
+        if n_flip_r > 0 or n_flip_s > 0:
+            msg += f"  🔄 SR Flip: {n_flip_r} res→sup, {n_flip_s} sup→res\n"
 
     # OI
     if oi.get("oi_now", 0) > 0:
