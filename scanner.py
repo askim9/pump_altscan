@@ -1,4 +1,31 @@
-
+"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  QUANTITATIVE PUMP DETECTION SCANNER v32 — ChartPrime SR Integration      ║
+║  Berdasarkan forensik: PIXEL+228%, TRUMP+51%, ORCA+79%, VVV+165%          ║
+║                                                                              ║
+║  ROOT CAUSE v31: SR logic tidak menggunakan volume-weighted pivot          ║
+║  (ChartPrime), sup_holds pattern tidak di-score, BOS scoring tidak         ║
+║  proporsional, alert terlalu verbose.                                       ║
+║                                                                              ║
+║  FIX-v32-1  calc_chartprime_sr: fungsi SR baru berbasis delta volume       ║
+║             (pivot + vol filter = kotak hijau/merah ChartPrime)            ║
+║  FIX-v32-2  detect_sup_holds: deteksi pola green ◆ berulang di support     ║
+║             (buyer defensif = pre-pump akumulasi terkuat)                  ║
+║  FIX-v32-3  score_bos_up: 18 → 12 (cegah false positive dominan)         ║
+║  FIX-v32-4  score_chartprime_break_res: +20 (sinyal paling prediktif)     ║
+║  FIX-v32-5  score_sup_holds_streak: bertingkat 1–3x / 4–6x / 7x+         ║
+║  FIX-v32-6  Telegram alert: tambah ChartPrime SR section, lebih ringkas   ║
+║  FIX-v32-7  build_summary: tampilkan ChartPrime signal di TOP list         ║
+║                                                                              ║
+║  FORENSIK 4-FASE (dari 4 chart nyata):                                     ║
+║  Fase 1: Akumulasi di green box, sup_holds berulang, vol negatif melemah   ║
+║  Fase 2: Break Res muncul, vol positif ledak > vol_hi threshold            ║
+║  Fase 3: Pump (entry 1-3 bar setelah Break Res, retest ke bekas res)       ║
+║  Fase 4: Exit saat res_holds/Break Sup + vol negatif masif di puncak       ║
+║                                                                              ║
+║  TARGET: 342 scanned → ~200 filtered → ~40 watchlist → ~10 alert → ~2 top ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
 
 import requests
 import time
@@ -3807,6 +3834,9 @@ def _support_health_empty():
         "signals": [], "should_block": False, "should_warn": False,
         "dist_to_sup": 0.0, "cp_sup_level": 0.0, "n_touches": 0,
     }
+
+
+def calc_improved_reversal_v22(price_now, vwap, ema20_slope_data, vol_zscore_v20_data):
     """
     FIX 08 v22 — Improved Reversal Filter.
     Allows reversal pumps ONLY when conditions confirm genuine reversal.
