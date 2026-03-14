@@ -258,9 +258,10 @@ CONFIG = {
     # cp_lookback=20: pivot lookback (sama dengan ChartPrime default)
     # cp_atr_mult=1.0: lebar box (sama dengan ChartPrime box_width=1)
     "cp_lookback":              20,   # pivot lookback
-    "cp_vol_len":                2,   # delta volume filter window
+    "cp_vol_len":                4,   # FIX-CP-2: delta volume filter window (2→4)
     "cp_atr_mult":             1.0,   # box width multiplier
     "cp_sup_holds_lookback":    20,   # berapa candle terakhir cek sup_holds
+    "cp_brekout_window":         3,   # FIX-CP-6: brekout valid dalam N candle
     # Score untuk ChartPrime signals — berdasarkan forensik:
     # "Break Res" = trigger utama semua pump, harus score tertinggi
     "score_cp_break_res":       20,   # Break Res = resistance patah → pump
@@ -4695,8 +4696,14 @@ def calc_entry_v19(candles, vwap, price_now, atr_abs_val, market_regime, sr,
     else:  # NEUTRAL
         # Jika ada CP support aktif, entry sedikit di atas support
         if cp_sup_level > 0 and cp_sup_level < price_now:
-            entry        = cp_sup_level + atr * 0.3
-            entry_reason = f"NEUTRAL — CP sup {_fmt_price(cp_sup_level)} + 0.3ATR"
+            raw_entry    = cp_sup_level + atr * 0.3
+            # FIX-CP-8: clamp — jika support terlalu jauh (>3%), pakai VWAP basis
+            if raw_entry < price_now * 0.97:
+                entry        = min(vwap, price_now + atr * 0.1)
+                entry_reason = f"NEUTRAL — VWAP (CP sup {_fmt_price(cp_sup_level)} terlalu jauh)"
+            else:
+                entry        = raw_entry
+                entry_reason = f"NEUTRAL — CP sup {_fmt_price(cp_sup_level)} + 0.3ATR"
         else:
             sup_levels = [sv["level"] for sv in sr.get("support", [])
                           if sv["level"] < price_now] if sr else []
@@ -5238,142 +5245,209 @@ def calc_support_resistance(candles, lookback=48, n_levels=3):
 def _delta_volume(candle):
     """
     Replika upAndDownVolume() dari ChartPrime Pine Script.
-    Candle bullish (close > open) → volume positif
-    Candle bearish (close < open) → volume negatif
+
+    v32b FIX-7: Upgrade dari binary (close>open → +vol) ke wick-weighted fraction.
+    Alasan: candle doji (open≈close) dan candle dengan wick panjang menghasilkan
+    delta_vol=0 atau salah arah dengan metode binary.
+
+    Formula: buy_fraction = (close - low) / (high - low)
+    → close di atas mid range → lebih banyak buy pressure
+    → close di bawah mid range → lebih banyak sell pressure
+    → delta_vol = (2*buy_fraction - 1) * volume_usd
+    → Range: [-volume_usd, +volume_usd]
+
+    Fallback ke binary jika range=0 (candle doji sempurna).
     """
+    rng = candle["high"] - candle["low"]
+    if rng > 0:
+        buy_frac  = (candle["close"] - candle["low"]) / rng
+        return (2.0 * buy_frac - 1.0) * candle["volume_usd"]
+    # Doji sempurna: fallback ke binary
     if candle["close"] > candle["open"]:
         return candle["volume_usd"]
     elif candle["close"] < candle["open"]:
         return -candle["volume_usd"]
-    else:
-        return 0.0
+    return 0.0
 
 
 def calc_chartprime_sr(candles):
     """
-    v32 — Implementasi logika ChartPrime SR Breaks and Retests.
+    v32b — ChartPrime SR Breaks and Retests (perbaikan dari v32).
 
-    Logika Pine Script yang direplikasi:
-    - Delta volume = vol positif (bullish candle) atau negatif (bearish candle)
-    - vol_hi = highest(delta_vol / 2.5, vol_len=2)
-    - vol_lo = lowest(delta_vol / 2.5, vol_len=2)
-    - Support  terbentuk di pivotLow  JIKA delta_vol > vol_hi  (beli dominan)
-    - Resistance terbentuk di pivotHigh JIKA delta_vol < vol_lo (jual dominan)
+    FIX-CP-1  PIVOT: strict left/right terpisah (Pine: pivothigh/pivotlow)
+              Sebelumnya: ph == max(window) → miss jika ada high sama
+              Sekarang:   ph > max(kiri) DAN ph > max(kanan) — strict
 
-    Status level:
-    - brekout_res: low crossover resistanceLevel_1 → resistance patah ke atas
-    - res_holds:   high crossunder resistanceLevel  → resistance masih kuat
-    - sup_holds:   low crossover supportLevel       → support masih kuat
-    - brekout_sup: high crossunder supportLevel_1   → support patah ke bawah
+    FIX-CP-2  vol_len default dinaikkan 2→4 agar lebih stabil terhadap
+              outlier delta_vol dari candle pump sebelumnya.
 
-    Return dict lengkap dengan sinyal ChartPrime.
+    FIX-CP-3  SORT BUG: active_res diurutkan ascending abs(delta_vol)
+              → pilih resistance TERLEMAH. Fix: descending (terkuat dulu).
+              Ditambah: kembalikan top-3 levels, bukan hanya best_1.
+
+    FIX-CP-4  LOOKBACK RIGHT: candle terbaru tidak bisa pivot karena
+              butuh konfirmasi lb candle di kanan. Untuk deteksi Break Res
+              pada candle terbaru, tambahkan cek "partial pivot" (3c kanan).
+
+    FIX-CP-5  FILTER active_sup: tambahkan batas atas proximity.
+              Support valid hanya jika price_now dalam 15% di atas level.
+
+    FIX-CP-6  BREKOUT_RES window diperluas: valid jika terjadi dalam
+              N candle terakhir (bukan hanya 1 transisi candle).
     """
     lb  = CONFIG.get("cp_lookback", 20)
-    vl  = CONFIG.get("cp_vol_len",   2)
+    vl  = CONFIG.get("cp_vol_len",   4)    # FIX-CP-2: 2 → 4
 
-    # Butuh minimal 2*lookback + vol_len candle
     if len(candles) < lb * 2 + vl + 5:
         return _cp_sr_empty()
 
-    # --- Hitung delta volume series ---
     dv_series = [_delta_volume(c) for c in candles]
+    atr_val   = _atr_n(candles, min(200, len(candles) - 1))
+    withd     = atr_val * CONFIG.get("cp_atr_mult", 1.0)
 
-    # --- ATR (200 period seperti ChartPrime) untuk lebar box ---
-    atr_val = _atr_n(candles, min(200, len(candles) - 1))
-    withd   = atr_val * CONFIG.get("cp_atr_mult", 1.0)
-
-    # --- Pivot detection dengan delta volume filter ---
-    # Scanning dari candle lb hingga -lb (pivot lookback kanan+kiri)
-    support_levels    = []  # list of (price_level, delta_vol, bar_idx)
-    resistance_levels = []  # list of (price_level, delta_vol, bar_idx)
-
+    support_levels    = []
+    resistance_levels = []
     n = len(candles)
+
     for i in range(lb, n - lb):
-        # pivotHigh: candle[i].high > semua high di [i-lb..i-1] dan [i+1..i+lb]
         ph = candles[i]["high"]
-        is_pivot_high = (
-            ph == max(c["high"] for c in candles[i - lb: i + lb + 1])
-        )
-        # pivotLow: candle[i].low < semua low di window
         pl = candles[i]["low"]
-        is_pivot_low = (
-            pl == min(c["low"] for c in candles[i - lb: i + lb + 1])
-        )
+
+        # FIX-CP-1: strict pivot — kiri DAN kanan terpisah
+        left_highs  = [c["high"] for c in candles[i - lb: i]]
+        right_highs = [c["high"] for c in candles[i + 1: i + lb + 1]]
+        left_lows   = [c["low"]  for c in candles[i - lb: i]]
+        right_lows  = [c["low"]  for c in candles[i + 1: i + lb + 1]]
+
+        is_pivot_high = (left_highs and right_highs and
+                         ph > max(left_highs) and ph > max(right_highs))
+        is_pivot_low  = (left_lows and right_lows and
+                         pl < min(left_lows) and pl < min(right_lows))
 
         dv = dv_series[i]
 
-        # vol_hi / vol_lo: highest/lowest dari delta_vol/2.5 dalam vl candles
+        # vol_hi / vol_lo dari window vl candle (FIX-CP-2: vl=4)
         dv_slice = [dv_series[j] / 2.5 for j in range(max(0, i - vl + 1), i + 1)]
         if not dv_slice:
             continue
         vol_hi = max(dv_slice)
         vol_lo = min(dv_slice)
 
-        # Support: pivotLow + delta_vol > vol_hi (buyer dominan)
         if is_pivot_low and dv > vol_hi:
             support_levels.append({
-                "level":    pl,
-                "level_1":  pl - withd,      # batas bawah box
+                "level":     pl,
+                "level_1":   pl - withd,
                 "delta_vol": dv,
-                "bar_idx":  i,
+                "bar_idx":   i,
             })
 
-        # Resistance: pivotHigh + delta_vol < vol_lo (seller dominan)
         if is_pivot_high and dv < vol_lo:
             resistance_levels.append({
-                "level":    ph,
-                "level_1":  ph + withd,      # batas atas box
+                "level":     ph,
+                "level_1":   ph + withd,
                 "delta_vol": dv,
-                "bar_idx":  i,
+                "bar_idx":   i,
+            })
+
+    # FIX-CP-4: partial pivot untuk lb candle terbaru (belum ada konfirmasi kanan)
+    # Cek 3c kanan saja (lebih responsif untuk sinyal baru)
+    partial_lb = 3
+    for i in range(n - lb, n - partial_lb):
+        ph = candles[i]["high"]
+        pl = candles[i]["low"]
+        left_highs  = [c["high"] for c in candles[max(0, i - lb): i]]
+        right_highs = [c["high"] for c in candles[i + 1: min(n, i + partial_lb + 1)]]
+        left_lows   = [c["low"]  for c in candles[max(0, i - lb): i]]
+        right_lows  = [c["low"]  for c in candles[i + 1: min(n, i + partial_lb + 1)]]
+
+        is_partial_high = (left_highs and right_highs and
+                           ph > max(left_highs) and ph > max(right_highs))
+        is_partial_low  = (left_lows and right_lows and
+                           pl < min(left_lows) and pl < min(right_lows))
+
+        dv = dv_series[i]
+        dv_slice = [dv_series[j] / 2.5 for j in range(max(0, i - vl + 1), i + 1)]
+        if not dv_slice:
+            continue
+        vol_hi = max(dv_slice)
+        vol_lo = min(dv_slice)
+
+        if is_partial_low and dv > vol_hi:
+            support_levels.append({
+                "level":     pl,
+                "level_1":   pl - withd,
+                "delta_vol": dv,
+                "bar_idx":   i,
+                "partial":   True,
+            })
+        if is_partial_high and dv < vol_lo:
+            resistance_levels.append({
+                "level":     ph,
+                "level_1":   ph + withd,
+                "delta_vol": dv,
+                "bar_idx":   i,
+                "partial":   True,
             })
 
     if not support_levels and not resistance_levels:
         return _cp_sr_empty()
 
-    # --- Ambil level S/R terbaru (paling akhir terbentuk) ---
     price_now = candles[-1]["close"]
     high_now  = candles[-1]["high"]
     low_now   = candles[-1]["low"]
 
-    # Level support terbaru yang masih aktif (price di atas support)
-    active_sup = [s for s in support_levels if price_now >= s["level_1"]]
+    # FIX-CP-5: active_sup proximity ≤ 15% di atas level (bukan tak terbatas)
+    prox_sup_max = 0.15
+    active_sup = [
+        s for s in support_levels
+        if s["level_1"] <= price_now <= s["level"] * (1 + prox_sup_max)
+    ]
+    # FIX-CP-3: active_res — resistance di atas harga, sort DESCENDING abs(delta_vol)
     active_res = [r for r in resistance_levels if price_now <= r["level_1"]]
 
-    # Pilih support terkuat (volume delta terbesar) dan terdekat
+    # Sort support: terbesar delta_vol dulu (terkuat), tie-break: terdekat ke harga
     if active_sup:
-        # Sort: lebih dekat ke harga saat ini dan volume lebih besar
         active_sup.sort(key=lambda s: (
-            -abs(s["delta_vol"]),                          # volume besar dulu
-            abs(price_now - s["level"]) / max(price_now, 1e-10)  # lalu yg dekat
+            -abs(s["delta_vol"]),
+            abs(price_now - s["level"]) / max(price_now, 1e-10)
         ))
         best_sup = active_sup[0]
+        # Simpan top-3 untuk multi-level awareness
+        top_sup  = active_sup[:3]
     else:
         best_sup = None
+        top_sup  = []
 
+    # FIX-CP-3: sort DESCENDING abs(delta_vol) → pilih resistance TERKUAT
     if active_res:
         active_res.sort(key=lambda r: (
-            abs(r["delta_vol"]),                           # vol negatif paling besar (abs)
+            -abs(r["delta_vol"]),                          # DESCENDING (terbesar abs dulu)
             abs(price_now - r["level"]) / max(price_now, 1e-10)
         ))
         best_res = active_res[0]
+        top_res  = active_res[:3]
     else:
         best_res = None
+        top_res  = []
 
-    # --- Deteksi status ChartPrime ---
-    # brekout_res: low[-1] > resistanceLevel_1 (crossover ke atas kotak res)
+    # FIX-CP-6: brekout_res diperluas — valid dalam N_BREAK candle terakhir
+    N_BREAK     = CONFIG.get("cp_brekout_window", 3)   # default 3 candle
     brekout_res = False
     res_holds   = False
     if best_res:
         res_lv  = best_res["level"]
         res_lv1 = best_res["level_1"]
-        # Candle sebelumnya masih di bawah res_lv1, sekarang low sudah di atas
+        # Cek apakah ada transisi crossover dalam N_BREAK candle terakhir
+        for k in range(1, min(N_BREAK + 1, len(candles))):
+            c_cur  = candles[-k]
+            c_prev = candles[-k - 1] if k + 1 <= len(candles) else candles[-k]
+            if c_cur["low"] > res_lv1 and c_prev["low"] <= res_lv1:
+                brekout_res = True
+                break
+        # res_holds: high candle saat ini < res_lv setelah sebelumnya menyentuh
         if len(candles) >= 2:
-            prev_low = candles[-2]["low"]
-            brekout_res = (low_now  > res_lv1) and (prev_low <= res_lv1)
-            res_holds   = (high_now < res_lv)  and (candles[-2]["high"] >= res_lv)
+            res_holds = (high_now < res_lv) and (candles[-2]["high"] >= res_lv)
 
-    # sup_holds: low[-1] crossover supportLevel (bounce dari support)
-    # brekout_sup: high[-1] crossunder supportLevel_1 (jebol ke bawah)
     sup_holds   = False
     brekout_sup = False
     if best_sup:
@@ -5385,20 +5459,18 @@ def calc_chartprime_sr(candles):
             sup_holds   = (low_now  > sup_lv)  and (prev_low  <= sup_lv)
             brekout_sup = (high_now < sup_lv1) and (prev_high >= sup_lv1)
 
-    # Proximity: harga dekat resistance (< cp_proximity_pct)
-    prox_pct    = CONFIG.get("cp_proximity_pct", 0.02)
-    near_res    = False
+    prox_pct     = CONFIG.get("cp_proximity_pct", 0.02)
+    near_res     = False
     near_res_pct = 0.0
     if best_res and best_res["level"] > 0:
-        gap = (best_res["level"] - price_now) / best_res["level"]
+        gap          = (best_res["level"] - price_now) / best_res["level"]
         near_res_pct = gap
-        near_res = 0 < gap < prox_pct
+        near_res     = 0 < gap < prox_pct
 
-    # --- Count sup_holds streak dalam N candle terakhir ---
     sup_holds_count = _count_sup_holds_streak(
         candles,
-        best_sup["level"]    if best_sup else 0.0,
-        best_sup["level_1"]  if best_sup else 0.0,
+        best_sup["level"]   if best_sup else 0.0,
+        best_sup["level_1"] if best_sup else 0.0,
         lookback=CONFIG.get("cp_sup_holds_lookback", 20),
     )
 
@@ -5406,6 +5478,8 @@ def calc_chartprime_sr(candles):
         "ok":               True,
         "support":          best_sup,
         "resistance":       best_res,
+        "top_sup":          top_sup,          # FIX-CP-3: top-3 support
+        "top_res":          top_res,          # FIX-CP-3: top-3 resistance
         "brekout_res":      brekout_res,
         "res_holds":        res_holds,
         "sup_holds":        sup_holds,
@@ -5424,6 +5498,7 @@ def _cp_sr_empty():
     """Return kosong jika ChartPrime SR tidak bisa dihitung."""
     return {
         "ok": False, "support": None, "resistance": None,
+        "top_sup": [], "top_res": [],
         "brekout_res": False, "res_holds": False,
         "sup_holds": False, "brekout_sup": False,
         "near_res": False, "near_res_pct": 0.0,
@@ -7366,7 +7441,7 @@ def build_alert(r, rank=None):
         for sv in sup_list[:2]:
             msg += f"🟢 S <code>{_fmt_price(sv['level'])}</code>  ({sv['gap_pct']:+.1f}%)\n"
 
-    # v32: ChartPrime SR Section — inti sinyal pre-pump
+    # v32b: ChartPrime SR Section — inti sinyal pre-pump
     cp   = r.get("cp_sr", {})
     cp_l = r.get("cp_label", "")
     if cp and cp.get("ok"):
@@ -7380,23 +7455,27 @@ def build_alert(r, rank=None):
         }.get(cp_l.split("_")[0] + "_" + cp_l.split("_")[1] if "_" in cp_l else cp_l, "📊")
         if cp_l.startswith("SUP_HOLDS"):
             cp_icon = "🟢"
-        cp_sup = cp.get("support")
-        cp_res = cp.get("resistance")
-        holds_n = cp.get("sup_holds_count", 0)
-        msg += f"<b>{cp_icon} ChartPrime SR [v32]:</b>  {cp_l}\n"
-        if cp_res:
+        cp_sup   = cp.get("support")
+        cp_res   = cp.get("resistance")
+        top_res  = cp.get("top_res", [])
+        holds_n  = cp.get("sup_holds_count", 0)
+        msg += f"<b>{cp_icon} ChartPrime SR [v32b]:</b>  {cp_l}\n"
+        # Tampilkan top-3 resistance jika ada (FIX-CP-3)
+        if top_res:
+            for idx, rv in enumerate(top_res[:3]):
+                gap_r = (rv["level"] - p) / p * 100
+                tag   = " ← strongest" if idx == 0 else ""
+                msg  += (f"  🔴 R{idx+1}: <code>{_fmt_price(rv['level'])}</code>"
+                         f"  ({gap_r:+.1f}%)  dVol:{rv['delta_vol']/1e3:.0f}K{tag}\n")
+        elif cp_res:
             gap_r = (cp_res["level"] - p) / p * 100
-            msg += (
-                f"  🔴 CP-Res: <code>{_fmt_price(cp_res['level'])}</code>"
-                f"  ({gap_r:+.1f}%)  Vol:{cp_res['delta_vol']/1e3:.0f}K\n"
-            )
+            msg += (f"  🔴 CP-Res: <code>{_fmt_price(cp_res['level'])}</code>"
+                    f"  ({gap_r:+.1f}%)  Vol:{cp_res['delta_vol']/1e3:.0f}K\n")
         if cp_sup:
             gap_s = (cp_sup["level"] - p) / p * 100
-            msg += (
-                f"  🟢 CP-Sup: <code>{_fmt_price(cp_sup['level'])}</code>"
-                f"  ({gap_s:+.1f}%)  Vol:{cp_sup['delta_vol']/1e3:.0f}K"
-                f"  | Holds:{holds_n}x\n"
-            )
+            msg += (f"  🟢 CP-Sup: <code>{_fmt_price(cp_sup['level'])}</code>"
+                    f"  ({gap_s:+.1f}%)  Vol:{cp_sup['delta_vol']/1e3:.0f}K"
+                    f"  | Holds:{holds_n}x\n")
         if cp.get("brekout_res"):
             msg += "  ⚡ <b>BREAK RES AKTIF — sinyal pump fase 2!</b>\n"
         elif cp.get("brekout_sup"):
