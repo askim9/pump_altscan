@@ -4609,109 +4609,172 @@ def calc_pump_probability_v23(mm_score):
 
 def calc_entry_v19(candles, vwap, price_now, atr_abs_val, market_regime, sr,
                    rsi, buy_ratio, vol_ratio, price_pos, alert_level, bos_level,
-                   liq_sweep):
+                   liq_sweep, cp_sr=None):
     """
-    STEP 1, 2, 3 v19 — Adaptive Entry + Liquidity-Aware SL + Dynamic TP.
+    v32 — Entry Engine (rewrite dari v19/v22).
 
-    STEP 1 — Adaptive Entry (always near current price):
-      entry = min(VWAP, price + ATR * 0.25)
-      Override per regime untuk RR yang lebih baik.
+    FIX-v32-E1  SL paradoks: sl_v22 (ATR×0.9) selalu menang karena max().
+                Diganti: SL = swing_low − buffer adaptif, clamp min/max pct.
+    FIX-v32-E2  t1_source/t2_source salah label (v19 mult vs v22 mult).
+    FIX-v32-E3  Entry sadar ChartPrime SR: saat CP Break Res aktif,
+                entry = cp_res_level + buffer (retest ke bekas resistance).
+    FIX-v32-E4  Regime BREAKOUT override saat cp_brekout_res aktif —
+                tidak perlu tunggu above_vwap.
+    FIX-v32-E5  Squeeze mode: SL diperluas ke cp_support box bawah,
+                bukan hanya swing_low yang mungkin terlalu sempit.
+    FIX-v32-E6  TP3 adaptif: saat CP Break Res, TP3 = cp_res × fib 1.618
+                atau ATR×8 (ambil yang lebih besar) untuk tangkap pump besar.
 
-    STEP 2 — Liquidity-Aware SL:
-      swing_low = lowest low last 20 candles
-      SL = min(swing_low − ATR*0.5, entry − ATR*1.5)
-
-    STEP 3 — Dynamic TP:
-      TP1 = entry + ATR * 2
-      TP2 = entry + ATR * 3.5
-      TP3 = entry + ATR * 5
+    TP multiplier final:
+      TP1 = entry + ATR × 1.5   (quick scalp — lebih mudah tercapai)
+      TP2 = entry + ATR × 3.0   (swing target)
+      TP3 = entry + ATR × 6.0   (extended / pump besar)
+      Override jika ada resistance pivot di atas entry.
     """
-    atr = atr_abs_val
+    atr         = atr_abs_val
     atr_pct_now = (atr / price_now * 100) if price_now > 0 else 2.0
 
-    # ── STEP 1: Adaptive Entry ────────────────────────────────────────────────
-    # Base: min(VWAP, price + ATR*0.25) — selalu dekat harga
-    base_entry = min(vwap, price_now + atr * 0.25)
+    # --- Deteksi apakah CP Break Res aktif ---
+    cp_break_res  = cp_sr.get("brekout_res", False)  if cp_sr else False
+    cp_res_level  = cp_sr["resistance"]["level"]       if (cp_sr and cp_sr.get("resistance")) else 0.0
+    cp_sup_level  = cp_sr["support"]["level"]          if (cp_sr and cp_sr.get("support"))    else 0.0
+    cp_sup_level1 = cp_sr["support"]["level_1"]        if (cp_sr and cp_sr.get("support"))    else 0.0
+    squeeze_now   = cp_sr.get("ok", False) and (
+        cp_sr.get("sup_holds_count", 0) >= 2 or
+        cp_sr.get("sup_holds", False)
+    ) if cp_sr else False
 
-    # Regime override untuk RR lebih baik
-    if market_regime == "PULLBACK":
-        # Tunggu pullback ke VWAP − 0.3×ATR
+    # FIX-v32-E4: override regime ke BREAKOUT jika CP Break Res aktif
+    if cp_break_res:
+        market_regime = "BREAKOUT"
+
+    # ── STEP 1: Adaptive Entry ────────────────────────────────────────────────
+    if market_regime == "BREAKOUT":
+        # FIX-v32-E3: entry = bekas resistance (retest) jika CP Break Res
+        if cp_break_res and cp_res_level > 0:
+            # Retest ke bekas resistance = level terbaik untuk entry
+            retest_entry = cp_res_level * (1.0 + CONFIG.get("entry_bos_buffer", 0.0005))
+            # Jika harga sudah melewati jauh, pakai harga saat ini
+            if retest_entry > price_now * 1.02:
+                entry        = price_now * 1.001
+                entry_reason = f"BREAKOUT — CP res {_fmt_price(cp_res_level)} (market entry, sudah lewat)"
+            else:
+                entry        = retest_entry
+                entry_reason = f"BREAKOUT — CP retest {_fmt_price(cp_res_level)} + buffer"
+        else:
+            # Fallback ke resistance pivot biasa
+            res_levels = []
+            if sr and sr.get("resistance"):
+                res_levels = [rv["level"] for rv in sr["resistance"]
+                              if rv["level"] > price_now * 0.998]
+            if res_levels:
+                breakout_lvl = min(res_levels)
+                entry        = min(breakout_lvl * 1.005, price_now + atr * 0.25)
+                entry_reason = f"BREAKOUT — near R1 {_fmt_price(breakout_lvl)}"
+            elif bos_level > 0 and bos_level < price_now * 1.03:
+                entry        = bos_level * (1.0 + CONFIG.get("entry_bos_buffer", 0.0005))
+                entry_reason = "BREAKOUT — BOS retest"
+            else:
+                entry        = min(vwap, price_now + atr * 0.25)
+                entry_reason = "BREAKOUT — base"
+
+    elif market_regime == "PULLBACK":
         pullback_entry = vwap - atr * CONFIG["entry_pullback_atr_mult"]
-        entry = min(base_entry, pullback_entry)
-        if entry < price_now * 0.985:   # jangan terlalu jauh
+        base_entry     = min(vwap, price_now + atr * 0.25)
+        entry          = min(base_entry, pullback_entry)
+        if entry < price_now * 0.985:
             entry = base_entry
-        entry_reason = f"PULLBACK adaptive — min(VWAP,price+ATR*0.25) vs VWAP−0.3ATR"
+        entry_reason   = f"PULLBACK — min(VWAP, price+ATR×0.25) vs VWAP−0.3ATR"
 
     elif market_regime == "SWEEP" and liq_sweep and liq_sweep.get("is_sweep"):
         sweep_low    = liq_sweep.get("sweep_low", price_now * 0.98)
-        sweep_entry  = sweep_low + atr * CONFIG["entry_sweep_atr_mult"]
-        entry        = min(base_entry, sweep_entry)
-        entry_reason = f"SWEEP adaptive — sweep_low {sweep_low:.6g} + 0.2ATR"
-
-    elif market_regime == "BREAKOUT":
-        # Di atas harga tapi tidak jauh
-        res_levels = []
-        if sr and sr.get("resistance"):
-            res_levels = [rv["level"] for rv in sr["resistance"]
-                          if rv["level"] > price_now * 0.998]
-        if res_levels:
-            breakout_lvl = min(res_levels)
-            entry        = min(breakout_lvl * 1.005, price_now + atr * 0.25)
-            entry_reason = f"BREAKOUT adaptive — near R1 {breakout_lvl:.6g}"
-        else:
-            entry        = base_entry
-            entry_reason = "BREAKOUT adaptive — base"
+        entry        = min(sweep_low + atr * CONFIG["entry_sweep_atr_mult"],
+                           price_now + atr * 0.25)
+        entry_reason = f"SWEEP — low {_fmt_price(sweep_low)} + 0.2ATR"
 
     else:  # NEUTRAL
-        entry        = base_entry
-        entry_reason = f"NEUTRAL adaptive — min(VWAP,price+ATR*0.25)"
+        # Jika ada CP support aktif, entry sedikit di atas support
+        if cp_sup_level > 0 and cp_sup_level < price_now:
+            entry        = cp_sup_level + atr * 0.3
+            entry_reason = f"NEUTRAL — CP sup {_fmt_price(cp_sup_level)} + 0.3ATR"
+        else:
+            sup_levels = [sv["level"] for sv in sr.get("support", [])
+                          if sv["level"] < price_now] if sr else []
+            if sup_levels:
+                entry        = max(sup_levels) + atr * 0.2
+                entry_reason = f"NEUTRAL — S1 {_fmt_price(max(sup_levels))} + 0.2ATR"
+            else:
+                entry        = min(vwap, price_now + atr * 0.25)
+                entry_reason = "NEUTRAL — VWAP basis"
 
-    # Pastikan entry masuk akal
+    # Sanity clamp: entry tidak boleh > 5% di atas harga, dan > 0
     if entry <= 0 or entry > price_now * 1.05:
-        entry = price_now * 1.001
+        entry        = price_now * 1.001
+        entry_reason += " [clamped]"
 
-    # ── STEP 2: Liquidity-Aware SL ────────────────────────────────────────────
-    # swing_low = lowest low 20 candle terakhir
+    # ── STEP 2: SL — FIX-v32-E1 + E5 ────────────────────────────────────────
+    # Logika baru: SL berbasis swing_low dengan buffer adaptif.
+    # Tidak ada sl_v22 override yang mematikan swing_low logic.
     lookback_sl = min(20, len(candles) - 1)
     swing_low   = min(c["low"] for c in candles[-lookback_sl:]) if lookback_sl > 0 else entry * 0.95
 
-    # SL = min(swing_low − ATR*0.5, entry − ATR*1.5)
-    sl_swing    = swing_low - atr * 0.5
-    sl_atr      = entry - atr * 1.5
-    sl          = min(sl_swing, sl_atr)
+    # FIX-v32-E5: saat squeeze/CP support aktif, gunakan cp_support_box bawah
+    # sebagai anchor SL (lebih logis dari swing_low yang bisa terlalu sempit)
+    if squeeze_now and cp_sup_level1 > 0 and cp_sup_level1 < swing_low:
+        sl_anchor    = cp_sup_level1
+        sl_src       = "CP sup box"
+    else:
+        sl_anchor    = swing_low
+        sl_src       = "swing low"
 
-    # Clamp SL: tidak terlalu dekat maupun terlalu jauh
+    # Buffer di bawah anchor: lebih lebar saat volatile, lebih sempit saat squeeze
+    if atr_pct_now > 3.0:
+        sl_buffer_mult = 0.8     # volatile: buffer 0.8×ATR di bawah anchor
+    elif squeeze_now:
+        sl_buffer_mult = 0.3     # squeeze: buffer sempit, ATR kecil sudah cukup
+    else:
+        sl_buffer_mult = 0.5     # normal: 0.5×ATR buffer
+
+    sl = sl_anchor - atr * sl_buffer_mult
+
+    # Clamp: tidak terlalu dekat (min_sl_pct) maupun terlalu jauh (max_sl_pct)
     sl = max(sl, entry * (1.0 - CONFIG["max_sl_pct"] / 100.0))
     sl = min(sl, entry * (1.0 - CONFIG["min_sl_pct"] / 100.0))
     if sl >= entry:
         sl = entry * 0.975
 
-    # ── STEP 3: Dynamic TP v22 — ATR × 1.3 / × 2.2 / × 3.5 ──────────────────
-    # FIX 12 v22: tighter TP1/TP2 for higher win-rate, ATR×0.9 SL
-    tp1 = entry + atr * CONFIG["tp1_v22_mult"]    # 1.3× ATR (tighter, higher hit rate)
-    tp2 = entry + atr * CONFIG["tp2_v22_mult"]    # 2.2× ATR
-    tp3 = entry + atr * CONFIG["tp3_v19_mult"]    # 5.0× ATR (keep v19 for extended target)
-    # v22 tighter SL = entry - ATR × 0.9
-    sl_v22 = entry - atr * CONFIG["sl_v22_mult"]
-    sl = max(sl, sl_v22)   # use whichever is less risky (higher of the two SL levels)
-    sl = max(sl, entry * (1.0 - CONFIG["max_sl_pct"] / 100.0))
-    sl = min(sl, entry * (1.0 - CONFIG["min_sl_pct"] / 100.0))
-    if sl >= entry:
-        sl = entry * 0.975
+    # ── STEP 3: TP — FIX-v32-E2 + E6 ────────────────────────────────────────
+    # Multiplier final yang benar (v32):
+    tp1_mult = 1.5   # scalp — lebih mudah tercapai dari 1.3
+    tp2_mult = 3.0   # swing
+    tp3_mult = 6.0   # extended (dinaikkan dari 5.0 — pump altcoin sering >10%)
 
-    # Boost TP3 jika ada liquidity void (gap resistance > 5%)
+    tp1 = entry + atr * tp1_mult
+    tp2 = entry + atr * tp2_mult
+    tp3 = entry + atr * tp3_mult
+
+    # FIX-v32-E6: TP3 agresif saat CP Break Res (pump besar diharapkan)
+    if cp_break_res and cp_res_level > 0:
+        # Fibonacci extension dari CP resistance: 1.618× jarak entry ke res
+        dist_to_res = abs(cp_res_level - entry)
+        tp3_fib     = cp_res_level + dist_to_res * 1.618
+        tp3         = max(tp3, tp3_fib)
+
+    # Override TP dengan resistance pivot di atas entry (tetap dipertahankan)
     if sr and sr.get("resistance"):
         res_above = sorted([rv["level"] for rv in sr["resistance"] if rv["level"] > entry])
-        if len(res_above) >= 2:
-            gap = res_above[1] - res_above[0]
-            if gap / res_above[0] > 0.05:
-                tp3 = max(tp3, res_above[1])
-        if res_above and res_above[0] > tp1:
-            tp1 = max(tp1, res_above[0])
-        if len(res_above) >= 2 and res_above[1] > tp2:
-            tp2 = max(tp2, res_above[1])
+        if res_above:
+            if res_above[0] > tp1:
+                tp1 = max(tp1, res_above[0])
+            if len(res_above) >= 2:
+                if res_above[1] > tp2:
+                    tp2 = max(tp2, res_above[1])
+                gap = res_above[1] - res_above[0]
+                if gap / res_above[0] > 0.05:   # liquidity void > 5%
+                    tp3 = max(tp3, res_above[1] * 1.1)
 
-    tp1 = max(tp1, entry * 1.005)   # v22: relaxed minimum (was 1.008)
+    # Floor checks
+    tp1 = max(tp1, entry * 1.005)
     tp2 = max(tp2, tp1   * 1.01)
     tp3 = max(tp3, tp2   * 1.02)
 
@@ -4720,36 +4783,49 @@ def calc_entry_v19(candles, vwap, price_now, atr_abs_val, market_regime, sr,
     rr2  = round((tp2 - entry) / risk, 1) if risk > 0 else 0.0
     rr3  = round((tp3 - entry) / risk, 1) if risk > 0 else 0.0
 
+    sl_pct_val = (entry - sl) / entry * 100 if entry > 0 else 0.0
+
+    # FIX-v32-E2: label sesuai multiplier yang benar
+    t1_source = f"ATR×{tp1_mult}"
+    t2_source = f"ATR×{tp2_mult}"
+    t3_source = f"ATR×{tp3_mult}" + (" + Fib1.618" if cp_break_res else " / Liq Void")
+    if sr and sr.get("resistance") and len(sr["resistance"]) > 0:
+        res_above_check = [rv["level"] for rv in sr["resistance"] if rv["level"] > entry]
+        if res_above_check and min(res_above_check) >= tp1 * 0.99:
+            t1_source = f"R1 pivot ({_fmt_price(min(res_above_check))})"
+
     return {
-        "entry":         round(entry, 8),
-        "sl":            round(sl, 8),
-        "sl_pct":        round((entry - sl) / entry * 100, 2),
-        "t1":            round(tp1, 8),
-        "t2":            round(tp2, 8),
-        "t3":            round(tp3, 8),
-        "rr":            rr1,
-        "rr2":           rr2,
-        "rr3":           rr3,
-        "rr_str":        f"{rr1:.1f}",
-        "rr2_str":       f"{rr2:.1f}",
-        "rr3_str":       f"{rr3:.1f}",
-        "vwap":          round(vwap, 8),
-        "bos_level":     round(bos_level, 8),
-        "alert_level":   alert_level,
-        "gain_t1_pct":   round((tp1 - entry) / entry * 100, 1),
-        "gain_t2_pct":   round((tp2 - entry) / entry * 100, 1),
-        "gain_t3_pct":   round((tp3 - entry) / entry * 100, 1),
-        "atr_abs":       round(atr, 8),
-        "atr_pct":       round(atr_pct_now, 2),
-        "sl_method":     entry_reason,
-        "market_regime": market_regime,
-        "trail_note":    "Trailing v19: TP1→SL=Entry | TP2→SL=TP1 | TP3 free run",
-        "swing_low":     round(swing_low, 8),
+        "entry":           round(entry, 8),
+        "sl":              round(sl, 8),
+        "sl_pct":          round(sl_pct_val, 2),
+        "t1":              round(tp1, 8),
+        "t2":              round(tp2, 8),
+        "t3":              round(tp3, 8),
+        "rr":              rr1,
+        "rr2":             rr2,
+        "rr3":             rr3,
+        "rr_str":          f"{rr1:.1f}",
+        "rr2_str":         f"{rr2:.1f}",
+        "rr3_str":         f"{rr3:.1f}",
+        "vwap":            round(vwap, 8),
+        "bos_level":       round(bos_level, 8),
+        "alert_level":     alert_level,
+        "gain_t1_pct":     round((tp1 - entry) / entry * 100, 1),
+        "gain_t2_pct":     round((tp2 - entry) / entry * 100, 1),
+        "gain_t3_pct":     round((tp3 - entry) / entry * 100, 1),
+        "atr_abs":         round(atr, 8),
+        "atr_pct":         round(atr_pct_now, 2),
+        "sl_method":       entry_reason,
+        "sl_anchor":       sl_src,
+        "market_regime":   market_regime,
+        "trail_note":      "v32: TP1→SL=Entry | TP2→SL=TP1 | TP3 bebas",
+        "swing_low":       round(swing_low, 8),
+        "cp_break_res":    cp_break_res,
         "used_resistance": bool(sr and sr.get("resistance")),
-        "t1_source":     f"ATR×{CONFIG['tp1_v19_mult']}",
-        "t2_source":     f"ATR×{CONFIG['tp2_v19_mult']}",
-        "t3_source":     f"ATR×{CONFIG['tp3_v19_mult']} / Liq Void",
-        "atr_pct_abs":   round(atr / entry * 100, 2) if entry > 0 else 0.0,
+        "t1_source":       t1_source,
+        "t2_source":       t2_source,
+        "t3_source":       t3_source,
+        "atr_pct_abs":     round(atr / entry * 100, 2) if entry > 0 else 0.0,
     }
 
 
@@ -6483,8 +6559,14 @@ def master_score(symbol, ticker):
         signals.append("🔼 Higher Low terdeteksi — struktur bullish awal mulai terbentuk")
 
     # ── 12. BOS Up ────────────────────────────────────────────────────────────
-    # v31 FIX-v31-2: Tiga lapis BOS scoring
-    if bos_up:
+    # v32 FIX: Mutual exclusion dengan ChartPrime Break Res.
+    # BOS Up dan CP Break Res keduanya mendeteksi "resistance ditembus",
+    # hanya dari sudut yang sedikit berbeda (close vs low crossover kotak).
+    # Jika CP Break Res aktif → BOS Up sudah tercakup, skip (+12) untuk hindari
+    # double count. BOS Up tetap aktif jika CP tidak mendeteksi break.
+    _cp_break_res_active = cp_sr.get("brekout_res", False) if cp_sr else False
+
+    if bos_up and not _cp_break_res_active:
         score += CONFIG["score_bos_up"]
         if horiz_break:
             signals.append(
@@ -6495,7 +6577,13 @@ def master_score(symbol, ticker):
             signals.append(
                 f"🔺 BOS Up — high {_fmt_price(bos_level)} tertembus (+{CONFIG['score_bos_up']})"
             )
-    elif pre_close_bos:
+    elif bos_up and _cp_break_res_active:
+        # BOS terkonfirmasi tapi CP Break Res sudah di-score → log saja
+        signals.append(
+            f"🔺 BOS Up terkonfirmasi (skor ditahan — CP Break Res sudah aktif, "
+            f"hindari double count)"
+        )
+    elif pre_close_bos and not _cp_break_res_active:
         # Pre-close BOS: candle sedang tembus tapi belum tutup — early signal
         _pcs = CONFIG.get("bos_preclose_bonus", 10)
         score += _pcs
@@ -6503,7 +6591,7 @@ def master_score(symbol, ticker):
             f"⚡ PRE-CLOSE BOS: high candle tembus {_fmt_price(bos_level)} "
             f"tapi belum close — sinyal awal breakout (+{_pcs})"
         )
-    elif horiz_break:
+    elif horiz_break and not _cp_break_res_active:
         # Horizontal break tanpa standard BOS — partial signal
         _hbs = CONFIG.get("bos_preclose_bonus", 10) // 2
         score += _hbs
@@ -6642,10 +6730,21 @@ def master_score(symbol, ticker):
     #  SCORING v22 — INSTITUTIONAL DETECTOR BONUSES
     # ══════════════════════════════════════════════════════════════════════════
 
-    # FIX 02: Smart Money Accumulation
+    # FIX 02: Smart Money Accumulation v22
+    # v32: mutual exclusion dengan accum (v18) — keduanya deteksi range contraction
+    # + vol trend + bid pressure (logika hampir identik, threshold sedikit berbeda).
+    # Jika accum v18 sudah aktif (is_accumulating=True), skip smart_money_v22
+    # untuk menghindari double count +4 + +12 = +16 dari sinyal yang sama.
+    _accum_already_scored = accum.get("is_accumulating", False)
     if smart_money_v22.get("is_accumulating"):
-        score += smart_money_v22["score"]
-        signals.append(smart_money_v22["label"])
+        if _accum_already_scored:
+            signals.append(
+                f"ℹ️ Smart Money Accum v22 terkonfirmasi "
+                f"(skor ditahan — accum v18 sudah aktif, hindari double count)"
+            )
+        else:
+            score += smart_money_v22["score"]
+            signals.append(smart_money_v22["label"])
 
     # FIX 03: Liquidity Trap (stop-sweep reversal)
     if liq_trap_v22.get("is_trap"):
@@ -6658,14 +6757,38 @@ def master_score(symbol, ticker):
         signals.append(whale_fp_v22["label"])
 
     # FIX 05: Pre-Breakout Pressure
+    # v32: mutual exclusion dengan vol_comp_v23 — keduanya deteksi BB percentile
+    # squeeze dengan parameter yang hampir sama. Hanya satu yang di-score,
+    # pilih yang lebih tinggi. Jika squeeze_active (v31 BBW percentile) sudah
+    # aktif, prioritaskan vol_comp_v23 karena lebih lengkap (tiered + vol confirm).
     if prebreakout_v22.get("is_compressed"):
-        score += prebreakout_v22["score"]
-        signals.append(prebreakout_v22["label"])
+        _pb_score  = prebreakout_v22["score"]
+        _vc_score  = vol_comp_v23.get("score", 0)
+        if _vc_score > 0:
+            # vol_comp_v23 sudah aktif dan akan di-score di bawah → skip prebreakout_v22
+            signals.append(
+                f"ℹ️ Pre-Breakout v22 p{prebreakout_v22.get('percentile',0):.0f} "
+                f"(skor ditahan — vol_comp_v23 lebih kuat, hindari double count)"
+            )
+        else:
+            # vol_comp_v23 tidak aktif → score prebreakout_v22
+            score += _pb_score
+            signals.append(prebreakout_v22["label"])
 
-    # FIX 06: Momentum Ignition
+    # FIX 06: Momentum Ignition v22
+    # v32: mutual exclusion dengan mom_ign_v23 — keduanya deteksi consecutive
+    # higher highs + vol spike. Hanya score yang lebih tinggi.
     if mom_ignition_v22.get("is_ignition"):
-        score += mom_ignition_v22["score"]
-        signals.append(mom_ignition_v22["label"])
+        _mi22_score = mom_ignition_v22["score"]
+        _mi23_score = mom_ign_v23.get("score", 0) if mom_ign_v23.get("is_ignition") else 0
+        if _mi23_score >= _mi22_score:
+            signals.append(
+                f"ℹ️ Mom Ignition v22 (skor ditahan — v23 sama/lebih kuat, "
+                f"hindari double count)"
+            )
+        else:
+            score += _mi22_score
+            signals.append(mom_ignition_v22["label"])
 
     # FIX 08: Improved Reversal — add signal but no extra score (it's informational)
     if rev_label_v22:
@@ -6708,14 +6831,55 @@ def master_score(symbol, ticker):
         signals.append(whale_abs_v23["label"])
 
     # Volatility Compression v23
+    # v32: mutual exclusion dengan score_vol_compression_squeeze (v31).
+    # Keduanya aktif saat squeeze: vol_comp_v23 (BBW percentile) dan
+    # _squeeze_active + vol_compression_ratio (v31). Hanya score yang lebih besar.
     if vol_comp_v23.get("is_compressed"):
-        score += vol_comp_v23["score"]
-        signals.append(vol_comp_v23["label"])
+        _vc23_score = vol_comp_v23["score"]
+        # Cek apakah vol_compression_squeeze sudah di-score di section 0a+
+        _vc_squeeze_already = (
+            _squeeze_active and
+            vol_spike["tier"] == 0 and
+            _vcmin <= _vol_compression_ratio <= _vcmax
+        )
+        if _vc_squeeze_already:
+            _vc_squeeze_pts = CONFIG.get("score_vol_compression_squeeze", 10)
+            if _vc23_score > _vc_squeeze_pts:
+                # vol_comp_v23 lebih kuat → refund squeeze score, pakai v23
+                score -= _vc_squeeze_pts
+                score += _vc23_score
+                signals.append(vol_comp_v23["label"])
+                signals.append(
+                    f"ℹ️ Vol Compression Squeeze (-{_vc_squeeze_pts}) diganti "
+                    f"vol_comp_v23 (+{_vc23_score}) — ambil yang lebih kuat"
+                )
+            else:
+                # squeeze score sama atau lebih kuat → skip v23
+                signals.append(
+                    f"ℹ️ Vol Comp v23 p{vol_comp_v23.get('percentile',0):.0f} "
+                    f"(skor ditahan — vol_compression_squeeze sudah aktif)"
+                )
+        else:
+            score += _vc23_score
+            signals.append(vol_comp_v23["label"])
 
     # Momentum Ignition v23
+    # v32: mutual exclusion dengan mom_ignition_v22 (sudah dihandle di atas).
+    # Hanya score jika v22 tidak aktif, atau jika v23 lebih kuat.
     if mom_ign_v23.get("is_ignition"):
-        score += mom_ign_v23["score"]
-        signals.append(mom_ign_v23["label"])
+        _mi23_score = mom_ign_v23["score"]
+        _mi22_was_scored = (
+            mom_ignition_v22.get("is_ignition") and
+            mom_ignition_v22.get("score", 0) > 0 and
+            not (mom_ign_v23.get("score", 0) >= mom_ignition_v22.get("score", 0))
+        )
+        if _mi22_was_scored:
+            signals.append(
+                f"ℹ️ Mom Ignition v23 (skor ditahan — v22 sudah di-score)"
+            )
+        else:
+            score += _mi23_score
+            signals.append(mom_ign_v23["label"])
 
     # Orderbook Pressure v23
     ob_sc = ob_press_v23.get("score", 0)
@@ -6919,7 +7083,8 @@ def master_score(symbol, ticker):
     entry_data = calc_entry_v19(
         c1h, vwap, price_now, atr_abs_val, market_regime, sr,
         rsi, buy_press["buy_ratio"], vol_ratio, price_pos_48,
-        alert_level_v19, bos_level, liq_sweep
+        alert_level_v19, bos_level, liq_sweep,
+        cp_sr=cp_sr   # v32: ChartPrime SR untuk entry/SL/TP presisi
     )
 
     # v18: gunakan threshold WATCHLIST (40) sebagai minimum
@@ -7161,15 +7326,18 @@ def build_alert(r, rank=None):
         f"  Timing Score: {timing_score:.2f}\n"
     )
 
-    # Entry / SL / TP v18
+    # Entry / SL / TP v32
     msg += "━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📍 <b>Entry :</b> <code>{_fmt_price(entry)}</code>  [{e.get('sl_method','')}]\n"
-    msg += f"🛑 <b>SL    :</b> <code>{_fmt_price(sl)}</code>  (-{e['sl_pct']:.2f}%)\n"
+    sl_anchor_str = e.get("sl_anchor", "")
+    sl_src_tag    = f" [{sl_anchor_str}]" if sl_anchor_str else ""
+    cp_entry_tag  = " 🚀CP" if e.get("cp_break_res") else ""
+    msg += f"📍 <b>Entry :</b> <code>{_fmt_price(entry)}</code>  [{e.get('sl_method','')}]{cp_entry_tag}\n"
+    msg += f"🛑 <b>SL    :</b> <code>{_fmt_price(sl)}</code>  (-{e['sl_pct']:.2f}%){sl_src_tag}\n"
     rr3_str = e.get("rr3_str", e.get("rr2_str", "?"))
-    msg += f"🎯 <b>TP1   :</b> <code>{_fmt_price(t1)}</code>  (+{e['gain_t1_pct']:.1f}%)  RR:{e['rr_str']}x\n"
-    msg += f"🎯 <b>TP2   :</b> <code>{_fmt_price(t2)}</code>  (+{e['gain_t2_pct']:.1f}%)  RR:{e.get('rr2_str','?')}x\n"
-    msg += f"🎯 <b>TP3   :</b> <code>{_fmt_price(t3)}</code>  (+{e.get('gain_t3_pct', 0):.1f}%)  RR:{rr3_str}x\n"
-    msg += f"⚖️ <b>ATR   :</b> {e.get('atr_pct', r.get('atr_pct',0)):.2f}%  |  SL: -{e['sl_pct']:.2f}%\n"
+    msg += f"🎯 <b>TP1   :</b> <code>{_fmt_price(t1)}</code>  (+{e['gain_t1_pct']:.1f}%)  RR:{e['rr_str']}x  [{e.get('t1_source','')}]\n"
+    msg += f"🎯 <b>TP2   :</b> <code>{_fmt_price(t2)}</code>  (+{e['gain_t2_pct']:.1f}%)  RR:{e.get('rr2_str','?')}x  [{e.get('t2_source','')}]\n"
+    msg += f"🎯 <b>TP3   :</b> <code>{_fmt_price(t3)}</code>  (+{e.get('gain_t3_pct', 0):.1f}%)  RR:{rr3_str}x  [{e.get('t3_source','')}]\n"
+    msg += f"⚖️ <b>ATR   :</b> {e.get('atr_pct', r.get('atr_pct',0)):.2f}%  |  SL: -{e['sl_pct']:.2f}%  |  Regime: {e.get('market_regime','?')}\n"
     msg += f"📌 <i>{e.get('trail_note','')}</i>\n"
 
     # BTC correlation
