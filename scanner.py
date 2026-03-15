@@ -1,10 +1,11 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  PIVOT LOW BOUNCE SCANNER v1.0                                          ║
-║  (Based on v9.10 infrastructure)                                        ║
+║  PIVOT LOW BOUNCE SCANNER v1.0 (based on v9.10-FULL-WHITELIST)         ║
 ║                                                                          ║
-║  Mencari setup pantulan kuat dari pivot low dengan volume tinggi,       ║
-║  breakdown palsu, dan reversal cepat.                                   ║
+║  MODIFIKASI: Mengganti layer kompleks dengan deteksi pivot low          ║
+║              yang mencari false breakdown + reversal kuat.              ║
+║                                                                          ║
+║  Seluruh fungsi pengambilan data, cooldown, dan Telegram tetap sama.    ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -21,7 +22,7 @@ except ImportError:
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
 
-# ── Logging ───────────────────────────────────────────────────────────────
+# ── Logging: console + file ───────────────────────────────────────────────
 import logging.handlers as _lh
 _log_fmt    = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 _log_root   = logging.getLogger()
@@ -30,59 +31,165 @@ _ch = logging.StreamHandler()
 _ch.setFormatter(_log_fmt)
 _log_root.addHandler(_ch)
 _fh = _lh.RotatingFileHandler(
-    "/tmp/pivot_scanner.log", maxBytes=10*1024*1024, backupCount=3
+    "/tmp/scanner_v9.log", maxBytes=10*1024*1024, backupCount=3
 )
 _fh.setFormatter(_log_fmt)
 _log_root.addHandler(_fh)
 log = logging.getLogger(__name__)
+log.info("Log file aktif: /tmp/scanner_v9.log (rotasi 10MB)")
+
 
 # ══════════════════════════════════════════════════════════════
-#  ⚙️  CONFIG (sederhanakan hanya parameter yang diperlukan)
+#  ⚙️  CONFIG (ditambahkan parameter pivot low)
 # ══════════════════════════════════════════════════════════════
 CONFIG = {
-    # Threshold sinyal
-    "min_composite_alert":       50,   # bisa disesuaikan
+    # ── Threshold alert ───────────────────────────────────────
+    "min_composite_alert":       52,
+    "min_prob_alert":          0.50,
+    "min_score_alert":           30,
+    "min_whale_score":           15,
     "max_alerts_per_run":         8,
 
-    # Volume 24h (USD)
+    # Bobot composite score (tidak dipakai di pivot version, tapi tetap)
+    "composite_w_layer":        0.55,
+    "composite_w_prob":         0.45,
+
+    # ── Volume 24h TOTAL (USD) ─────────────────────────────────
     "min_vol_24h":            3_000,
     "max_vol_24h":       50_000_000,
     "pre_filter_vol":         1_000,
 
-    # Gate perubahan harga
+    # ── Gate perubahan harga ───────────────────────────────────
     "gate_chg_24h_max":          30.0,
     "gate_chg_7d_max":           35.0,
     "gate_chg_7d_min":          -35.0,
     "gate_funding_extreme":      -0.002,
 
-    # Candle limits
+    # ── Candle limits ─────────────────────────────────────────
     "candle_1h":                200,   # cukup untuk pivot 20/20
     "candle_15m":                96,
+    "candle_4h":                 42,
 
-    # Entry/exit
+    # ── Entry/exit ────────────────────────────────────────────
     "min_target_pct":             5.0,
     "max_sl_pct":                12.0,
     "atr_sl_mult":                1.5,
     "atr_t1_mult":                2.5,
-    "box_width":                  1.0,   # lebar kotak support = ATR * box_width
-    "recovery_bars":              3,     # maksimal candle setelah breakdown untuk reversal
-    "volume_threshold":           1.8,   # volume pivot harus > avg_pos_vol * ini
-    "reversal_vol_threshold":     1.5,   # volume reversal harus > avg_vol * ini
 
-    # Cooldown
+    # ── Operasional ───────────────────────────────────────────
     "alert_cooldown_sec":       3600,
     "sleep_coins":               0.8,
     "sleep_error":               3.0,
-    "cooldown_file":    "/tmp/pivot_cooldown.json",
-    "oi_snapshot_file": "/tmp/pivot_oi.json",
+    "cooldown_file":    "/tmp/v9_cooldown.json",
+    "oi_snapshot_file": "/tmp/v9_oi.json",
 
-    # Pivot parameters
-    "left_bars":                  20,
-    "right_bars":                 20,
-    "breakdown_max_bars":         50,
+    # ── Stealth pattern (tidak dipakai, dibiarkan) ────────────
+    "stealth_max_vol":       80_000,
+    "stealth_min_coiling":       15,
+    "stealth_max_range":          4.0,
+
+    # ── Short squeeze (tidak dipakai) ─────────────────────────
+    "squeeze_funding_max":    -0.0001,
+    "squeeze_oi_change_min":     3.0,
+
+    # ── Layer max scores (tidak dipakai) ──────────────────────
+    "max_vol_score":             30,
+    "max_flat_score":            20,
+    "max_struct_score":          15,
+    "max_pos_score":             15,
+    "max_tf4h_score":             8,
+    "max_ctx_score":             10,
+    "max_whale_bonus":           20,
+    "max_linea_score":           25,
+
+    # ── Pump probability weights (tidak dipakai) ──────────────
+    "prob_mvs_w1":         30,
+    "prob_irr_w2":         20,
+    "prob_avs_w3":         15,
+    "prob_atr_w4":         20,
+    "prob_slope_w5":       15,
+
+    # ── GC-2: Liquidation Detector (tidak dipakai) ────────────
+    "liq_window_min":            30,
+    "liq_long_block_usd":    100_000,
+    "liq_short_bonus_usd":   150_000,
+
+    # ── GC-3: Linea Signature (tidak dipakai) ─────────────────
+    "linea_oi_1h_min":            2.0,
+    "linea_oi_24h_min":           3.0,
+    "linea_rsi_max":             48.0,
+    "linea_ls_max":               1.1,
+    "linea_price_max_chg":        5.0,
+
+    # ── GC-5: Micro-cap OI Acceleration (tidak dipakai) ───────
+    "max_oi_accel_score":        30,
+    "oi_accel_micro_thresh": 3_000_000,
+    "oi_accel_dormant_vol":    500_000,
+    "oi_accel_weak":             15.0,
+    "oi_accel_medium":           35.0,
+    "oi_accel_strong":           70.0,
+    "oi_accel_extreme":         120.0,
+    "oi_accel_div_price_max":     5.0,
+    "oi_dormant_baseline_mult":   3.0,
+
+    # ── v9.9 BUG #2: Dead Activity Gate ──────────────────────
+    "dead_activity_threshold":   0.10,
+
+    # ── GC-6: Multi-TF Net Flow (tidak dipakai) ───────────────
+    "max_netflow_score":         25,
+    "nf_strong_buy":             12.0,
+    "nf_buy":                     5.0,
+    "nf_neutral_max":             5.0,
+    "nf_sell":                   -5.0,
+    "nf_strong_sell":           -15.0,
+    "nf_gate_72h":              -12.0,
+    "nf_gate_24h":               -8.0,
+    "nf_gate_6h":                -5.0,
+    "nf_whale_72h_max":           3.0,
+    "nf_whale_72h_min":         -15.0,
+    "nf_whale_24h_min":           3.0,
+    "nf_whale_6h_min":            5.0,
+
+    # ── PIVOT LOW PARAMETERS (BARU) ───────────────────────────
+    "pivot_left":                   20,
+    "pivot_right":                  20,
+    "box_width":                     1.0,
+    "recovery_bars":                 3,
+    "volume_threshold":              1.8,
+    "reversal_vol_threshold":        1.5,
+    "breakdown_max_bars":            50,
+
+    # ── Log file ───────────────────────────────────────────────
+    "log_file": "/tmp/scanner_v9.log",
+    "log_max_mb": 10,
 }
 
-# ── WHITELIST (sama seperti sebelumnya) ───────────────────────────────────
+# ── STOCK_TICKERS (dibiarkan) ─────────────────────────────────────────────
+STOCK_TICKERS = {
+    "CSCOUSDT","PEPUSDT","QQQUSDT","AAPLUSDT","MSFTUSDT","GOOGLUSDT",
+    "INTCUSDT","AMDUSDT","NVDAUSDT","TSLAUSDT","AMZNUSDT","METAUSDT",
+    "NFLXUSDT","ADBEUSDT","CRMUSDT","ORCLUSDT","IBMUSDT","SAPUSDT",
+    "PYPLUSDT","UBERUSDT","LYFTUSDT","SPYUSDT","DIAUSDT","IWMUSDT",
+    "MCDUSDT","KOLUSDT","DISUSDT","BRKUSDT","JPMCUSDT","BACHUSDT",
+    "SBUXUSDT","NKEUSDT","WMTUSDT","COSTUSDT","HDUSTUSDT",
+    "LLYUSDT","PFIZUSDT","JNJUSDT","ABBVUSDT","MRKUSDT","AMGNUSDT",
+    "ASMLUSDT","TSMCUSDT",
+    "HOODUSDT","COINUSDT",
+    "GSUSDT","MSUSDT","BAMUSDT",
+    "SNAPUSDT",
+    "FUTUUSDT","TIGRUSDT","MUUSDT","MRVLUSDT","QCOMUSDT","TXNUSDT",
+    "SMHUSDT","FOUSDT","GMUSDT","RIVUSDT","LCIDUSDT","NIOOUSDT",
+    "RDTUSDT","SPOTUSDT","RBLXUSDT","SHOPUSDT","ETSYUSDT",
+    "BABAUSDT","AVGOUSDT","BRKBUSDT","VISAUSDT","MAUSDT","ABNBUSDT","AIRBNBUSDT",
+    "RDDTUSDT","RDDUSDT","PLTRUSDT","MSTRUSDT","SOFIUSDT","NUSDT",
+    "AFRMUSDT","UPSTUSDT","CARVAUSDT","IONQUSDT","ARQITUSDT","ROBHUSDT",
+}
+
+MANUAL_EXCLUDE = set()
+
+# ══════════════════════════════════════════════════════════════
+#  📋  WHITELIST — 324 coin pilihan (sama)
+# ══════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
     "DOGEUSDT", "BCHUSDT", "ADAUSDT", "HYPEUSDT", "XMRUSDT", "LINKUSDT", "XLMUSDT", "HBARUSDT",
     "LTCUSDT", "ZECUSDT", "AVAXUSDT", "SHIBUSDT", "SUIUSDT", "TONUSDT", "WLFIUSDT", "CROUSDT",
@@ -129,10 +236,56 @@ WHITELIST_SYMBOLS = {
 
 GRAN_MAP = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
 
-MANUAL_EXCLUDE = set()
+SECTOR_MAP = {
+    "DEFI": [
+        "SNXUSDT","ENSOUSDT","SIRENUSDT","CRVUSDT","CVXUSDT","COMPUSDT",
+        "AAVEUSDT","UNIUSDT","DYDXUSDT","COWUSDT","PENDLEUSDT","MORPHOUSDT",
+        "FLUIDUSDT","SSVUSDT","LRCUSDT","RSRUSDT","NMRUSDT","UMAUSDT","BALUSDT",
+        "LDOUSDT","ENSUSDT",
+    ],
+    "ZK_PRIVACY": ["AZTECUSDT","MINAUSDT","STRKUSDT","ZORAUSDT","ZRXUSDT","POLYXUSDT"],
+    "DESCI":      ["BIOUSDT","ATHUSDT"],
+    "AI_CRYPTO":  [
+        "FETUSDT","RENDERUSDT","TAOUSDT","GRASSUSDT","AKTUSDT","VANAUSDT",
+        "COAIUSDT","UAIUSDT","GRTUSDT","OCEANUSDT","AGIXUSDT",
+    ],
+    "SOLANA_ECO": [
+        "ORCAUSDT","RAYUSDT","JTOUSDT","DRIFTUSDT","WIFUSDT","JUPUSDT",
+        "1000BONKUSDT","PYTHUSDT","MEWUSDT",
+    ],
+    "LAYER1": [
+        "APTUSDT","SUIUSDT","SEIUSDT","INJUSDT","KASUSDT","BERAUSDT",
+        "MOVEUSDT","KAIAUSDT","TIAUSDT","EGLDUSDT","NEARUSDT","TONUSDT",
+        "ALGOUSDT","HBARUSDT","STEEMUSDT","XTZUSDT","ZILUSDT","VETUSDT",
+        "ESPUSDT","TRXUSDT",
+    ],
+    "LAYER2": ["ARBUSDT","OPUSDT","CELOUSDT","STRKUSDT","LDOUSDT","POLUSDT","LINEAUSDT"],
+    "GAMING": [
+        "AXSUSDT","GALAUSDT","IMXUSDT","SANDUSDT","APEUSDT","SUPERUSDT",
+        "CHZUSDT","ENJUSDT","GLMUSDT",
+    ],
+    "LOW_CAP": [
+        "VVVUSDT","POWERUSDT","ARCUSDT","AGLDUSDT","VIRTUALUSDT","SPXUSDT",
+        "ONDOUSDT","ENAUSDT","EIGENUSDT","STXUSDT","RUNEUSDT","ORDIUSDT",
+        "SKRUSDT","BRETTUSDT","AVNTUSDT","AEROUSDT",
+    ],
+    "MEME": [
+        "PEPEUSDT","SHIBUSDT","FLOKIUSDT","BRETTUSDT","FARTCOINUSDT",
+        "MEMEUSDT","TURBOUSDT","PNUTUSDT","POPCATUSDT","MOODENGUSDT",
+        "1000BONKUSDT","TRUMPUSDT","WIFUSDT","TOSHIUSDT",
+    ],
+}
+SECTOR_LOOKUP = {coin: sec for sec, coins in SECTOR_MAP.items() for coin in coins}
+
+BITGET_BASE    = "https://api.bitget.com"
+COINGECKO_BASE = "https://api.coingecko.com/api/v3"
+_cache         = {}
+
+EXCLUDED_KEYWORDS = ["XAU","PAXG","BTC","ETH","USDC","DAI","BUSD","UST","LUNC","LUNA"]
+
 
 # ══════════════════════════════════════════════════════════════
-#  🔒  COOLDOWN & OI SNAPSHOT (sama seperti asli)
+#  🔒  COOLDOWN & OI SNAPSHOT (sama persis)
 # ══════════════════════════════════════════════════════════════
 def load_cooldown():
     try:
@@ -176,6 +329,39 @@ def save_oi_snapshot(symbol, oi_value):
     except:
         pass
 
+
+# ══════════════════════════════════════════════════════════════
+#  🔴 v9.9 BUG #1 FIX: get_oi_changes() — (tetap ada meski tak dipakai)
+# ══════════════════════════════════════════════════════════════
+def get_oi_changes(symbol, current_oi):
+    snaps = load_oi_snapshots()
+    hist  = snaps.get(symbol, [])
+
+    if len(hist) < 2:
+        return 0, 0, False
+
+    now = time.time()
+
+    def nearest(target_ts, tolerance=1800):
+        cands = [d for d in hist if abs(d["ts"] - target_ts) < tolerance]
+        return min(cands, key=lambda d: abs(d["ts"] - target_ts)) if cands else None
+
+    old1h  = nearest(now - 3600)
+    old24h = nearest(now - 86400, tolerance=7200)
+
+    if not old1h:
+        older_snaps = [d for d in hist if d["ts"] < now - 60]
+        if older_snaps:
+            old1h = min(older_snaps, key=lambda d: d["ts"])
+
+    chg1h  = (current_oi - old1h["oi"])  / old1h["oi"]  * 100 if old1h  and old1h["oi"]  else 0
+    chg24h = (current_oi - old24h["oi"]) / old24h["oi"] * 100 if old24h and old24h["oi"] else 0
+
+    oi_valid = (old1h is not None)
+
+    return chg1h, chg24h, oi_valid
+
+
 _cooldown = load_cooldown()
 log.info(f"Cooldown aktif: {len(_cooldown)} coin")
 
@@ -185,6 +371,7 @@ def is_cooldown(sym):
 def set_cooldown(sym):
     _cooldown[sym] = time.time()
     save_cooldown(_cooldown)
+
 
 # ══════════════════════════════════════════════════════════════
 #  🌐  HTTP UTILITIES (sama persis)
@@ -220,6 +407,7 @@ def send_telegram(msg):
 
 def utc_now():  return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 def utc_hour(): return datetime.now(timezone.utc).hour
+
 
 # ══════════════════════════════════════════════════════════════
 #  📡  DATA FETCHERS (sama persis)
@@ -327,9 +515,102 @@ def get_trades(symbol, limit=500):
         return trades
     return []
 
+def get_orderbook(symbol, levels=50):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/merge-depth",
+        params={"symbol": symbol, "productType": "usdt-futures",
+                "precision": "scale0", "limit": str(levels)},
+    )
+    if data and data.get("code") == "00000":
+        try:
+            book    = data["data"]
+            bid_vol = sum(float(b[1]) for b in book.get("bids", []))
+            ask_vol = sum(float(a[1]) for a in book.get("asks", []))
+            total   = bid_vol + ask_vol
+            ratio   = bid_vol / total if total > 0 else 0.5
+            return ratio, bid_vol, ask_vol
+        except:
+            pass
+    return 0.5, 0, 0
+
+def get_liquidations(symbol):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/liquidation-orders",
+        params={"symbol": symbol, "productType": "usdt-futures",
+                "pageSize": "100"},
+    )
+    if not data or data.get("code") != "00000":
+        return 0, 0
+    try:
+        orders = data.get("data", {}).get("liquidationOrderList", [])
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - CONFIG["liq_window_min"] * 60 * 1000
+        long_liq  = 0.0
+        short_liq = 0.0
+        for o in orders:
+            ts   = int(o.get("cTime", 0))
+            if ts < cutoff:
+                continue
+            usd  = float(o.get("size", 0)) * float(o.get("fillPrice", 0))
+            side = o.get("side", "").lower()
+            if "sell" in side:
+                long_liq += usd
+            else:
+                short_liq += usd
+        return long_liq, short_liq
+    except:
+        return 0, 0
+
+def get_rsi(candles, period=14):
+    if len(candles) < period + 1:
+        return 50.0
+    closes = [c["close"] for c in candles]
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(d, 0))
+        losses.append(max(-d, 0))
+    avg_g = sum(gains[:period]) / period
+    avg_l = sum(losses[:period]) / period
+    for i in range(period, len(gains)):
+        avg_g = (avg_g * (period - 1) + gains[i]) / period
+        avg_l = (avg_l * (period - 1) + losses[i]) / period
+    if avg_l == 0:
+        return 100.0
+    rs = avg_g / avg_l
+    return 100 - (100 / (1 + rs))
+
+def get_cg_trending():
+    key = "cg_trend"
+    if key in _cache:
+        ts, val = _cache[key]
+        if time.time() - ts < 600:
+            return val
+    data   = safe_get(f"{COINGECKO_BASE}/search/trending")
+    result = [c["item"]["symbol"].upper() for c in (data or {}).get("coins", [])]
+    _cache[key] = (time.time(), result)
+    return result
+
+
 # ══════════════════════════════════════════════════════════════
-#  📐  MATH HELPERS (yang diperlukan)
+#  📐  MATH HELPERS (termasuk fungsi pivot low baru)
 # ══════════════════════════════════════════════════════════════
+def bbw_percentile(candles, period=20):
+    closes = [c["close"] for c in candles]
+    if len(closes) < period + 10:
+        return 0, 50
+    bbws = []
+    for i in range(period - 1, len(closes)):
+        w    = closes[i - period + 1: i + 1]
+        mean = sum(w) / period
+        std  = math.sqrt(sum((x - mean) ** 2 for x in w) / period)
+        bbws.append((4 * std / mean * 100) if mean else 0)
+    if not bbws:
+        return 0, 50
+    cur = bbws[-1]
+    pct = sum(1 for b in bbws[:-1] if b < cur) / max(len(bbws) - 1, 1) * 100
+    return cur, pct
+
 def calc_atr(candles, period=14):
     if len(candles) < period + 1:
         return None
@@ -341,26 +622,6 @@ def calc_atr(candles, period=14):
     for i in range(period, len(trs)):
         atr = (atr * (period - 1) + trs[i]) / period
     return atr
-
-def find_pivot_lows(candles, left=20, right=20):
-    """Mengembalikan list index candle yang merupakan pivot low."""
-    pivots = []
-    for i in range(left, len(candles) - right):
-        if candles[i]["low"] < candles[i-1]["low"] and candles[i]["low"] < candles[i+1]["low"]:
-            # cek apakah low ini lebih rendah dari left sebelumnya dan right sesudahnya
-            is_pivot = True
-            for j in range(1, left+1):
-                if candles[i]["low"] >= candles[i-j]["low"]:
-                    is_pivot = False
-                    break
-            if is_pivot:
-                for j in range(1, right+1):
-                    if candles[i]["low"] >= candles[i+j]["low"]:
-                        is_pivot = False
-                        break
-            if is_pivot:
-                pivots.append(i)
-    return pivots
 
 def calc_vwap_zone(candles):
     cum_tv, cum_v = 0, 0
@@ -471,45 +732,81 @@ def calc_entry(candles_1h):
         "liq_pct": t1_pct,
     }
 
+# ---------- FUNGSI BARU: PIVOT LOW ----------
+def find_pivot_lows(candles, left=20, right=20):
+    """
+    Mengembalikan list index candle yang merupakan pivot low.
+    """
+    pivots = []
+    for i in range(left, len(candles) - right):
+        if candles[i]["low"] < candles[i-1]["low"] and candles[i]["low"] < candles[i+1]["low"]:
+            is_pivot = True
+            for j in range(1, left+1):
+                if candles[i]["low"] >= candles[i-j]["low"]:
+                    is_pivot = False
+                    break
+            if is_pivot:
+                for j in range(1, right+1):
+                    if candles[i]["low"] >= candles[i+j]["low"]:
+                        is_pivot = False
+                        break
+            if is_pivot:
+                pivots.append(i)
+    return pivots
+
+
 # ══════════════════════════════════════════════════════════════
-#  🔍  DETEKSI PIVOT LOW BOUNCE
+#  🧠  MASTER SCORE (BARU: DETEKSI PIVOT LOW)
 # ══════════════════════════════════════════════════════════════
-def detect_pivot_bounce(symbol, ticker, tickers_dict):
+def master_score(symbol, ticker, tickers_dict):
     # Ambil data candle
     c1h = get_candles(symbol, "1h", CONFIG["candle_1h"])
-    if len(c1h) < 50:  # minimal untuk pivot
+    if len(c1h) < 50:  # butuh cukup data untuk pivot
         return None
 
-    # Hitung ATR keseluruhan
-    atr = calc_atr(c1h, 14)
-    if not atr:
-        atr = c1h[-1]["close"] * 0.02
+    # Pre-filter dasar (volume minimal sudah dilakukan di build_candidate_list)
+    try:
+        chg_24h = float(ticker.get("change24h", 0)) * 100
+        vol_24h = float(ticker.get("quoteVolume", 0))
+    except:
+        chg_24h, vol_24h = 0, 0
 
-    # Hitung rata-rata volume untuk konfirmasi
-    volumes = [c["volume_usd"] for c in c1h]
-    avg_vol = sum(volumes) / len(volumes) if volumes else 1
+    # Dead activity gate (v9.9 fix)
+    if len(c1h) >= 7:
+        last_vol = c1h[-1]["volume_usd"]
+        avg_vol_6h = sum(c["volume_usd"] for c in c1h[-7:-1]) / 6
+        if avg_vol_6h > 0 and last_vol / avg_vol_6h < CONFIG["dead_activity_threshold"]:
+            log.info(f"  {symbol}: GATE dead activity")
+            return None
+    else:
+        avg_vol_6h = 0
 
-    # Hitung rata-rata volume positif (saat close > open)
+    # Hitung ATR dan rata-rata volume
+    atr = calc_atr(c1h, 14) or c1h[-1]["close"] * 0.02
+    avg_vol = sum(c["volume_usd"] for c in c1h) / len(c1h)
     pos_vols = [c["volume_usd"] for c in c1h if c["close"] > c["open"]]
     avg_pos_vol = sum(pos_vols) / len(pos_vols) if pos_vols else avg_vol
 
-    # Temukan semua pivot low
-    pivot_indices = find_pivot_lows(c1h, left=CONFIG["left_bars"], right=CONFIG["right_bars"])
+    # Cari pivot low
+    pivot_indices = find_pivot_lows(
+        c1h,
+        left=CONFIG["pivot_left"],
+        right=CONFIG["pivot_right"]
+    )
 
     signals_found = []
-
     for idx in pivot_indices:
         pivot_candle = c1h[idx]
         pivot_low = pivot_candle["low"]
 
-        # Syarat 1: volume pivot harus signifikan
+        # Syarat 1: volume pivot signifikan
         if pivot_candle["volume_usd"] < avg_pos_vol * CONFIG["volume_threshold"]:
             continue
 
-        # Hitung batas bawah support zone
+        # Batas bawah support zone
         support_low = pivot_low - atr * CONFIG["box_width"]
 
-        # Cari breakdown dalam jendela ke depan (maks 50 candle)
+        # Cari breakdown dalam jendela ke depan
         for j in range(idx + 1, min(idx + CONFIG["breakdown_max_bars"], len(c1h))):
             if c1h[j]["low"] < support_low:
                 # Breakdown terjadi di candle j
@@ -517,9 +814,7 @@ def detect_pivot_bounce(symbol, ticker, tickers_dict):
                 for k in range(j + 1, min(j + CONFIG["recovery_bars"] + 1, len(c1h))):
                     if c1h[k]["close"] > pivot_low:
                         # Reversal terjadi di candle k
-                        # Syarat volume reversal tinggi
                         if c1h[k]["volume_usd"] > avg_vol * CONFIG["reversal_vol_threshold"]:
-                            # Sinyal ditemukan
                             signals_found.append({
                                 "pivot_idx": idx,
                                 "pivot_low": pivot_low,
@@ -532,8 +827,8 @@ def detect_pivot_bounce(symbol, ticker, tickers_dict):
                                 "pivot_vol": pivot_candle["volume_usd"],
                                 "reversal_vol": c1h[k]["volume_usd"],
                             })
-                        break  # hanya ambil reversal pertama setelah breakdown
-                break  # hanya breakdown pertama yang diproses
+                        break
+                break
 
     if not signals_found:
         return None
@@ -546,64 +841,75 @@ def detect_pivot_bounce(symbol, ticker, tickers_dict):
     if not entry_data or entry_data["liq_pct"] < CONFIG["min_target_pct"]:
         return None
 
-    # Ambil data tambahan untuk konteks
-    funding = get_funding(symbol)
-    oi_value = get_open_interest(symbol)
-    if oi_value > 0:
-        save_oi_snapshot(symbol, oi_value)
-
-    # Ambil perubahan harga 24h dari ticker
-    try:
-        chg_24h = float(ticker.get("change24h", 0)) * 100
-        vol_24h = float(ticker.get("quoteVolume", 0))
-    except:
-        chg_24h, vol_24h = 0, 0
-
     # Hitung RVOL sederhana
     if len(c1h) >= 25:
-        last_vol = c1h[-2]["volume_usd"]  # candle lengkap terakhir
-        same_hour_vols = [c["volume_usd"] for c in c1h[:-2] if (c["ts"] // 3_600_000) % 24 == (c1h[-2]["ts"] // 3_600_000) % 24]
+        last_vol = c1h[-2]["volume_usd"]
+        target_hour = (c1h[-2]["ts"] // 3_600_000) % 24
+        same_hour_vols = [
+            c["volume_usd"] for c in c1h[:-2]
+            if (c["ts"] // 3_600_000) % 24 == target_hour
+        ]
         avg_same_hour = sum(same_hour_vols) / len(same_hour_vols) if same_hour_vols else 1
         rvol = last_vol / avg_same_hour if avg_same_hour > 0 else 1
     else:
         rvol = 1
 
-    # Hitung komposit sederhana (misal: skor berdasarkan jarak reversal dan volume)
-    # Bisa juga pakai probabilitas sederhana
-    composite_score = min(100, int(
+    # Composite score sederhana
+    composite = min(100, int(
         30 * (latest_signal["reversal_vol"] / avg_vol) +
         30 * (latest_signal["pivot_vol"] / avg_pos_vol) +
         20 * (1 if rvol > 2 else 0.5) +
         20
     ))
 
-    # Susun hasil
+    # Siapkan sinyal teks
+    from datetime import datetime
+    def ts_to_str(ts_ms):
+        return datetime.fromtimestamp(ts_ms/1000).strftime("%d %H:%M")
+    signal_texts = [
+        f"Pivot low ${latest_signal['pivot_low']:.4f} (vol {latest_signal['pivot_vol']/1e3:.0f}K)",
+        f"Breakdown di {ts_to_str(latest_signal['break_time'])}",
+        f"Reversal di {ts_to_str(latest_signal['reversal_time'])} dengan vol {latest_signal['reversal_vol']/1e3:.0f}K",
+    ]
+
+    # Ambil funding (opsional)
+    funding = get_funding(symbol)
+
+    # Hitung range 6h (untuk log, tidak dipakai scoring)
+    if len(c1h) >= 6:
+        pre6 = c1h[-6:]
+        high_6h = max(c["high"] for c in pre6)
+        low_6h = min(c["low"] for c in pre6)
+        range_6h = (high_6h - low_6h) / low_6h * 100 if low_6h > 0 else 0
+    else:
+        range_6h = 0
+
+    # Susun hasil dengan semua field yang diharapkan oleh build_alert
     result = {
         "symbol": symbol,
-        "score": composite_score,
-        "composite_score": composite_score,
-        "signals": [
-            f"Pivot low ${latest_signal['pivot_low']:.4f} dengan volume {latest_signal['pivot_vol']/1e3:.0f}K",
-            f"Breakdown di {datetime.fromtimestamp(latest_signal['break_time']/1000).strftime('%H:%M')}",
-            f"Reversal di {datetime.fromtimestamp(latest_signal['reversal_time']/1000).strftime('%H:%M')} dengan volume {latest_signal['reversal_vol']/1e3:.0f}K",
-        ],
+        "score": composite,
+        "composite_score": composite,
+        "signals": signal_texts,
+        "ws": 0,
+        "wev": [],
         "entry": entry_data,
-        "sector": "N/A",  # bisa diisi nanti
+        "sector": SECTOR_LOOKUP.get(symbol, "N/A"),
         "funding": funding,
+        "bd": {"oi_valid": False, "rsi_1h": 50},
         "price": c1h[-1]["close"],
         "chg_24h": chg_24h,
         "vol_24h": vol_24h,
         "rvol": round(rvol, 1),
         "ls_ratio": None,
         "chg_7d": 0,
-        "avg_vol_6h": 0,
-        "range_6h": 0,
+        "avg_vol_6h": avg_vol_6h,
+        "range_6h": range_6h,
         "coiling": 0,
         "bbw_val": 0,
         "oi_change_24h": 0,
         "oi_change_1h": 0,
-        "prob_score": composite_score / 100,
-        "prob_class": "Potential Bounce",
+        "prob_score": composite / 100,
+        "prob_class": "Pivot Bounce",
         "prob_metrics": {},
         "rsi_1h": 50,
         "long_liq": 0,
@@ -613,15 +919,12 @@ def detect_pivot_bounce(symbol, ticker, tickers_dict):
         "oi_accel_data": {},
         "nf_data": {},
         "nf_score": 0,
-        "ws": 0,
-        "wev": [],
-        "bd": {"oi_valid": False},
     }
-
     return result
 
+
 # ══════════════════════════════════════════════════════════════
-#  📱  TELEGRAM FORMATTER (disederhanakan)
+#  📱  TELEGRAM FORMATTER (sedikit disederhanakan)
 # ══════════════════════════════════════════════════════════════
 def build_alert(r, rank=None):
     sc   = r["score"]
@@ -633,15 +936,14 @@ def build_alert(r, rank=None):
             else f"${r['vol_24h']/1e3:.0f}K")
 
     msg = (
-        f"🚨 <b>PIVOT BOUNCE SIGNAL {rk}— v1.0</b>\n\n"
+        f"🚨 <b>PIVOT BOUNCE {rk}— v1.0</b>\n\n"
         f"<b>Symbol    :</b> {r['symbol']}\n"
-        f"<b>Score     :</b> {comp}/100  {bar}\n"
+        f"<b>Composite :</b> {comp}/100  {bar}\n"
         f"<b>Harga     :</b> ${r['price']:.6g}  ({r['chg_24h']:+.1f}% 24h)\n"
         f"<b>Vol 24h   :</b> {vol} | RVOL: {r['rvol']:.1f}x\n"
         f"<b>Funding   :</b> {r['funding']:.5f}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
-
     for s in r["signals"]:
         msg += f"  • {s}\n"
 
@@ -659,12 +961,11 @@ def build_alert(r, rank=None):
             f"  R/R: 1:{e['rr']}  |  ATR: ${e['atr']}\n"
         )
 
-    msg += f"\n🕐 {utc_now()}\n"
-    msg += "<i>⚠️ Bukan financial advice. Manage risk ketat.</i>"
+    msg += f"\n🕐 {utc_now()}\n<i>⚠️ Bukan financial advice.</i>"
     return msg
 
 def build_summary(results):
-    msg = f"📋 <b>TOP PIVOT BOUNCE CANDIDATES — {utc_now()}</b>\n{'━'*28}\n"
+    msg = f"📋 <b>TOP PIVOT BOUNCE — {utc_now()}</b>\n{'━'*28}\n"
     for i, r in enumerate(results, 1):
         comp     = r.get("composite_score", r["score"])
         bar      = "█" * int(comp / 10) + "░" * (10 - int(comp / 10))
@@ -677,8 +978,9 @@ def build_summary(results):
         )
     return msg
 
+
 # ══════════════════════════════════════════════════════════════
-#  🔍  BUILD CANDIDATE LIST (sama seperti sebelumnya)
+#  🔍  BUILD CANDIDATE LIST (sama persis)
 # ══════════════════════════════════════════════════════════════
 def build_candidate_list(tickers):
     all_candidates = []
@@ -694,7 +996,7 @@ def build_candidate_list(tickers):
     }
 
     log.info("=" * 70)
-    log.info("🔍 SCANNING MODE: FULL WHITELIST (ALL COINS)")
+    log.info("🔍 SCANNING MODE: FULL WHITELIST (ALL 324 COINS)")
     log.info("=" * 70)
 
     for sym in WHITELIST_SYMBOLS:
@@ -770,8 +1072,9 @@ def build_candidate_list(tickers):
 
     return all_candidates
 
+
 # ══════════════════════════════════════════════════════════════
-#  🚀  MAIN SCAN
+#  🚀  MAIN SCAN (hanya mengganti pemanggilan master_score)
 # ══════════════════════════════════════════════════════════════
 def run_scan():
     log.info(f"=== PIVOT LOW BOUNCE SCANNER v1.0 — {utc_now()} ===")
@@ -798,7 +1101,7 @@ def run_scan():
 
         log.info(f"[{i+1}/{len(candidates)}] {sym} (vol ${vol/1e3:.0f}K)...")
         try:
-            res = detect_pivot_bounce(sym, t, tickers)
+            res = master_score(sym, t, tickers)
             if res:
                 comp = res["composite_score"]
                 log.info(
