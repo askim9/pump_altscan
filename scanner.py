@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v2.1 — PRE-PUMP DETECTION                            ║
+║  PIVOT BOUNCE SCANNER v2.2 — PRE-PUMP DETECTION                            ║
 ║                                                                              ║
 ║  FILOSOFI CORE:                                                              ║
 ║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
@@ -32,6 +32,11 @@
 ║  + Gate RVOL minimum 1.5x                                                  ║
 ║  + Gate R/R minimum 1:1.5, SL minimum 2.5%                                ║
 ║  + min_vol_24h dinaikkan $3K → $500K                                       ║
+║                                                                              ║
+║  PATCH v2.2 (dari data nyata ALCH/BANK):                                   ║
+║  + Gate trend konteks: harga > 3% di bawah zona compression = SKIP         ║
+║  + Gate MA bearish: MA20-MA50 gap > 2.5% + keduanya turun = SKIP          ║
+║    (dengan gap threshold agar false positive pada compression dihindari)    ║
 ║                                                                              ║
 ║  TARGET   : Entry sekarang, TP dalam 1-2 hari (+10% s/d +100%)             ║
 ║  INTERVAL : Setiap 1 jam                                                    ║
@@ -117,6 +122,15 @@ CONFIG = {
 
     # ── SUPPORT PROXIMITY ─────────────────────────────────────────────────────
     "support_proximity_pct":       0.06,   # harga dalam 6% dari support historis
+
+    # ── TREND CONTEXT GATE ────────────────────────────────────────────────────
+    # Bug dari data nyata (ALCH/BANK): coin downtrend bisa punya compression
+    # historis + spike hijau tapi harga masih di bawah zona → false signal.
+    # Solusi: cek apakah harga sekarang MASIH di dalam atau di atas zona compression.
+    # Jika harga di bawah comp_low lebih dari threshold ini → downtrend aktif, skip.
+    "price_below_zone_max":        0.03,   # toleransi harga di bawah zona: max 3%
+                                           # > 3% di bawah comp_low = downtrend sejati, skip
+                                           # ≤ 3% = bisa jadi liq sweep sebelum bounce
 
     # ── LIQUIDITY SWEEP BONUS ─────────────────────────────────────────────────
     # Bonus score jika ada false breakdown sebelum recovery (pola ORCA/PIXEL)
@@ -705,6 +719,47 @@ def master_score(symbol, ticker):
         log.info(f"  {symbol}: SKIP sudah naik {rise_from_low*100:.1f}% dari low compression — terlambat")
         return None
 
+    # ── Gate: TREND KONTEKS — harga tidak boleh terlalu jauh di bawah zona ───
+    # Bug dari data nyata (ALCH/BANK): harga di bawah zona compression tapi
+    # spike candle hijau → scanner lolos. Ini adalah bounce kecil dalam downtrend.
+    #
+    # Logika:
+    #   - Harga DALAM zona (comp_low ≤ price ≤ comp_high): ideal, coin di support
+    #   - Harga SEDIKIT di bawah zona (< 3%): toleransi liq sweep, masih valid
+    #   - Harga JAUH di bawah zona (> 3%): downtrend aktif, zona sudah tidak relevan
+    #
+    # ALCH: comp_low $0.0724, harga $0.0692 → 4.4% di bawah → downtrend, SKIP
+    # BANK: comp_low $0.0365, harga $0.0380 → +4.1% di atas → VALID (ini bounce)
+    price_below_zone_pct = (comp_low - price_now) / comp_low if price_now < comp_low else 0
+
+    if price_below_zone_pct > CONFIG["price_below_zone_max"]:
+        log.info(f"  {symbol}: SKIP downtrend aktif — harga {price_below_zone_pct*100:.1f}% "
+                 f"di bawah zona compression (max={CONFIG['price_below_zone_max']*100:.0f}%)")
+        return None
+
+    # ── Gate: MA trend — konfirmasi downtrend dengan gap MA signifikan ────────
+    # Revisi penting: gate lama (MA20 < MA50 + keduanya turun) terlalu sensitif.
+    # Selama COMPRESSION, MA20 dan MA50 hampir sama dan bisa saling mendahului
+    # karena oscillasi kecil → false positive pada TRUMP/PIXEL/VVV type.
+    #
+    # Fix: bearish HANYA jika gap MA20-MA50 > 2.5% (downtrend sejati punya gap besar)
+    # ALCH gap = 3.0% → SKIP ✅ | TRUMP gap = 1.2% → LOLOS ✅
+    if len(c1h) >= 55:
+        closes    = [c["close"] for c in c1h]
+        ma20_now  = sum(closes[-20:])   / 20
+        ma50_now  = sum(closes[-50:])   / 50
+        ma20_ago  = sum(closes[-25:-5]) / 20
+        ma50_ago  = sum(closes[-55:-5]) / 50
+        ma_gap    = (ma50_now - ma20_now) / ma50_now if ma50_now > 0 else 0
+        ma20_falling = ma20_now < ma20_ago
+        ma50_falling = ma50_now < ma50_ago
+        ma_bearish   = ma_gap > 0.025 and ma20_falling and ma50_falling
+
+        if ma_bearish:
+            log.info(f"  {symbol}: SKIP MA bearish — gap MA={ma_gap*100:.1f}% > 2.5%, "
+                     f"MA20={ma20_now:.6g} < MA50={ma50_now:.6g}, keduanya turun")
+            return None
+
     # ── FASE 2: Deteksi Volume Awakening ─────────────────────────────────────
     awakening = detect_volume_awakening(c1h, comp_avg_vol)
 
@@ -712,14 +767,11 @@ def master_score(symbol, ticker):
         log.info(f"  {symbol}: SKIP volume belum bangun (best_mult={awakening['best_mult']:.1f}x)")
         return None
 
-    # ── Gate: SELLING CLIMAX — spike merah di BAWAH zona compression ─────────
-    # Bug dari data nyata (CAKE): volume spike 12.1x tapi candle MERAH dan
-    # harga SUDAH di bawah zona compression = ini selling climax / dump, BUKAN awakening.
-    # Bedakan: awakening sejati = spike terjadi saat harga MASIH di zona atau baru breakout atas.
-    price_now    = c1h[-1]["close"]
-    spike_candle = c1h[-awakening["spike_candle"]] if awakening["spike_candle"] >= 1 else c1h[-1]
-    spike_is_red = spike_candle["close"] < spike_candle["open"]
-    price_below_zone = price_now < comp_low * 0.99   # harga > 1% di bawah zona
+    # ── Gate: SELLING CLIMAX — spike merah + harga di bawah zona ────────────
+    # CAKE case: spike 12.1x tapi candle merah + harga di bawah zona = dump.
+    spike_candle     = c1h[-awakening["spike_candle"]] if awakening["spike_candle"] >= 1 else c1h[-1]
+    spike_is_red     = spike_candle["close"] < spike_candle["open"]
+    price_below_zone = price_now < comp_low * 0.99
 
     if spike_is_red and price_below_zone:
         log.info(f"  {symbol}: SKIP selling climax — spike merah + harga di bawah zona compression")
