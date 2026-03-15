@@ -1,28 +1,37 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v2.0 — PRE-PUMP DETECTION                            ║
+║  PIVOT BOUNCE SCANNER v2.1 — PRE-PUMP DETECTION                            ║
 ║                                                                              ║
 ║  FILOSOFI CORE:                                                              ║
 ║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
 ║                                                                              ║
 ║  3 kondisi wajib terpenuhi bersamaan:                                       ║
-║  [1] TIDUR PULAS   — coin compression di support ≥ 3 hari                  ║
-║  [2] MULAI BANGUN  — volume mulai naik, 1-3 candle terakhir spike           ║
-║  [3] POSISI TEPAT  — harga masih di zona support, belum lari (< +8%)        ║
+║  [1] TIDUR PULAS   — coin compression di support ≥ 36 jam                  ║
+║  [2] MULAI BANGUN  — volume spike ≥ 1.8x avg compression DAN RVOL ≥ 1.5x  ║
+║  [3] POSISI TEPAT  — harga masih dalam 12% dari low, belum lari             ║
 ║                                                                              ║
 ║  SCORING (0-100):                                                            ║
 ║  [30] Compression quality — seberapa "padat" dan panjang fase tidur         ║
 ║  [25] Volume awakening   — seberapa besar volume spike vs baseline          ║
 ║  [20] Support proximity  — seberapa dekat harga ke support historis         ║
 ║  [15] Candle structure   — candle terbaru hijau / wick panjang / doji       ║
-║  [10] Momentum shift     — RSI mulai naik dari oversold                     ║
+║  [10] RSI momentum       — oversold = siap balik                            ║
 ║                                                                              ║
 ║  HARD GATES (salah satu gagal → skip coin):                                 ║
-║  - Harga belum naik > 8% dari low compression (tidak terlambat)             ║
-║  - Ada compression ≥ 36 candle 1H dengan range < 7%                        ║
-║  - Volume candle terbaru ≥ 1.8x rata-rata volume compression                ║
-║  - Volume 24H: $3K – $80M                                                  ║
-║  - Funding rate > -0.003 (tidak sedang di-short masif)                     ║
+║  - Compression ≥ 36 candle 1H dengan range < 10%                           ║
+║  - Volume candle terbaru ≥ 1.8x avg compression                            ║
+║  - RVOL ≥ 1.5x (vs jam yang sama historis) — konfirmasi ganda              ║
+║  - Spike candle bukan selling climax (merah + harga di bawah zona)         ║
+║  - Harga belum naik > 12% dari low compression                             ║
+║  - Volume 24H: $500K – $80M                                                ║
+║  - R/R minimum 1:1.5, SL minimum 2.5% dari entry                          ║
+║  - Funding rate > -0.003                                                   ║
+║                                                                              ║
+║  PATCH v2.1 (dari data nyata CAKE/THETA/IOTX):                             ║
+║  + Gate selling climax: spike merah + harga di bawah zona = SKIP           ║
+║  + Gate RVOL minimum 1.5x                                                  ║
+║  + Gate R/R minimum 1:1.5, SL minimum 2.5%                                ║
+║  + min_vol_24h dinaikkan $3K → $500K                                       ║
 ║                                                                              ║
 ║  TARGET   : Entry sekarang, TP dalam 1-2 hari (+10% s/d +100%)             ║
 ║  INTERVAL : Setiap 1 jam                                                    ║
@@ -59,12 +68,25 @@ log = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
     # ── volume 24h filter ─────────────────────────────────────────────────────
-    "min_vol_24h":              3_000,
+    # Dinaikkan dari $3K → $500K berdasarkan data nyata:
+    # IOTX $117K, THETA $310K terlalu kecil untuk pump 10%+ dalam 24H
+    # Referensi chart (TRUMP/PIXEL/ORCA/VVV): semua vol ≥ $5M saat pump
+    "min_vol_24h":            500_000,
     "max_vol_24h":         80_000_000,
-    "pre_filter_vol":           1_000,
+    "pre_filter_vol":         100_000,   # pre-filter dinaikkan ke $100K
 
     # ── price change gate ─────────────────────────────────────────────────────
     "gate_chg_24h_max":            40.0,   # coin yang sudah naik >40% 24h pasti terlambat
+
+    # ── RVOL minimum gate ─────────────────────────────────────────────────────
+    # Data nyata: THETA RVOL=1.2x lolos tapi bukan awakening sejati
+    # RVOL dihitung vs jam yang sama minggu lalu — lebih jujur dari vol_mult
+    "min_rvol_gate":               1.5,   # RVOL < 1.5x = SKIP
+
+    # ── minimum R/R dan SL ────────────────────────────────────────────────────
+    # IOTX R/R=0 karena SL hampir sama dengan entry — tidak layak trade
+    "min_rr":                      1.5,   # R/R minimum 1:1.5
+    "min_sl_pct":                  2.5,   # minimum SL distance 2.5% dari entry
 
     # ── candle config ─────────────────────────────────────────────────────────
     "candle_limit_1h":            504,     # 21 hari data 1H
@@ -568,7 +590,14 @@ def calc_entry_targets(candles, compression_zone):
 
     # Stop loss: di bawah low compression dengan buffer ATR
     sl = compression_zone["low"] - atr * CONFIG["atr_sl_mult"]
-    sl = max(sl, entry * 0.85)  # maksimal SL 15%
+    sl = max(sl, entry * 0.85)  # batas atas: SL maksimal 15% dari entry
+
+    # ── FIX: enforce minimum SL distance ─────────────────────────────────────
+    # Untuk coin harga sangat rendah, ATR tiny → SL bisa 0.01% dari entry
+    # yang tidak masuk akal. Minimum 2.5% agar ada ruang gerak yang wajar.
+    min_sl_dist = entry * (CONFIG["min_sl_pct"] / 100)
+    if (entry - sl) < min_sl_dist:
+        sl = entry - min_sl_dist
 
     sl_pct = round((entry - sl) / entry * 100, 1)
 
@@ -594,12 +623,15 @@ def calc_entry_targets(candles, compression_zone):
         t1 = res_levels[0]
         t2 = res_levels[1] if len(res_levels) > 1 else t1 * 1.15
     else:
-        # Fallback: gunakan ATR multiplier berbasis volatilitas historis
-        # Estimasi berdasarkan compression length (lebih lama = lebih besar target)
+        # Fallback: ATR multiplier berbasis panjang compression
         comp_len  = compression_zone["length"]
-        atr_mult  = min(4.0 + comp_len / 48, 10.0)  # makin lama coil, target makin jauh
+        atr_mult  = min(4.0 + comp_len / 48, 10.0)
         t1 = entry + atr * atr_mult
         t2 = t1 * 1.20
+
+    # ── FIX: pastikan T1 dan T2 berbeda secara meaningful ────────────────────
+    if abs(t2 - t1) / t1 < 0.03:   # jika T1 dan T2 terlalu dekat (< 3% beda)
+        t2 = t1 * 1.15             # paksa T2 = T1 + 15%
 
     t1_pct = round((t1 - cur) / cur * 100, 1)
     t2_pct = round((t2 - cur) / cur * 100, 1)
@@ -680,12 +712,45 @@ def master_score(symbol, ticker):
         log.info(f"  {symbol}: SKIP volume belum bangun (best_mult={awakening['best_mult']:.1f}x)")
         return None
 
+    # ── Gate: SELLING CLIMAX — spike merah di BAWAH zona compression ─────────
+    # Bug dari data nyata (CAKE): volume spike 12.1x tapi candle MERAH dan
+    # harga SUDAH di bawah zona compression = ini selling climax / dump, BUKAN awakening.
+    # Bedakan: awakening sejati = spike terjadi saat harga MASIH di zona atau baru breakout atas.
+    price_now    = c1h[-1]["close"]
+    spike_candle = c1h[-awakening["spike_candle"]] if awakening["spike_candle"] >= 1 else c1h[-1]
+    spike_is_red = spike_candle["close"] < spike_candle["open"]
+    price_below_zone = price_now < comp_low * 0.99   # harga > 1% di bawah zona
+
+    if spike_is_red and price_below_zone:
+        log.info(f"  {symbol}: SKIP selling climax — spike merah + harga di bawah zona compression")
+        return None
+
     log.info(f"  {symbol}: Volume awakening! {awakening['best_mult']:.1f}x compression avg")
 
     # ── Funding gate ─────────────────────────────────────────────────────────
     funding = get_funding(symbol)
     if funding < CONFIG["funding_gate"]:
         log.info(f"  {symbol}: SKIP funding terlalu negatif ({funding:.5f})")
+        return None
+
+    # ── Hitung RVOL (relatif vs jam yang sama) ────────────────────────────────
+    # Dilakukan di sini agar bisa dipakai sebagai gate sebelum scoring penuh
+    if len(c1h) >= 25:
+        last_vol       = c1h[-2]["volume_usd"]
+        target_hour    = (c1h[-2]["ts"] // 3_600_000) % 24
+        same_hour_vols = [c["volume_usd"] for c in c1h[:-2]
+                          if (c["ts"] // 3_600_000) % 24 == target_hour]
+        avg_same_hour  = sum(same_hour_vols) / len(same_hour_vols) if same_hour_vols else 1
+        rvol           = last_vol / avg_same_hour if avg_same_hour > 0 else 1.0
+    else:
+        rvol = 1.0
+
+    # ── Gate: RVOL minimum ────────────────────────────────────────────────────
+    # Data nyata: THETA RVOL=1.2x lolos scoring tapi tidak ada awakening nyata.
+    # RVOL dihitung vs jam yang sama → lebih jujur dari vol_mult (yang vs avg compression).
+    # Kedua sinyal harus konfirmasi bersamaan.
+    if rvol < CONFIG["min_rvol_gate"]:
+        log.info(f"  {symbol}: SKIP RVOL={rvol:.2f}x terlalu rendah (min={CONFIG['min_rvol_gate']}x)")
         return None
 
     # ── Metrik tambahan ───────────────────────────────────────────────────────
@@ -783,16 +848,11 @@ def master_score(symbol, ticker):
     if not entry_data or entry_data["t1_pct"] < CONFIG["min_target_pct"]:
         return None
 
-    # ── Hitung RVOL (volume relatif vs jam yang sama) ─────────────────────────
-    if len(c1h) >= 25:
-        last_vol       = c1h[-2]["volume_usd"]  # candle yang sudah closed
-        target_hour    = (c1h[-2]["ts"] // 3_600_000) % 24
-        same_hour_vols = [c["volume_usd"] for c in c1h[:-2]
-                          if (c["ts"] // 3_600_000) % 24 == target_hour]
-        avg_same_hour  = sum(same_hour_vols) / len(same_hour_vols) if same_hour_vols else 1
-        rvol           = last_vol / avg_same_hour if avg_same_hour > 0 else 1.0
-    else:
-        rvol = 1.0
+    # ── Gate: minimum R/R ────────────────────────────────────────────────────
+    # Data nyata IOTX: R/R=0 karena SL terlalu dekat — tidak layak di-trade
+    if entry_data["rr"] < CONFIG["min_rr"]:
+        log.info(f"  {symbol}: SKIP R/R={entry_data['rr']} terlalu kecil (min={CONFIG['min_rr']})")
+        return None
 
     # ── Estimasi urgency: seberapa cepat koin ini mungkin bergerak ────────────
     # Berdasarkan panjang compression dan kekuatan volume awakening
