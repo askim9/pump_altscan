@@ -77,7 +77,7 @@ CONFIG = {
     # IOTX $117K, THETA $310K terlalu kecil untuk pump 10%+ dalam 24H
     # Referensi chart (TRUMP/PIXEL/ORCA/VVV): semua vol ≥ $5M saat pump
     "min_vol_24h":            500_000,
-    "max_vol_24h":         800_000_000,
+    "max_vol_24h":         80_000_000,
     "pre_filter_vol":         100_000,   # pre-filter dinaikkan ke $100K
 
     # ── price change gate ─────────────────────────────────────────────────────
@@ -182,7 +182,7 @@ CONFIG = {
 #  📋  WHITELIST — 324 coin
 # ══════════════════════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
-   "4USDT", "0GUSDT", "1000BONKUSDT", "1000PEPEUSDT", "1000RATSUSDT",
+      "4USDT", "0GUSDT", "1000BONKUSDT", "1000PEPEUSDT", "1000RATSUSDT",
     "1000SHIBUSDT", "1000XECUSDT", "1INCHUSDT", "1MBABYDOGEUSDT", "2ZUSDT",
     "AAVEUSDT", "ACEUSDT", "ACHUSDT", "ACTUSDT", "ADAUSDT", "AEROUSDT",
     "AGLDUSDT", "AINUSDT", "AIOUSDT", "AIXBTUSDT", "AKTUSDT", "ALCHUSDT",
