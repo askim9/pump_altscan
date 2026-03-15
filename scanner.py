@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v2.5 — PRE-PUMP DETECTION                            ║
+║  PIVOT BOUNCE SCANNER v2.6 — PRE-PUMP DETECTION                            ║
 ║                                                                              ║
 ║  FILOSOFI CORE:                                                              ║
 ║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
@@ -129,7 +129,7 @@ CONFIG = {
                                            # > 3% di bawah comp_low = downtrend sejati, skip
                                            # ≤ 3% = bisa jadi liq sweep sebelum bounce
 
-    # ── POST-PUMP DETECTION GATE (BARU v2.5) ────────────────────────────────
+    # ── POST-PUMP DETECTION GATE (BARU v2.6) ────────────────────────────────
     # Masalah: GAS dan 1MBABYDOGE lolos karena pump sudah terjadi tapi harga
     # kembali ke zona compression (post-pump retracement). Scanner tidak tahu
     # bahwa volume 6H terakhir sudah jauh di atas baseline compression.
@@ -146,7 +146,7 @@ CONFIG = {
     "post_pump_vol_mult":            7.0,   # avg_vol_6h > comp_avg * 7 → skip
     "post_pump_lookback_candles":      6,   # rata-rata 6 candle terakhir
 
-    # ── G3: BREAKOUT GATE (v2.5) ──────────────────────────────────────────────
+    # ── G3: BREAKOUT GATE (v2.6) ──────────────────────────────────────────────
     # Jika harga sekarang sudah > comp_high × 1.03 → coin sedang/sudah breakout.
     # Berbeda dari post_pump (dimensi volume), ini cek posisi harga vs zona.
     "price_above_zone_max":          0.03,  # price_now max 3% di atas comp_high
@@ -656,11 +656,17 @@ def calc_entry_targets(candles, compression_zone):
         t1 = res_levels[0]
         t2 = res_levels[1] if len(res_levels) > 1 else t1 * 1.15
     else:
-        # Fallback: ATR multiplier berbasis panjang compression
+        # Fallback: ATR multiplier berbasis panjang compression.
+        # Coin yang compression sangat panjang (IOTA 256H, BCH 288H) punya ATR
+        # sangat kecil karena sudah flat lama → atr * mult bisa tetap kecil.
+        # Solusi: T1 fallback dijamin minimal 10% dari harga sekarang,
+        # dan T2 minimal 20% — mencerminkan potensi breakout dari compression panjang.
         comp_len  = compression_zone["length"]
         atr_mult  = min(4.0 + comp_len / 48, 10.0)
-        t1 = entry + atr * atr_mult
-        t2 = t1 * 1.20
+        t1_atr    = entry + atr * atr_mult
+        t1_min    = cur * 1.10   # minimum 10% dari harga sekarang
+        t1        = max(t1_atr, t1_min)
+        t2        = max(t1 * 1.20, cur * 1.22)  # minimum 22% dari harga sekarang
 
     # ── FIX: pastikan T1 dan T2 berbeda secara meaningful ────────────────────
     if abs(t2 - t1) / t1 < 0.03:   # jika T1 dan T2 terlalu dekat (< 3% beda)
@@ -685,7 +691,7 @@ def calc_entry_targets(candles, compression_zone):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🔬  FORENSIC PATTERN DETECTORS (v2.5)
+#  🔬  FORENSIC PATTERN DETECTORS (v2.6)
 #  Tiga pola yang TERBUKTI konsisten di XAN/MYX/CUS sebelum pump besar.
 #  Dibuktikan dari analisa candle-by-candle data forensik nyata.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -868,7 +874,7 @@ def master_score(symbol, ticker):
                      f"MA20={ma20_now:.6g} < MA50={ma50_now:.6g}, keduanya turun")
             return None
 
-    # ── Gate: POST-PUMP DETECTION (BARU v2.5) ───────────────────────────────
+    # ── Gate: POST-PUMP DETECTION (BARU v2.6) ───────────────────────────────
     # Masalah dari data nyata (GAS/1MBABYDOGE): pump sudah terjadi, harga koreksi
     # kembali ke zona compression → scanner kirim alert padahal moment sudah lewat.
     #
@@ -958,7 +964,7 @@ def master_score(symbol, ticker):
     liq_sweep    = detect_liquidity_sweep(c1h, comp_low)
     candle_score, candle_label = analyze_candle_structure(c1h[-1])
 
-    # ── Forensic pattern detectors (v2.5) ────────────────────────────────────
+    # ── Forensic pattern detectors (v2.6) ────────────────────────────────────
     # Tiga pola yang terbukti konsisten sebelum pump besar dari data forensik
     # XAN/CUS/MYX — lebih reliable dari RSI atau candle structure saja.
     higher_lows        = detect_higher_lows(c1h, lookback=4)
@@ -1030,7 +1036,7 @@ def master_score(symbol, ticker):
         score += 5
         score_breakdown.append("Vol compress: +5 (ATR7/ATR30 < 0.75)")
 
-    # ── Bonus forensik v2.5 — terbukti dari data nyata XAN/CUS/MYX ──────────
+    # ── Bonus forensik v2.6 — terbukti dari data nyata XAN/CUS/MYX ──────────
 
     # Higher lows (+8): smart money akumulasi, tidak mau biarkan harga turun
     # Terbukti di semua 3 coin sebelum pump besar
@@ -1069,7 +1075,11 @@ def master_score(symbol, ticker):
 
     # ── Hitung entry & target ─────────────────────────────────────────────────
     entry_data = calc_entry_targets(c1h, compression)
-    if not entry_data or entry_data["t1_pct"] < CONFIG["min_target_pct"]:
+    if not entry_data:
+        log.info(f"  {symbol}: SKIP entry_data gagal dihitung")
+        return None
+    if entry_data["t1_pct"] < CONFIG["min_target_pct"]:
+        log.info(f"  {symbol}: SKIP T1={entry_data['t1_pct']:.1f}% < min_target={CONFIG['min_target_pct']}%")
         return None
 
     # ── Gate: minimum R/R ────────────────────────────────────────────────────
@@ -1159,7 +1169,7 @@ def build_alert(r, rank=None):
     forensic_str = "  " + " · ".join(forensic_checks) if forensic_checks else "  — tidak ada pola akumulasi"
 
     msg = (
-        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.5</b>\n\n"
+        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.6</b>\n\n"
         f"<b>Symbol  :</b> {r['symbol']} [{r['sector']}]\n"
         f"<b>Skor    :</b> {sc}/100  {bar}\n"
         f"<b>Urgency :</b> {r['urgency']}\n\n"
@@ -1230,7 +1240,7 @@ def build_candidate_list(tickers):
     stats         = defaultdict(int)
 
     log.info("=" * 70)
-    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.5")
+    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.6")
     log.info("=" * 70)
 
     for sym in WHITELIST_SYMBOLS:
@@ -1286,7 +1296,7 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v2.5 — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v2.6 — {utc_now()} ===")
 
     tickers = get_all_tickers()
     if not tickers:
@@ -1357,7 +1367,7 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v2.5                            ║")
+    log.info("║  PRE-PUMP SCANNER v2.6                            ║")
     log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
     log.info("║  Target: entry sekarang, TP 1-2 hari (+10-100%)  ║")
     log.info("╚════════════════════════════════════════════════════╝")
