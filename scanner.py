@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v2.4 — PRE-PUMP DETECTION                            ║
+║  PIVOT BOUNCE SCANNER v2.5 — PRE-PUMP DETECTION                            ║
 ║                                                                              ║
 ║  FILOSOFI CORE:                                                              ║
 ║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
@@ -129,7 +129,7 @@ CONFIG = {
                                            # > 3% di bawah comp_low = downtrend sejati, skip
                                            # ≤ 3% = bisa jadi liq sweep sebelum bounce
 
-    # ── POST-PUMP DETECTION GATE (BARU v2.4) ────────────────────────────────
+    # ── POST-PUMP DETECTION GATE (BARU v2.5) ────────────────────────────────
     # Masalah: GAS dan 1MBABYDOGE lolos karena pump sudah terjadi tapi harga
     # kembali ke zona compression (post-pump retracement). Scanner tidak tahu
     # bahwa volume 6H terakhir sudah jauh di atas baseline compression.
@@ -146,7 +146,7 @@ CONFIG = {
     "post_pump_vol_mult":            7.0,   # avg_vol_6h > comp_avg * 7 → skip
     "post_pump_lookback_candles":      6,   # rata-rata 6 candle terakhir
 
-    # ── G3: BREAKOUT GATE (v2.4) ──────────────────────────────────────────────
+    # ── G3: BREAKOUT GATE (v2.5) ──────────────────────────────────────────────
     # Jika harga sekarang sudah > comp_high × 1.03 → coin sedang/sudah breakout.
     # Berbeda dari post_pump (dimensi volume), ini cek posisi harga vs zona.
     "price_above_zone_max":          0.03,  # price_now max 3% di atas comp_high
@@ -685,6 +685,95 @@ def calc_entry_targets(candles, compression_zone):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  🔬  FORENSIC PATTERN DETECTORS (v2.5)
+#  Tiga pola yang TERBUKTI konsisten di XAN/MYX/CUS sebelum pump besar.
+#  Dibuktikan dari analisa candle-by-candle data forensik nyata.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detect_higher_lows(candles, lookback=4):
+    """
+    Higher lows = harga tidak mau turun lebih rendah dari low sebelumnya.
+    Ini tanda smart money akumulasi — ada buyer yang masuk setiap dip.
+
+    Forensik:
+      XAN: lows [0.00713, 0.00730, 0.00720, 0.00736] → YES (toleransi 1.5%) ✅
+      CUS: lows [0.05431, 0.05423, 0.05426] → YES ✅
+      MYX: lows [0.34190, 0.34330, 0.34820, 0.35440] → YES ✅ (naik terus)
+
+    Toleransi 1.5%: coin low-price bergerak 0.3-0.5% per candle, noise lebih
+    besar secara proporsional. Toleransi ketat 0.5% terlalu sensitif.
+    """
+    if len(candles) < lookback:
+        return False
+    recent = candles[-lookback:]
+    lows   = [c["low"] for c in recent]
+    # Higher low dengan toleransi 1.5% untuk absorb noise candle pendek
+    for i in range(1, len(lows)):
+        if lows[i] < lows[i-1] * 0.985:   # toleransi 1.5%
+            return False
+    return True
+
+
+def detect_price_acceleration(candles, lookback=6):
+    """
+    Price acceleration = separuh terakhir window menunjukkan drift positif.
+    Forensik: XAN +2.16%, MYX +4.25%, CUS +1.10% di separuh terakhir.
+
+    Versi relaxed: cukup late drift > 0.3% (positif minimal).
+    Strict (late > early) terlalu ketat karena awal window bisa sudah naik duluan.
+    """
+    if len(candles) < lookback:
+        return False
+    window = candles[-lookback:]
+    half   = len(window) // 2
+    if half < 1:
+        return False
+
+    late_start = window[half]["close"]
+    late_end   = window[-1]["close"]
+
+    if late_start <= 0:
+        return False
+
+    late_drift = (late_end - late_start) / late_start * 100
+    # Separuh terakhir naik minimal 0.3% — price building momentum
+    return late_drift > 0.3
+
+
+def detect_pre_pump_candle(candles):
+    """
+    Candle terakhir sebelum spike menunjukkan bull body signifikan.
+    Terbukti di semua 3 coin: XAN 48% body, CUS 32% body, MYX 57% body.
+
+    Berbeda dari analyze_candle_structure (cek candle terbaru = spike candle),
+    fungsi ini cek candle ke-2 dari belakang = candle SEBELUM spike.
+    Tujuan: konfirmasi bahwa accumulation candle terakhir bullish.
+
+    Return (score, label):
+      +5 jika body bullish ≥ 30% dari range
+      +3 jika close di atas midpoint candle (bullish bias)
+      +0 jika bearish
+    """
+    if len(candles) < 2:
+        return 0, "insufficient data"
+
+    c   = candles[-2]  # candle SEBELUM terbaru (pre-spike candle)
+    rng = c["high"] - c["low"]
+    if rng == 0:
+        return 0, "doji pre-spike"
+
+    body     = c["close"] - c["open"]
+    body_pct = abs(body) / rng
+
+    if body > 0 and body_pct >= 0.30:
+        return 5, f"pre-spike bull body {body_pct*100:.0f}%"
+    elif c["close"] > (c["high"] + c["low"]) / 2:
+        return 3, "pre-spike close above midpoint"
+    else:
+        return 0, "pre-spike bearish"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  🧠  MASTER SCORE — INTI SCANNER v2.0
 # ══════════════════════════════════════════════════════════════════════════════
 def master_score(symbol, ticker):
@@ -779,7 +868,7 @@ def master_score(symbol, ticker):
                      f"MA20={ma20_now:.6g} < MA50={ma50_now:.6g}, keduanya turun")
             return None
 
-    # ── Gate: POST-PUMP DETECTION (BARU v2.4) ───────────────────────────────
+    # ── Gate: POST-PUMP DETECTION (BARU v2.5) ───────────────────────────────
     # Masalah dari data nyata (GAS/1MBABYDOGE): pump sudah terjadi, harga koreksi
     # kembali ke zona compression → scanner kirim alert padahal moment sudah lewat.
     #
@@ -869,6 +958,13 @@ def master_score(symbol, ticker):
     liq_sweep    = detect_liquidity_sweep(c1h, comp_low)
     candle_score, candle_label = analyze_candle_structure(c1h[-1])
 
+    # ── Forensic pattern detectors (v2.5) ────────────────────────────────────
+    # Tiga pola yang terbukti konsisten sebelum pump besar dari data forensik
+    # XAN/CUS/MYX — lebih reliable dari RSI atau candle structure saja.
+    higher_lows        = detect_higher_lows(c1h, lookback=4)
+    price_accel        = detect_price_acceleration(c1h, lookback=6)
+    pre_spike_sc, pre_spike_label = detect_pre_pump_candle(c1h)
+
     # ── SCORING ───────────────────────────────────────────────────────────────
     score = 0
     score_breakdown = []
@@ -934,6 +1030,26 @@ def master_score(symbol, ticker):
         score += 5
         score_breakdown.append("Vol compress: +5 (ATR7/ATR30 < 0.75)")
 
+    # ── Bonus forensik v2.5 — terbukti dari data nyata XAN/CUS/MYX ──────────
+
+    # Higher lows (+8): smart money akumulasi, tidak mau biarkan harga turun
+    # Terbukti di semua 3 coin sebelum pump besar
+    if higher_lows:
+        score += 8
+        score_breakdown.append("Higher lows: +8 (akumulasi terdeteksi)")
+
+    # Price acceleration (+7): momentum membangun, harga naik lebih cepat
+    # CUS: -2.8% → +1.1%, MYX: -1.5% → +4.3% sebelum pump
+    if price_accel:
+        score += 7
+        score_breakdown.append("Price accel: +7 (momentum membangun)")
+
+    # Pre-spike candle bullish (+3 atau +5): candle sebelum spike bull body
+    # XAN: 48%, CUS: 32%, MYX: 57% — semua hijau sebelum meledak
+    if pre_spike_sc > 0:
+        score += pre_spike_sc
+        score_breakdown.append(f"Pre-spike: +{pre_spike_sc} ({pre_spike_label})")
+
     # Penalti: funding sangat negatif
     if funding < -0.001:
         score -= 5
@@ -981,7 +1097,11 @@ def master_score(symbol, ticker):
         "awakening":       awakening,
         "entry":           entry_data,
         "liq_sweep":       liq_sweep,
-        "candle_label":    candle_label,
+        "candle_label":    candle_label,        # struktur candle TERBARU
+        "spike_candle_green": awakening["is_green"],  # warna candle SPIKE (berbeda!)
+        "pre_spike_label": pre_spike_label,     # struktur candle sebelum spike
+        "higher_lows":     higher_lows,
+        "price_accel":     price_accel,
         "rsi":             rsi,
         "vol_compress":    vol_compress,
         "funding":         funding,
@@ -1011,13 +1131,35 @@ def build_alert(r, rank=None):
     rise_warn = (f"⚠️ Sudah naik {r['rise_from_low']*100:.1f}% dari low\n"
                  if r["rise_from_low"] > CONFIG["max_rise_warn_pct"] else "")
 
-    # Format compression info
     comp_days = comp["length"] / 24
     comp_str  = (f"{comp_days:.0f} hari" if comp_days >= 1
                  else f"{comp['length']} jam")
 
+    # ── FIX: pisahkan label spike candle vs candle terbaru ────────────────────
+    # Bug lama: baris "Candle" muncul dua kali dengan makna berbeda — membingungkan.
+    # Sekarang:
+    #   "Candle spike" = kondisi candle yang volume-nya spike (is_green dari awakening)
+    #   "Candle kini"  = struktur candle paling terbaru (candle_label dari analyze_candle_structure)
+    # Keduanya informatif tapi harus jelas konteksnya.
+    spike_candle_str = (
+        f"{'Hijau ✅' if awk['is_green'] else 'Merah ⚠️'}"
+        f"{'  🔥 MEGA SPIKE!' if awk['is_mega'] else ''}"
+    )
+    # Jika spike terjadi di candle terbaru, "candle kini" dan "candle spike" adalah sama
+    spike_is_current = awk["spike_candle"] == 1
+    current_candle_str = r["candle_label"]
+
+    # ── Forensik bonus summary ─────────────────────────────────────────────────
+    forensic_checks = []
+    if r.get("higher_lows"):  forensic_checks.append("Higher lows ✅")
+    if r.get("price_accel"):  forensic_checks.append("Price accel ✅")
+    pre_sc = r.get("pre_spike_label", "")
+    if pre_sc and "bull" in pre_sc: forensic_checks.append("Pre-spike bull ✅")
+    if r.get("liq_sweep"):    forensic_checks.append("Liq sweep ✅")
+    forensic_str = "  " + " · ".join(forensic_checks) if forensic_checks else "  — tidak ada pola akumulasi"
+
     msg = (
-        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.4</b>\n\n"
+        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.5</b>\n\n"
         f"<b>Symbol  :</b> {r['symbol']} [{r['sector']}]\n"
         f"<b>Skor    :</b> {sc}/100  {bar}\n"
         f"<b>Urgency :</b> {r['urgency']}\n\n"
@@ -1031,27 +1173,32 @@ def build_alert(r, rank=None):
         f"{rise_warn}"
         f"\n⚡ <b>VOLUME AWAKENING</b>\n"
         f"  Spike    : {awk['best_mult']:.1f}x rata-rata compression\n"
-        f"  Candle   : {'Hijau ✅' if awk['is_green'] else 'Merah ⚠️'}"
-        f"{'  🔥 MEGA SPIKE!' if awk['is_mega'] else ''}\n"
+        f"  Candle spike : {spike_candle_str}\n"
         f"  RVOL     : {r['rvol']:.1f}x\n"
         f"\n📊 <b>KONDISI TEKNIKAL</b>\n"
-        f"  RSI 1H   : {r['rsi']:.0f} {'(oversold 🟢)' if r['rsi'] < 35 else '(netral)'}\n"
-        f"  Candle   : {r['candle_label']}\n"
-        f"  Liq sweep: {'✅ terdeteksi' if r['liq_sweep'] else '❌ tidak ada'}\n"
-        f"  ATR comp : {'✅' if r['vol_compress'] else '❌'}\n"
-        f"  Funding  : {r['funding']:.5f}\n"
-        f"  Vol 24H  : {vol}  |  Chg: {r['chg_24h']:+.1f}%\n"
+        f"  RSI 1H    : {r['rsi']:.0f} {'(oversold 🟢)' if r['rsi'] < 35 else '(netral)'}\n"
+        f"  Candle kini: {current_candle_str}"
+        f"{' (= spike candle)' if spike_is_current else ''}\n"
+        f"  ATR comp  : {'✅' if r['vol_compress'] else '❌'}\n"
+        f"  Funding   : {r['funding']:.5f}\n"
+        f"  Vol 24H   : {vol}  |  Chg: {r['chg_24h']:+.1f}%\n"
+        f"\n🔬 <b>AKUMULASI (forensik)</b>\n"
+        f"{forensic_str}\n"
     )
 
     if e:
+        vwap_line = f"  VWAP  : ${e['vwap']}\n" if e.get("vwap") else ""
+        poc_line  = f"  POC   : ${e['z2']}\n"   if e.get("z2")   else ""
         msg += (
             f"\n━━━━━━━━━━━━━━━━━━━━\n"
             f"📍 <b>ENTRY &amp; TARGET</b>\n"
+            f"{vwap_line}"
+            f"{poc_line}"
             f"  Entry : ${e['entry']}\n"
             f"  SL    : ${e['sl']}  (-{e['sl_pct']:.1f}%)\n"
             f"  T1    : ${e['t1']}  (+{e['t1_pct']:.1f}%)\n"
             f"  T2    : ${e['t2']}  (+{e['t2_pct']:.1f}%)\n"
-            f"  R/R   : 1:{e['rr']}\n"
+            f"  R/R   : 1:{e['rr']}  |  ATR: ${e['atr']}\n"
         )
 
     msg += f"\n🕐 {utc_now()}\n<i>⚠️ Bukan financial advice. DYOR.</i>"
@@ -1083,7 +1230,7 @@ def build_candidate_list(tickers):
     stats         = defaultdict(int)
 
     log.info("=" * 70)
-    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.4")
+    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.5")
     log.info("=" * 70)
 
     for sym in WHITELIST_SYMBOLS:
@@ -1139,7 +1286,7 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v2.4 — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v2.5 — {utc_now()} ===")
 
     tickers = get_all_tickers()
     if not tickers:
@@ -1210,7 +1357,7 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v2.4                            ║")
+    log.info("║  PRE-PUMP SCANNER v2.5                            ║")
     log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
     log.info("║  Target: entry sekarang, TP 1-2 hari (+10-100%)  ║")
     log.info("╚════════════════════════════════════════════════════╝")
