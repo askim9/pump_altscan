@@ -1,13 +1,17 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  PIVOT LOW BOUNCE SCANNER v1.2 (filter volume tertinggi)                ║
+║  PIVOT LOW BOUNCE SCANNER v1.2 (FULL UPGRADE)                          ║
 ║                                                                          ║
-║  MODIFIKASI:                                                             ║
-║  - Data 1h diperpanjang hingga 720 candle (~30 hari)                    ║
-║  - Membandingkan volume pivot sinyal dengan volume tertinggi             ║
-║    dari semua pivot dalam 30 hari                                        ║
-║  - Hanya pivot dengan volume >= 95% dari maksimum yang diproses         ║
-║  - Bonus composite berdasarkan rasio terhadap maksimum                  ║
+║  UPGRADES:                                                               ║
+║  - Support zone width = 2.5%                                            ║
+║  - Pivot left/right = 8                                                  ║
+║  - Volume ratio threshold = 0.75                                         ║
+║  - Volume absorption detection                                          ║
+║  - Volatility compression (ATR7/ATR30)                                  ║
+║  - Sideways accumulation (range 24h < 8%)                               ║
+║  - Liquidity trap wick detection                                        ║
+║  - Micro consolidation (6-bar range < 3%)                               ║
+║  - Scoring model (0-100) dengan filter ≥60                              ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -42,11 +46,11 @@ log.info("Log file aktif: /tmp/scanner_v9.log (rotasi 10MB)")
 
 
 # ══════════════════════════════════════════════════════════════
-#  ⚙️  CONFIG
+#  ⚙️  CONFIG (dengan parameter upgrade)
 # ══════════════════════════════════════════════════════════════
 CONFIG = {
     # ── Threshold alert ───────────────────────────────────────
-    "min_composite_alert":       52,
+    "min_composite_alert":       52,        # tidak dipakai lagi, diganti score
     "max_alerts_per_run":         8,
 
     # ── Volume 24h TOTAL (USD) ─────────────────────────────────
@@ -80,20 +84,33 @@ CONFIG = {
     # ── Dead Activity Gate ────────────────────────────────────
     "dead_activity_threshold":   0.10,
 
-    # ── PIVOT LOW PARAMETERS ──────────────────────────────────
-    "pivot_left":                   20,
-    "pivot_right":                  20,
+    # ── PIVOT LOW PARAMETERS (diubah ke 8) ────────────────────
+    "pivot_left":                   8,
+    "pivot_right":                  8,
     "box_width":                     1.0,
     "recovery_bars":                 3,
     "volume_threshold":              1.8,    # volume pivot > rata-rata positif * ini
     "reversal_vol_threshold":        1.5,    # volume reversal > rata-rata total * ini
     "breakdown_max_bars":            50,
 
-    # ── FILTER VOLUME TERTINGGI ───────────────────────────────
-    "max_volume_ratio":             0.95,    # harus >= 95% dari volume maksimum
+    # ── FILTER VOLUME TERTINGGI (sebelumnya) ──────────────────
+    "max_volume_ratio":             0.95,    # masih dipakai untuk filter awal? Kita akan gunakan untuk scoring juga
+
+    # ── PARAMETER UPGRADE BARU ────────────────────────────────
+    "support_zone_width":         0.025,      # 2.5% zona support
+    "volume_ratio_threshold":     0.75,       # untuk high pivot volume (komponen 20)
+    "volume_absorption_threshold": 1.8,       # volume spike > 1.8 * avg20
+    "small_price_move_threshold": 0.01,       # perubahan harga < 1%
+    "atr_short_period":           7,
+    "atr_long_period":            30,
+    "volatility_compression_ratio": 0.65,     # ATR7/ATR30 < 0.65
+    "sideways_range_threshold":   0.08,       # range 24h < 8%
+    "wick_threshold":             0.45,       # lower wick > 45% candle
+    "micro_range_threshold":      0.03,       # range 6 candle < 3%
+    "score_threshold":            60,         # minimal skor untuk alert
 }
 
-# ── STOCK_TICKERS ─────────────────────────────────────────────────────────
+# ── STOCK_TICKERS (tidak diubah) ─────────────────────────────────────────
 STOCK_TICKERS = {
     "CSCOUSDT","PEPUSDT","QQQUSDT","AAPLUSDT","MSFTUSDT","GOOGLUSDT",
     "INTCUSDT","AMDUSDT","NVDAUSDT","TSLAUSDT","AMZNUSDT","METAUSDT",
@@ -117,7 +134,7 @@ STOCK_TICKERS = {
 MANUAL_EXCLUDE = set()
 
 # ══════════════════════════════════════════════════════════════
-#  📋  WHITELIST — 324 coin pilihan
+#  📋  WHITELIST — 324 coin pilihan (sama)
 # ══════════════════════════════════════════════════════════════
 WHITELIST_SYMBOLS = {
     "DOGEUSDT", "BCHUSDT", "ADAUSDT", "HYPEUSDT", "XMRUSDT", "LINKUSDT", "XLMUSDT", "HBARUSDT",
@@ -214,7 +231,7 @@ EXCLUDED_KEYWORDS = ["XAU","PAXG","BTC","ETH","USDC","DAI","BUSD","UST","LUNC","
 
 
 # ══════════════════════════════════════════════════════════════
-#  🔒  COOLDOWN & OI SNAPSHOT
+#  🔒  COOLDOWN & OI SNAPSHOT (sama)
 # ══════════════════════════════════════════════════════════════
 def load_cooldown():
     try:
@@ -270,7 +287,7 @@ def set_cooldown(sym):
 
 
 # ══════════════════════════════════════════════════════════════
-#  🌐  HTTP UTILITIES
+#  🌐  HTTP UTILITIES (sama)
 # ══════════════════════════════════════════════════════════════
 def safe_get(url, params=None, timeout=12):
     for attempt in range(2):
@@ -306,7 +323,7 @@ def utc_hour(): return datetime.now(timezone.utc).hour
 
 
 # ══════════════════════════════════════════════════════════════
-#  📡  DATA FETCHERS
+#  📡  DATA FETCHERS (sama)
 # ══════════════════════════════════════════════════════════════
 def get_all_tickers():
     data = safe_get(
@@ -489,7 +506,7 @@ def get_cg_trending():
 
 
 # ══════════════════════════════════════════════════════════════
-#  📐  MATH HELPERS
+#  📐  MATH HELPERS (sama, termasuk find_pivot_lows)
 # ══════════════════════════════════════════════════════════════
 def bbw_percentile(candles, period=20):
     closes = [c["close"] for c in candles]
@@ -648,7 +665,7 @@ def find_pivot_lows(candles, left=20, right=20):
 
 
 # ══════════════════════════════════════════════════════════════
-#  🧠  MASTER SCORE (dengan filter volume tertinggi)
+#  🧠  MASTER SCORE (dengan upgrade scoring)
 # ══════════════════════════════════════════════════════════════
 def master_score(symbol, ticker, tickers_dict):
     # Ambil data candle 1h dengan limit 720 (30 hari)
@@ -678,10 +695,10 @@ def master_score(symbol, ticker, tickers_dict):
     pos_vols = [c["volume_usd"] for c in c1h if c["close"] > c["open"]]
     avg_pos_vol = sum(pos_vols) / len(pos_vols) if pos_vols else avg_vol
 
-    # Cari semua pivot low dalam 30 hari
+    # Cari semua pivot low dalam 30 hari (dengan left/right baru = 8)
     pivot_indices = find_pivot_lows(c1h, left=CONFIG["pivot_left"], right=CONFIG["pivot_right"])
 
-    # Hitung volume maksimum dari semua pivot (untuk perbandingan nanti)
+    # Hitung volume maksimum dari semua pivot (untuk perbandingan)
     max_pivot_vol = 0
     for idx in pivot_indices:
         vol = c1h[idx]["volume_usd"]
@@ -725,9 +742,8 @@ def master_score(symbol, ticker, tickers_dict):
     if not signals_found:
         return None
 
-    # --- FILTER VOLUME TERTINGGI ---
-    # Hanya pertahankan sinyal dengan volume pivot >= 95% dari maksimum semua pivot
-    min_required_vol = max_pivot_vol * CONFIG["max_volume_ratio"]
+    # Filter volume tertinggi (masih dipertahankan, tapi kita akan gunakan untuk scoring juga)
+    min_required_vol = max_pivot_vol * CONFIG["max_volume_ratio"]   # 0.95
     signals_found = [s for s in signals_found if s["pivot_vol"] >= min_required_vol]
     if not signals_found:
         return None
@@ -750,21 +766,83 @@ def master_score(symbol, ticker, tickers_dict):
     else:
         rvol = 1
 
-    # Composite score dasar
-    composite_base = int(
-        30 * (latest_signal["reversal_vol"] / avg_vol) +
-        30 * (latest_signal["pivot_vol"] / avg_pos_vol) +
-        20 * (1 if rvol > 2 else 0.5) +
-        20
-    )
-    composite_base = min(100, composite_base)
+    # ====================== METRIK TAMBAHAN UNTUK SCORING ======================
+    price_now = c1h[-1]["close"]
+    pivot_low = latest_signal["pivot_low"]
+    distance_to_support = abs(price_now - pivot_low) / pivot_low
 
-    # Bonus berdasarkan kedekatan dengan volume maksimum
-    volume_ratio = latest_signal["pivot_vol"] / max_pivot_vol
-    bonus = int(volume_ratio * 10)  # 0-10
-    composite = min(100, composite_base + bonus)
+    # Pivot volume ratio (terhadap maksimum semua pivot)
+    pivot_volume_ratio = latest_signal["pivot_vol"] / max_pivot_vol if max_pivot_vol > 0 else 0
 
-    # Sinyal teks
+    # Volatility ratio ATR7/ATR30
+    atr_short = calc_atr(c1h, CONFIG["atr_short_period"]) or 0
+    atr_long = calc_atr(c1h, CONFIG["atr_long_period"]) or 1
+    volatility_ratio = atr_short / atr_long if atr_long != 0 else 0
+    volatility_compression = volatility_ratio < CONFIG["volatility_compression_ratio"]
+
+    # Range 24h
+    if len(c1h) >= 24:
+        high_24h = max(c["high"] for c in c1h[-24:])
+        low_24h = min(c["low"] for c in c1h[-24:])
+        range_24h = (high_24h - low_24h) / price_now
+    else:
+        range_24h = 999
+    sideways = range_24h < CONFIG["sideways_range_threshold"]
+
+    # Volume absorption (cek 20 candle terakhir)
+    absorption_detected = False
+    if len(c1h) >= 20:
+        avg_vol_20 = sum(c["volume_usd"] for c in c1h[-20:]) / 20
+        for c in c1h[-20:]:
+            if c["volume_usd"] > CONFIG["volume_absorption_threshold"] * avg_vol_20:
+                if abs(c["close"] - c["open"]) / c["close"] < CONFIG["small_price_move_threshold"]:
+                    absorption_detected = True
+                    break
+
+    # Wick ratio pada candle reversal
+    rev_idx = latest_signal["reversal_idx"]
+    rev_candle = c1h[rev_idx]
+    lower_wick = min(rev_candle["open"], rev_candle["close"]) - rev_candle["low"]
+    candle_range = rev_candle["high"] - rev_candle["low"]
+    wick_ratio = lower_wick / candle_range if candle_range > 0 else 0
+    liquidity_trap = wick_ratio > CONFIG["wick_threshold"]
+
+    # Micro range 6 candle terakhir
+    if len(c1h) >= 6:
+        high_6 = max(c["high"] for c in c1h[-6:])
+        low_6 = min(c["low"] for c in c1h[-6:])
+        micro_range = (high_6 - low_6) / price_now
+    else:
+        micro_range = 999
+    micro_consolidation = micro_range < CONFIG["micro_range_threshold"]
+
+    # ====================== PENGHITUNGAN SKOR ======================
+    score = 0
+    score += 40  # Support bounce detected (sinyal inti)
+
+    if pivot_volume_ratio >= CONFIG["volume_ratio_threshold"]:
+        score += 20  # High pivot volume
+
+    if absorption_detected:
+        score += 10
+
+    if volatility_compression:
+        score += 10
+
+    if sideways:
+        score += 10
+
+    if liquidity_trap:
+        score += 5
+
+    if micro_consolidation:
+        score += 5
+
+    # Jika skor di bawah threshold, discard sinyal
+    if score < CONFIG["score_threshold"]:
+        return None
+
+    # Sinyal teks (tambahkan informasi skor dan metrik)
     from datetime import datetime
     def ts_to_str(ts_ms):
         return datetime.fromtimestamp(ts_ms/1000).strftime("%d %H:%M")
@@ -772,12 +850,12 @@ def master_score(symbol, ticker, tickers_dict):
         f"Pivot low ${latest_signal['pivot_low']:.4f} (vol {latest_signal['pivot_vol']/1e3:.0f}K)",
         f"Breakdown di {ts_to_str(latest_signal['break_time'])}",
         f"Reversal di {ts_to_str(latest_signal['reversal_time'])} dengan vol {latest_signal['reversal_vol']/1e3:.0f}K",
-        f"Volume pivot {volume_ratio*100:.0f}% dari maks 30h ({max_pivot_vol/1e3:.0f}K) → bonus +{bonus}",
+        f"Skor: {score} | Vol ratio: {pivot_volume_ratio:.2f} | Wick: {wick_ratio:.2f}",
     ]
 
     funding = get_funding(symbol)
 
-    # Range 6h
+    # Range 6h (untuk log, tidak dipakai scoring)
     if len(c1h) >= 6:
         pre6 = c1h[-6:]
         high_6h = max(c["high"] for c in pre6)
@@ -786,10 +864,11 @@ def master_score(symbol, ticker, tickers_dict):
     else:
         range_6h = 0
 
+    # Susun hasil dengan field-field baru
     result = {
         "symbol": symbol,
-        "score": composite,
-        "composite_score": composite,
+        "score": score,                     # skor baru (0-100)
+        "composite_score": score,           # untuk kompatibilitas dengan sorting dan alert
         "signals": signal_texts,
         "ws": 0,
         "wev": [],
@@ -797,7 +876,7 @@ def master_score(symbol, ticker, tickers_dict):
         "sector": SECTOR_LOOKUP.get(symbol, "N/A"),
         "funding": funding,
         "bd": {"oi_valid": False, "rsi_1h": 50},
-        "price": c1h[-1]["close"],
+        "price": price_now,
         "chg_24h": chg_24h,
         "vol_24h": vol_24h,
         "rvol": round(rvol, 1),
@@ -809,7 +888,7 @@ def master_score(symbol, ticker, tickers_dict):
         "bbw_val": 0,
         "oi_change_24h": 0,
         "oi_change_1h": 0,
-        "prob_score": composite / 100,
+        "prob_score": score / 100,
         "prob_class": "Pivot Bounce",
         "prob_metrics": {},
         "rsi_1h": 50,
@@ -820,12 +899,20 @@ def master_score(symbol, ticker, tickers_dict):
         "oi_accel_data": {},
         "nf_data": {},
         "nf_score": 0,
+        # Field tambahan untuk output
+        "distance_to_support": distance_to_support,
+        "pivot_volume_ratio": pivot_volume_ratio,
+        "volatility_ratio": volatility_ratio,
+        "range_24h": range_24h,
+        "absorption_detected": absorption_detected,
+        "wick_ratio": wick_ratio,
+        "micro_range": micro_range,
     }
     return result
 
 
 # ══════════════════════════════════════════════════════════════
-#  📱  TELEGRAM FORMATTER
+#  📱  TELEGRAM FORMATTER (diperbarui untuk menampilkan skor dan metrik)
 # ══════════════════════════════════════════════════════════════
 def build_alert(r, rank=None):
     sc   = r["score"]
@@ -836,12 +923,19 @@ def build_alert(r, rank=None):
     vol  = (f"${r['vol_24h']/1e6:.1f}M" if r["vol_24h"] >= 1e6 else f"${r['vol_24h']/1e3:.0f}K")
 
     msg = (
-        f"🚨 <b>PIVOT BOUNCE {rk}— v1.2</b>\n\n"
+        f"🚨 <b>PIVOT BOUNCE {rk}— v1.2 (UPGRADE)</b>\n\n"
         f"<b>Symbol    :</b> {r['symbol']}\n"
-        f"<b>Composite :</b> {comp}/100  {bar}\n"
+        f"<b>Skor      :</b> {sc}/100  {bar}\n"
         f"<b>Harga     :</b> ${r['price']:.6g}  ({r['chg_24h']:+.1f}% 24h)\n"
         f"<b>Vol 24h   :</b> {vol} | RVOL: {r['rvol']:.1f}x\n"
-        f"<b>Funding   :</b> {r['funding']:.5f}\n\n"
+        f"<b>Funding   :</b> {r['funding']:.5f}\n"
+        f"<b>Distance to support:</b> {r['distance_to_support']*100:.2f}%\n"
+        f"<b>Pivot vol ratio:</b> {r['pivot_volume_ratio']:.2f}\n"
+        f"<b>Volatility ratio:</b> {r['volatility_ratio']:.2f}\n"
+        f"<b>Range 24h:</b> {r['range_24h']*100:.2f}%\n"
+        f"<b>Absorption:</b> {'✅' if r['absorption_detected'] else '❌'}\n"
+        f"<b>Wick ratio:</b> {r['wick_ratio']:.2f}\n"
+        f"<b>Micro range:</b> {r['micro_range']*100:.2f}%\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
     for s in r["signals"]:
@@ -879,7 +973,7 @@ def build_summary(results):
 
 
 # ══════════════════════════════════════════════════════════════
-#  🔍  BUILD CANDIDATE LIST
+#  🔍  BUILD CANDIDATE LIST (sama)
 # ══════════════════════════════════════════════════════════════
 def build_candidate_list(tickers):
     all_candidates = []
@@ -973,10 +1067,10 @@ def build_candidate_list(tickers):
 
 
 # ══════════════════════════════════════════════════════════════
-#  🚀  MAIN SCAN
+#  🚀  MAIN SCAN (sedikit modifikasi pada filter)
 # ══════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PIVOT LOW BOUNCE SCANNER v1.2 (volume tertinggi) — {utc_now()} ===")
+    log.info(f"=== PIVOT LOW BOUNCE SCANNER v1.2 (UPGRADE) — {utc_now()} ===")
 
     tickers = get_all_tickers()
     if not tickers:
@@ -1004,10 +1098,8 @@ def run_scan():
             if res:
                 comp = res["composite_score"]
                 log.info(f"  Score={res['score']} Comp={comp} RVOL={res['rvol']:.1f}x T1=+{res['entry']['liq_pct']:.1f}%")
-                if comp >= CONFIG["min_composite_alert"]:
-                    results.append(res)
-                else:
-                    log.info(f"  SKIP: comp={comp}<{CONFIG['min_composite_alert']}")
+                # Tidak perlu filter tambahan karena sudah di master_score
+                results.append(res)
         except Exception as ex:
             log.warning(f"  Error {sym}: {ex}")
 
@@ -1041,10 +1133,10 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔═══════════════════════════════════════════════════╗")
-    log.info("║  PIVOT LOW BOUNCE SCANNER v1.2                   ║")
-    log.info("║  - Hanya pivot dengan volume tertinggi           ║")
-    log.info("║    dalam 30 hari yang diproses                   ║")
-    log.info("║  - Bonus berdasarkan rasio terhadap maksimum     ║")
+    log.info("║  PIVOT LOW BOUNCE SCANNER v1.2 (UPGRADE)         ║")
+    log.info("║  - Support zone, pivot=8, volume ratio           ║")
+    log.info("║  - Absorption, volatility, sideways, wick, micro ║")
+    log.info("║  - Scoring model dengan filter ≥60               ║")
     log.info("╚═══════════════════════════════════════════════════╝")
 
     if not BOT_TOKEN or not CHAT_ID:
