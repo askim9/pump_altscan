@@ -724,25 +724,27 @@ def calc_entry_targets(candles, compression_zone):
 def detect_higher_lows(candles, lookback=4):
     """
     Higher lows = harga tidak mau turun lebih rendah dari low sebelumnya.
-    Ini tanda smart money akumulasi — ada buyer yang masuk setiap dip.
+    Tanda smart money akumulasi — ada buyer yang masuk setiap dip.
 
     Forensik:
-      XAN: lows [0.00713, 0.00730, 0.00720, 0.00736] → YES (toleransi 1.5%) ✅
+      XAN: lows [0.00713, 0.00730, 0.00720, 0.00736] → YES ✅
       CUS: lows [0.05431, 0.05423, 0.05426] → YES ✅
-      MYX: lows [0.34190, 0.34330, 0.34820, 0.35440] → YES ✅ (naik terus)
+      MYX: lows [0.34190, 0.34330, 0.34820, 0.35440] → YES ✅
 
-    Toleransi 1.5%: coin low-price bergerak 0.3-0.5% per candle, noise lebih
-    besar secara proporsional. Toleransi ketat 0.5% terlalu sensitif.
+    Logic: minimal 2 dari 3 transisi menunjukkan higher low (toleransi 0.5%).
+    Versi lama mensyaratkan SEMUA transisi naik — terlalu ketat untuk
+    sideways market yang punya oscillasi kecil normal.
+    Contoh: IOTA oscillasi [0.170, 0.168, 0.172, 0.171] = valid higher low
+    (satu dip kecil -1.2% lalu kembali naik = akumulasi tetap valid).
     """
     if len(candles) < lookback:
         return False
     recent = candles[-lookback:]
     lows   = [c["low"] for c in recent]
-    # Higher low dengan toleransi 1.5% untuk absorb noise candle pendek
-    for i in range(1, len(lows)):
-        if lows[i] < lows[i-1] * 0.985:   # toleransi 1.5%
-            return False
-    return True
+    # Minimal 2 dari 3 transisi harus higher low (toleransi 0.5%)
+    hl_count = sum(1 for i in range(1, len(lows))
+                   if lows[i] >= lows[i-1] * 0.995)
+    return hl_count >= 2
 
 
 def detect_price_acceleration(candles, lookback=6):
@@ -1359,7 +1361,7 @@ def run_scan():
         time.sleep(CONFIG["sleep_coins"])
 
     # Sort: utamakan score tinggi, tapi juga pertimbangkan rise_from_low rendah
-    results.sort(key=lambda x: (x["score"] - x["rise_from_low"] * 50), reverse=True)
+    results.sort(key=lambda x: x["score"], reverse=True)
 
     log.info(f"\n{'='*70}")
     log.info(f"✅ Total sinyal lolos: {len(results)} coin")
