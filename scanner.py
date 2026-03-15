@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v2.3 — PRE-PUMP DETECTION                            ║
+║  PIVOT BOUNCE SCANNER v2.4 — PRE-PUMP DETECTION                            ║
 ║                                                                              ║
 ║  FILOSOFI CORE:                                                              ║
 ║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
@@ -94,17 +94,14 @@ CONFIG = {
     "min_sl_pct":                  2.5,   # minimum SL distance 2.5% dari entry
 
     # ── candle config ─────────────────────────────────────────────────────────
-    "candle_limit_1h":            504,     # 21 hari data 1H
+    "candle_limit_1h":            720,     # 30 hari data 1H — dinaikkan agar XAN-type (flat 40 hari) terdeteksi
 
     # ── COMPRESSION DETECTION ─────────────────────────────────────────────────
     # Fase 1: coin harus "tidur pulas" minimal 36 jam di range sempit
     "compression_min_candles":     36,     # minimal 36 candle 1H = 1.5 hari
-    "compression_max_candles":    480,     # maksimal 480 candle = 20 hari (lebih dari itu terlalu tua)
-    "compression_range_pct":      0.10,    # range high-low selama compression < 10%
-                                           # Dinaikkan dari 7% → 10% agar menangkap PIXEL-type
-                                           # (low-price coin terlihat "flat" di chart tapi range
-                                           # nominalnya bisa 15-20% — 10% adalah sweet spot)
-    "compression_lookback":       480,     # cari zona compression dalam 480 candle terakhir
+    "compression_max_candles":    672,     # naik 480 → 672 (28 hari), selaras lookback
+    "compression_range_pct":      0.10,    # range high-low < 10%
+    "compression_lookback":       672,     # 28 hari — selaras dengan candle_limit_1h baru
 
     # ── VOLUME AWAKENING ──────────────────────────────────────────────────────
     # Fase 2: volume mulai "bangun" — ini trigger utama
@@ -132,6 +129,28 @@ CONFIG = {
                                            # > 3% di bawah comp_low = downtrend sejati, skip
                                            # ≤ 3% = bisa jadi liq sweep sebelum bounce
 
+    # ── POST-PUMP DETECTION GATE (BARU v2.4) ────────────────────────────────
+    # Masalah: GAS dan 1MBABYDOGE lolos karena pump sudah terjadi tapi harga
+    # kembali ke zona compression (post-pump retracement). Scanner tidak tahu
+    # bahwa volume 6H terakhir sudah jauh di atas baseline compression.
+    #
+    # Solusi: jika rata-rata volume 6H terakhir > comp_avg_vol × 7,
+    # berarti coin sedang di fase aktif/post-pump, bukan pre-pump.
+    #
+    # Dikalibrasi dari data forensik nyata:
+    #   XAN window alert  : avg_vol_6h = 3.4x comp_avg → LOLOS ✅
+    #   MYX window alert  : avg_vol_6h = 1.2x comp_avg → LOLOS ✅
+    #   GAS post-pump     : avg_vol_6h = 150x comp_avg → SKIP  ✅
+    #   BABYDOGE post-pump: avg_vol_6h = 8.0x comp_avg → SKIP  ✅
+    #   Threshold 7x memberikan margin aman di antara keduanya
+    "post_pump_vol_mult":            7.0,   # avg_vol_6h > comp_avg * 7 → skip
+    "post_pump_lookback_candles":      6,   # rata-rata 6 candle terakhir
+
+    # ── G3: BREAKOUT GATE (v2.4) ──────────────────────────────────────────────
+    # Jika harga sekarang sudah > comp_high × 1.03 → coin sedang/sudah breakout.
+    # Berbeda dari post_pump (dimensi volume), ini cek posisi harga vs zona.
+    "price_above_zone_max":          0.03,  # price_now max 3% di atas comp_high
+
     # ── LIQUIDITY SWEEP BONUS ─────────────────────────────────────────────────
     # Bonus score jika ada false breakdown sebelum recovery (pola ORCA/PIXEL)
     "liq_sweep_lookback":           12,    # cek 12 candle terakhir
@@ -141,9 +160,7 @@ CONFIG = {
     "funding_gate":              -0.003,   # buang jika funding < -0.003
 
     # ── ENTRY / TARGET ────────────────────────────────────────────────────────
-    "atr_sl_mult":                  1.5,   # SL = entry - atr_sl_mult * ATR
-    "atr_t1_mult":                  2.5,   # T1 fallback = entry + atr_t1_mult * ATR
-    "max_sl_pct":                  12.0,   # batas support tidak lebih dari 12% dari harga
+    "atr_sl_mult":                  1.2,
     "min_target_pct":               8.0,
 
     # ── SCORING THRESHOLD ─────────────────────────────────────────────────────
@@ -594,135 +611,60 @@ def analyze_candle_structure(candle):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🎯  ENTRY & TARGET CALCULATOR (v2.3 — transplant dari base script)
-#
-#  Upgrade dari v2.2:
-#  - Entry menggunakan VWAP zone + POC (lebih kontekstual dari high zona saja)
-#  - SL berbasis ATR dari bawah support, bukan bawah compression zone saja
-#  - Resistance target dari swing high historis 7 hari, bukan hanya 10 hari flat
-#  - Semua fix v2.1 tetap: min SL 2.5%, T1≠T2 minimum 3% beda
+#  🎯  ENTRY & TARGET CALCULATOR
 # ══════════════════════════════════════════════════════════════════════════════
-def calc_vwap_zone(candles):
-    """VWAP dan lower deviation band — zona support dinamis."""
-    cum_tv, cum_v = 0, 0
-    vals = []
-    for c in candles:
-        tp      = (c["high"] + c["low"] + c["close"]) / 3
-        cum_tv += tp * c["volume"]
-        cum_v  += c["volume"]
-        vals.append(cum_tv / cum_v if cum_v else tp)
-    if not vals:
-        return None, None
-    vwap = vals[-1]
-    devs = [abs(candles[i]["close"] - vals[i]) for i in range(len(candles))]
-    std  = math.sqrt(sum(d ** 2 for d in devs) / len(devs)) if devs else 0
-    z1   = vwap - 1.5 * std
-    cur  = candles[-1]["close"]
-    if z1 >= cur:
-        z1 = cur * 0.97
-    return vwap, z1
-
-def calc_poc(candles):
-    """Point of Control — level harga dengan volume tertinggi (Volume Profile)."""
-    if not candles:
-        return None
-    pmin  = min(c["low"]  for c in candles)
-    pmax  = max(c["high"] for c in candles)
-    if pmax == pmin:
-        return candles[-1]["close"]
-    bsize   = (pmax - pmin) / 40
-    vol_bkt = defaultdict(float)
-    for c in candles:
-        lo = int((c["low"]  - pmin) / bsize)
-        hi = int((c["high"] - pmin) / bsize)
-        nb = max(hi - lo + 1, 1)
-        for b in range(lo, hi + 1):
-            vol_bkt[b] += c["volume"] / nb
-    poc_b = max(vol_bkt, key=vol_bkt.get) if vol_bkt else 20
-    return pmin + (poc_b + 0.5) * bsize
-
-def find_resistance_targets(candles_1h, cur):
-    """
-    Cari level resistance historis dari swing high 7 hari terakhir.
-    Level yang punya minimal 2 touches dalam periode itu dianggap valid.
-    """
-    if len(candles_1h) < 24:
-        return cur * 1.10, cur * 1.18
-
-    recent = candles_1h[-168:]   # 7 hari
-    res_levels = []
-    min_t = cur * (1 + CONFIG["min_target_pct"] / 100)
-
-    for i in range(2, len(recent) - 2):
-        h = recent[i]["high"]
-        if h <= min_t:
-            continue
-        touches = sum(
-            1 for c in recent
-            if abs(c["high"] - h) / h < 0.015 or abs(c["low"] - h) / h < 0.015
-        )
-        if touches >= 2:
-            res_levels.append((h, touches))
-
-    if not res_levels:
-        return round(cur * 1.10, 8), round(cur * 1.18, 8)
-
-    res_levels.sort(key=lambda x: x[0])
-    t1 = res_levels[0][0]
-    t2 = res_levels[1][0] if len(res_levels) > 1 else t1 * 1.08
-    return round(t1, 8), round(t2, 8)
-
 def calc_entry_targets(candles, compression_zone):
-    """
-    Hitung entry, SL, T1, T2 menggunakan VWAP + POC sebagai support dinamis.
-    Lebih akurat dari versi v2.2 yang hanya pakai batas atas compression zone.
-    """
-    cur = candles[-1]["close"]
-    atr = calc_atr(candles, 14) or cur * 0.02
+    cur  = candles[-1]["close"]
+    atr  = calc_atr(candles[-48:], 14) or cur * 0.025
 
-    # ── Entry: pakai VWAP zone + POC (dari 24H terakhir) ─────────────────────
-    recent_24h   = candles[-24:] if len(candles) >= 24 else candles
-    vwap, z1     = calc_vwap_zone(recent_24h)
-    poc_src      = candles[-48:] if len(candles) >= 48 else candles
-    z2           = calc_poc(poc_src)
+    # Entry: dalam zona compression atau sedikit di atasnya
+    comp_mid = (compression_zone["high"] + compression_zone["low"]) / 2
+    entry    = min(cur * 0.999, compression_zone["high"] * 1.005)
 
-    if not z2 or z2 >= cur:
-        z2 = cur * 0.97
+    # Stop loss: di bawah low compression dengan buffer ATR
+    sl = compression_zone["low"] - atr * CONFIG["atr_sl_mult"]
+    sl = max(sl, entry * 0.85)  # batas atas: SL maksimal 15% dari entry
 
-    support = max(z1 or cur * 0.97, z2)
-    if support >= cur:
-        support = cur * 0.96
-
-    # Pastikan support tidak terlalu jauh dari harga
-    max_dist = CONFIG.get("max_sl_pct", 12.0) / 100
-    if (cur - support) / cur > max_dist:
-        support = cur * (1 - max_dist + 0.02)
-
-    entry = min(support * 1.002, cur * 0.998)
-
-    # ── SL: di bawah support dengan buffer ATR ───────────────────────────────
-    sl = max(entry - CONFIG["atr_sl_mult"] * atr, entry * 0.88)
-
-    # FIX v2.1: minimum SL distance 2.5% agar tidak terlalu sempit
+    # ── FIX: enforce minimum SL distance ─────────────────────────────────────
+    # Untuk coin harga sangat rendah, ATR tiny → SL bisa 0.01% dari entry
+    # yang tidak masuk akal. Minimum 2.5% agar ada ruang gerak yang wajar.
     min_sl_dist = entry * (CONFIG["min_sl_pct"] / 100)
     if (entry - sl) < min_sl_dist:
         sl = entry - min_sl_dist
 
     sl_pct = round((entry - sl) / entry * 100, 1)
 
-    # ── Target: resistance historis atau ATR fallback ────────────────────────
-    t1_res, t2_res = find_resistance_targets(candles, cur)
-    t1_atr         = entry + CONFIG["atr_t1_mult"] * atr
+    # Target: cari resistance historis di atas harga
+    recent     = candles[-240:]  # 10 hari
+    res_levels = []
+    min_target = cur * (1 + CONFIG["min_target_pct"] / 100)
 
-    t1 = t1_res if t1_res > cur * 1.05 else t1_atr
-    if t1 <= cur * 1.05:
-        t1 = cur * 1.10
+    for i in range(3, len(recent) - 3):
+        h = recent[i]["high"]
+        if h <= min_target:
+            continue
+        # Minimal 2 touches dalam 10 hari
+        touches = sum(
+            1 for c in recent
+            if abs(c["high"] - h) / h < 0.02 or abs(c["low"] - h) / h < 0.02
+        )
+        if touches >= 2:
+            res_levels.append(h)
 
-    t2 = t2_res if t2_res > t1 * 1.02 else t1 * 1.08
+    if res_levels:
+        res_levels.sort()
+        t1 = res_levels[0]
+        t2 = res_levels[1] if len(res_levels) > 1 else t1 * 1.15
+    else:
+        # Fallback: ATR multiplier berbasis panjang compression
+        comp_len  = compression_zone["length"]
+        atr_mult  = min(4.0 + comp_len / 48, 10.0)
+        t1 = entry + atr * atr_mult
+        t2 = t1 * 1.20
 
-    # FIX v2.1: pastikan T1 dan T2 berbeda minimal 3%
-    if abs(t2 - t1) / t1 < 0.03:
-        t2 = t1 * 1.15
+    # ── FIX: pastikan T1 dan T2 berbeda secara meaningful ────────────────────
+    if abs(t2 - t1) / t1 < 0.03:   # jika T1 dan T2 terlalu dekat (< 3% beda)
+        t2 = t1 * 1.15             # paksa T2 = T1 + 15%
 
     t1_pct = round((t1 - cur) / cur * 100, 1)
     t2_pct = round((t2 - cur) / cur * 100, 1)
@@ -739,9 +681,6 @@ def calc_entry_targets(candles, compression_zone):
         "t2_pct": t2_pct,
         "rr":     rr,
         "atr":    round(atr, 8),
-        "vwap":   round(vwap, 8) if vwap else 0,
-        "z1":     round(z1, 8)   if z1   else 0,
-        "z2":     round(z2, 8),
     }
 
 
@@ -840,7 +779,44 @@ def master_score(symbol, ticker):
                      f"MA20={ma20_now:.6g} < MA50={ma50_now:.6g}, keduanya turun")
             return None
 
-    # ── FASE 2: Deteksi Volume Awakening ─────────────────────────────────────
+    # ── Gate: POST-PUMP DETECTION (BARU v2.4) ───────────────────────────────
+    # Masalah dari data nyata (GAS/1MBABYDOGE): pump sudah terjadi, harga koreksi
+    # kembali ke zona compression → scanner kirim alert padahal moment sudah lewat.
+    #
+    # Cara deteksi: rata-rata volume 6 candle terakhir vs rata-rata volume selama
+    # compression. Jika rasionya > 7x, berarti kita sedang di fase aktif/post-pump:
+    #
+    #   XAN window alert  : avg_6h = 3.4x comp_avg → LOLOS (pre-pump) ✅
+    #   MYX window alert  : avg_6h = 1.2x comp_avg → LOLOS (pre-pump) ✅
+    #   GAS post-pump     : avg_6h = 150x comp_avg → SKIP  (sudah pump) ✅
+    #   BABYDOGE post-pump: avg_6h = 8.0x comp_avg → SKIP  (sudah pump) ✅
+    #
+    # Gate ini bekerja di DIMENSI VOLUME, berbeda dari gate price level (G3/G4).
+    # Tidak ada tabrakan karena mengukur hal yang berbeda.
+    if len(c1h) >= CONFIG["post_pump_lookback_candles"]:
+        lookback_n   = CONFIG["post_pump_lookback_candles"]
+        avg_vol_last = sum(c["volume_usd"] for c in c1h[-lookback_n:]) / lookback_n
+        post_pump_ratio = avg_vol_last / comp_avg_vol if comp_avg_vol > 0 else 0
+
+        if post_pump_ratio > CONFIG["post_pump_vol_mult"]:
+            log.info(f"  {symbol}: SKIP post-pump — avg_vol_last_{lookback_n}h = "
+                     f"{post_pump_ratio:.1f}x comp_avg "
+                     f"(threshold={CONFIG['post_pump_vol_mult']}x) — coin sudah di fase aktif")
+            return None
+
+    # ── Gate: G3 BREAKOUT — harga belum keluar dari zona ke atas ─────────────
+    # Forensik XAN/MYX: alert harus keluar saat harga masih di dalam zona.
+    # Jika price_now sudah > comp_high × 1.03 → breakout sedang/sudah terjadi.
+    # Tidak bertabrakan dengan post_pump gate karena:
+    #   - post_pump cek VOLUME historis 6H (dimensi volume)
+    #   - G3 cek HARGA sekarang vs batas atas zona (dimensi harga/posisi)
+    # Coin yang baru mulai breakout (1 candle) akan di-skip G3.
+    # Coin yang sudah pump lama lalu balik ke zona: lolos G3, di-skip post_pump.
+    price_above_zone_pct = (price_now - comp_high) / comp_high if price_now > comp_high else 0
+    if price_above_zone_pct > CONFIG.get("price_above_zone_max", 0.03):
+        log.info(f"  {symbol}: SKIP G3 breakout — harga {price_above_zone_pct*100:.1f}% "
+                 f"di atas comp_high ${comp_high:.6g}")
+        return None
     awakening = detect_volume_awakening(c1h, comp_avg_vol)
 
     if not awakening["detected"]:
@@ -1041,7 +1017,7 @@ def build_alert(r, rank=None):
                  else f"{comp['length']} jam")
 
     msg = (
-        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.3</b>\n\n"
+        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.4</b>\n\n"
         f"<b>Symbol  :</b> {r['symbol']} [{r['sector']}]\n"
         f"<b>Skor    :</b> {sc}/100  {bar}\n"
         f"<b>Urgency :</b> {r['urgency']}\n\n"
@@ -1068,19 +1044,14 @@ def build_alert(r, rank=None):
     )
 
     if e:
-        # Tampilkan VWAP dan POC jika tersedia (dari calc_entry_targets v2.3)
-        vwap_line = f"  VWAP  : ${e['vwap']}\n" if e.get("vwap") else ""
-        poc_line  = f"  POC   : ${e['z2']}\n"    if e.get("z2")   else ""
         msg += (
             f"\n━━━━━━━━━━━━━━━━━━━━\n"
             f"📍 <b>ENTRY &amp; TARGET</b>\n"
-            f"{vwap_line}"
-            f"{poc_line}"
             f"  Entry : ${e['entry']}\n"
             f"  SL    : ${e['sl']}  (-{e['sl_pct']:.1f}%)\n"
             f"  T1    : ${e['t1']}  (+{e['t1_pct']:.1f}%)\n"
             f"  T2    : ${e['t2']}  (+{e['t2_pct']:.1f}%)\n"
-            f"  R/R   : 1:{e['rr']}  |  ATR: ${e['atr']}\n"
+            f"  R/R   : 1:{e['rr']}\n"
         )
 
     msg += f"\n🕐 {utc_now()}\n<i>⚠️ Bukan financial advice. DYOR.</i>"
@@ -1112,7 +1083,7 @@ def build_candidate_list(tickers):
     stats         = defaultdict(int)
 
     log.info("=" * 70)
-    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.3")
+    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.4")
     log.info("=" * 70)
 
     for sym in WHITELIST_SYMBOLS:
@@ -1168,7 +1139,7 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v2.3 — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v2.4 — {utc_now()} ===")
 
     tickers = get_all_tickers()
     if not tickers:
@@ -1239,7 +1210,7 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v2.3                            ║")
+    log.info("║  PRE-PUMP SCANNER v2.4                            ║")
     log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
     log.info("║  Target: entry sekarang, TP 1-2 hari (+10-100%)  ║")
     log.info("╚════════════════════════════════════════════════════╝")
