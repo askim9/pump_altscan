@@ -77,7 +77,7 @@ CONFIG = {
     # IOTX $117K, THETA $310K terlalu kecil untuk pump 10%+ dalam 24H
     # Referensi chart (TRUMP/PIXEL/ORCA/VVV): semua vol ≥ $5M saat pump
     "min_vol_24h":            500_000,
-    "max_vol_24h":         800_000_000,
+    "max_vol_24h":         9_000_000_000,
     "pre_filter_vol":         100_000,   # pre-filter dinaikkan ke $100K
 
     # ── price change gate ─────────────────────────────────────────────────────
