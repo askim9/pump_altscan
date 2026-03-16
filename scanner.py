@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v2.7 — PRE-PUMP DETECTION                            ║
+║  PIVOT BOUNCE SCANNER v2.6 — PRE-PUMP DETECTION                            ║
 ║                                                                              ║
 ║  FILOSOFI CORE:                                                              ║
 ║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
@@ -66,7 +66,6 @@ _root.setLevel(logging.INFO)
 _ch = logging.StreamHandler();  _ch.setFormatter(_fmt); _root.addHandler(_ch)
 _fh = _lh.RotatingFileHandler("/tmp/scanner_v2.log", maxBytes=10*1024*1024, backupCount=3)
 _fh.setFormatter(_fmt); _root.addHandler(_fh)
-_log_file = "/tmp/scanner_v2.log"  # dipakai di run_scan untuk grep hints
 log = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -98,26 +97,11 @@ CONFIG = {
     "candle_limit_1h":            720,     # 30 hari data 1H — dinaikkan agar XAN-type (flat 40 hari) terdeteksi
 
     # ── COMPRESSION DETECTION ─────────────────────────────────────────────────
-    "compression_min_candles":     36,
-    "compression_max_candles":    672,
-    # Dinaikkan 10% → 11% berdasarkan forensik BLAST:
-    # BLAST range = 10.23% → terlewat karena threshold terlalu ketat.
-    # Margin 0.23% terlalu tipis untuk coin harga rendah yang spread-nya besar.
-    "compression_range_pct":      0.11,
-    "compression_lookback":       672,
-
-    # ── CHOPPY RANGE FILTER (v2.7) ────────────────────────────────────────────
-    # Masalah dari evaluasi BEAT/BANK: compression zone terdeteksi padahal
-    # candle-candle di dalamnya besar (range per candle 3-4%). Ini bukan
-    # compression yang valid — ini "choppy sideways" tanpa akumulasi bersih.
-    #
-    # Kalibrasi dari data forensik:
-    #   IOTA (valid): avg candle range = 0.74%
-    #   ARPA (valid): avg candle range = 0.84%
-    #   NOT  (valid): avg candle range = 1.23%
-    #   BEAT (false): avg candle range = 3.64%  ← 3x lebih besar
-    # Threshold 2.0% memberikan margin aman tanpa membuang valid signal.
-    "compression_choppy_max":      0.02,  # avg (high-low)/low per candle < 2%
+    # Fase 1: coin harus "tidur pulas" minimal 36 jam di range sempit
+    "compression_min_candles":     36,     # minimal 36 candle 1H = 1.5 hari
+    "compression_max_candles":    672,     # naik 480 → 672 (28 hari), selaras lookback
+    "compression_range_pct":      0.10,    # range high-low < 10%
+    "compression_lookback":       672,     # 28 hari — selaras dengan candle_limit_1h baru
 
     # ── VOLUME AWAKENING ──────────────────────────────────────────────────────
     # Fase 2: volume mulai "bangun" — ini trigger utama
@@ -137,21 +121,15 @@ CONFIG = {
     "support_proximity_pct":       0.06,   # harga dalam 6% dari support historis
 
     # ── TREND CONTEXT GATE ────────────────────────────────────────────────────
-    "price_below_zone_max":        0.03,
+    # Bug dari data nyata (ALCH/BANK): coin downtrend bisa punya compression
+    # historis + spike hijau tapi harga masih di bawah zona → false signal.
+    # Solusi: cek apakah harga sekarang MASIH di dalam atau di atas zona compression.
+    # Jika harga di bawah comp_low lebih dari threshold ini → downtrend aktif, skip.
+    "price_below_zone_max":        0.03,   # toleransi harga di bawah zona: max 3%
+                                           # > 3% di bawah comp_low = downtrend sejati, skip
+                                           # ≤ 3% = bisa jadi liq sweep sebelum bounce
 
-    # ── MA BEARISH BYPASS (v2.7) ──────────────────────────────────────────────
-    # Masalah dari evaluasi ARIA dan PEPE: MA bearish gate aktif karena ada
-    # downtrend sebelum compression, padahal harga sudah reversal dan bounce.
-    # Fix: bypass gate jika harga sudah naik > threshold dari recent low 72H.
-    # Ini membuktikan reversal nyata sudah terjadi — bukan downtrend aktif.
-    #
-    # Threshold 15% dipilih karena:
-    #   ARIA: turun -24% lalu bounce +28% → bypass aktif ✅
-    #   ALCH (false): turun tapi belum bounce → gate tetap aktif ✅
-    "ma_bypass_bounce_pct":        0.15,   # bypass MA gate jika bounce > 15% dari recent low
-    "ma_bypass_lookback":          72,     # cek recent low dalam 72 candle (3 hari)
-
-    # ── POST-PUMP DETECTION GATE (BARU v2.7) ────────────────────────────────
+    # ── POST-PUMP DETECTION GATE (BARU v2.6) ────────────────────────────────
     # Masalah: GAS dan 1MBABYDOGE lolos karena pump sudah terjadi tapi harga
     # kembali ke zona compression (post-pump retracement). Scanner tidak tahu
     # bahwa volume 6H terakhir sudah jauh di atas baseline compression.
@@ -168,7 +146,7 @@ CONFIG = {
     "post_pump_vol_mult":            7.0,   # avg_vol_6h > comp_avg * 7 → skip
     "post_pump_lookback_candles":      6,   # rata-rata 6 candle terakhir
 
-    # ── G3: BREAKOUT GATE (v2.7) ──────────────────────────────────────────────
+    # ── G3: BREAKOUT GATE (v2.6) ──────────────────────────────────────────────
     # Jika harga sekarang sudah > comp_high × 1.03 → coin sedang/sudah breakout.
     # Berbeda dari post_pump (dimensi volume), ini cek posisi harga vs zona.
     "price_above_zone_max":          0.03,  # price_now max 3% di atas comp_high
@@ -193,7 +171,7 @@ CONFIG = {
     "score_threshold":             52,     # minimal skor untuk alert
 
     # ── OPERASIONAL ───────────────────────────────────────────────────────────
-    "max_alerts_per_run":           6,
+    "max_alerts_per_run":           8,   # dinaikkan v2.8: VET/CRO score 82 tidak masuk karena limit 6
     "alert_cooldown_sec":        3600,
     "sleep_coins":                 0.7,
     "sleep_error":                 3.0,
@@ -208,66 +186,61 @@ WHITELIST_SYMBOLS = {
     "1000SHIBUSDT", "1000XECUSDT", "1INCHUSDT", "1MBABYDOGEUSDT", "2ZUSDT",
     "AAVEUSDT", "ACEUSDT", "ACHUSDT", "ACTUSDT", "ADAUSDT", "AEROUSDT",
     "AGLDUSDT", "AINUSDT", "AIOUSDT", "AIXBTUSDT", "AKTUSDT", "ALCHUSDT",
-    "ALGOUSDT", "ALICEUSDT", "ALLOUSDT", "ALTUSDT",  "ANIMEUSDT",
+    "ALGOUSDT", "ALICEUSDT", "ALLOUSDT", "ALTUSDT", "ANIMEUSDT",
     "ANKRUSDT", "APEUSDT", "APEXUSDT", "API3USDT", "APRUSDT", "APTUSDT",
     "ARUSDT", "ARBUSDT", "ARCUSDT", "ARIAUSDT", "ARKUSDT", "ARKMUSDT",
     "ARPAUSDT", "ASTERUSDT", "ATUSDT", "ATHUSDT", "ATOMUSDT", "AUCTIONUSDT",
     "AVAXUSDT", "AVNTUSDT", "AWEUSDT", "AXLUSDT", "AXSUSDT", "AZTECUSDT",
-    "BUSDT", "B2USDT", "BABAUSDT", "BABYUSDT", "BANUSDT", "BANANAUSDT",
-    "GUSDTUSDT", "GUSDT",  # GUSDT ditambah v2.7 — pump +65% 16 Mar terlewat karena tidak di whitelist
+    "BUSDT", "B2USDT", "BABYUSDT", "BANUSDT", "BANANAUSDT",
     "BANANAS31USDT", "BANKUSDT", "BARDUSDT", "BATUSDT", "BCHUSDT", "BEATUSDT",
     "BERAUSDT", "BGBUSDT", "BIGTIMEUSDT", "BIOUSDT", "BIRBUSDT", "BLASTUSDT",
     "BLESSUSDT", "BLURUSDT", "BNBUSDT", "BOMEUSDT", "BRETTUSDT", "BREVUSDT",
     "BROCCOLIUSDT", "BSVUSDT", "BTCUSDT", "BULLAUSDT", "C98USDT", "CAKEUSDT",
     "CCUSDT", "CELOUSDT", "CFXUSDT", "CHILLGUYUSDT", "CHZUSDT", "CLUSDT",
-    "CLANKERUSDT", "CLOUSDT", "COAIUSDT", "COINUSDT", "COMPUSDT", "COOKIEUSDT",
+    "CLANKERUSDT", "CLOUSDT", "COAIUSDT", "COMPUSDT", "COOKIEUSDT",
     "COWUSDT", "CRCLUSDT", "CROUSDT", "CROSSUSDT", "CRVUSDT", "CTKUSDT",
     "CVCUSDT", "CVXUSDT", "CYBERUSDT", "CYSUSDT", "DASHUSDT", "DEEPUSDT",
     "DENTUSDT", "DEXEUSDT", "DOGEUSDT", "DOLOUSDT", "DOODUSDT", "DOTUSDT",
     "DRIFTUSDT", "DYDXUSDT", "DYMUSDT", "EGLDUSDT", "EIGENUSDT", "ENAUSDT",
     "ENJUSDT", "ENSUSDT", "ENSOUSDT", "EPICUSDT", "ESPUSDT", "ETCUSDT",
-    "ETHUSDT", "ETHFIUSDT", "EURUSDUSDT", "FUSDT", "FARTCOINUSDT", "FETUSDT",
+    "ETHUSDT", "ETHFIUSDT", "FUSDT", "FARTCOINUSDT", "FETUSDT",
     "FFUSDT", "FIDAUSDT", "FILUSDT", "FLOKIUSDT", "FLUIDUSDT", "FOGOUSDT",
-    "FOLKSUSDT", "FORMUSDT", "GALAUSDT", "GASUSDT", "GBPUSDUSDT", "GIGGLEUSDT",
-    "GLMUSDT", "GMTUSDT", "GMXUSDT", "GOATUSDT", "GPSUSDT", "GRASSUSDT",
+    "FOLKSUSDT", "FORMUSDT", "GALAUSDT", "GASUSDT", "GIGGLEUSDT",
+    "GLMUSDT", "GMTUSDT", "GMXUSDT", "GOATUSDT", "GPSUSDT", "GRASSUSDT", "GUSDT",
     "GRIFFAINUSDT", "GRTUSDT", "GUNUSDT", "GWEIUSDT", "HUSDT", "HBARUSDT",
-    "HEIUSDT", "HEMIUSDT", "HMSTRUSDT", "HOLOUSDT", "HOMEUSDT", "HOODUSDT",
-    "HYPEUSDT", "HYPERUSDT", "ICNTUSDT", "ICPUSDT", "IDOLUSDT", "ILVUSDT",
-    "IMXUSDT", "INITUSDT", "INJUSDT", "INTCUSDT", "INXUSDT", "IOUSDT",
+    "HEIUSDT", "HEMIUSDT", "HMSTRUSDT", "HOLOUSDT", "HOMEUSDT",     "HYPEUSDT", "HYPERUSDT", "ICNTUSDT", "ICPUSDT", "IDOLUSDT", "ILVUSDT",
+    "IMXUSDT", "INITUSDT", "INJUSDT", "INXUSDT", "IOUSDT",
     "IOTAUSDT", "IOTXUSDT", "IPUSDT", "JASMYUSDT", "JCTUSDT", "JSTUSDT",
     "JTOUSDT", "JUPUSDT", "KAIAUSDT", "KAITOUSDT", "KASUSDT", "KAVAUSDT",
-    "BONKUSDT", "KERNELUSDT", "KGENUSDT", "KITEUSDT", "PEPEUSDT", "SHIBUSDT",
+    "kBONKUSDT", "KERNELUSDT", "KGENUSDT", "KITEUSDT", "kPEPEUSDT", "kSHIBUSDT",
     "LAUSDT", "LABUSDT", "LAYERUSDT", "LDOUSDT", "LIGHTUSDT", "LINEAUSDT",
     "LINKUSDT", "LITUSDT", "LPTUSDT", "LSKUSDT", "LTCUSDT", "LUNAUSDT",
     "LUNCUSDT", "LYNUSDT", "MUSDT", "MAGICUSDT", "MAGMAUSDT", "MANAUSDT",
     "MANTAUSDT", "MANTRAUSDT", "MASKUSDT", "MAVUSDT", "MAVIAUSDT", "MBOXUSDT",
     "MEUSDT", "MEGAUSDT", "MELANIAUSDT", "MEMEUSDT", "MERLUSDT", "METUSDT",
-    "MEWUSDT", "MINAUSDT", "MMTUSDT", "MNTUSDT", "MONUSDT",
-    "MOODENGUSDT", "MORPHOUSDT", "MOVEUSDT", "MOVRUSDT",  "MSTRUSDT",
-    "MUUSDT", "MUBARAKUSDT", "MYXUSDT", "NAORISUSDT", "NEARUSDT", "NEIROCTOUSDT",
+    "METAUSDT", "MEWUSDT", "MINAUSDT", "MMTUSDT", "MNTUSDT", "MONUSDT",
+    "MOODENGUSDT", "MORPHOUSDT", "MOVEUSDT", "MOVRUSDT",     "MUUSDT", "MUBARAKUSDT", "MYXUSDT", "NAORISUSDT", "NEARUSDT", "NEIROCTOUSDT",
     "NEOUSDT", "NEWTUSDT", "NILUSDT", "NMRUSDT", "NOMUSDT", "NOTUSDT",
     "NXPCUSDT", "ONDOUSDT", "ONGUSDT", "ONTUSDT", "OPUSDT", "OPENUSDT",
-    "OPNUSDT", "ORCAUSDT", "ORDIUSDT", "OXTUSDT", "PARTIUSDT", "PAXGUSDT",
-    "PENDLEUSDT", "PENGUUSDT", "PEOPLEUSDT", "PEPEUSDT", "PHAUSDT", "PIEVERSEUSDT",
-    "PIPPINUSDT", "PLTRUSDT", "PLUMEUSDT", "PNUTUSDT", "POLUSDT", "POLYXUSDT",
+    "OPNUSDT", "ORCAUSDT", "ORDIUSDT", "OXTUSDT", "PARTIUSDT",     "PENDLEUSDT", "PENGUUSDT", "PEOPLEUSDT", "PEPEUSDT", "PHAUSDT", "PIEVERSEUSDT",
+    "PIPPINUSDT", "PLUMEUSDT", "PNUTUSDT", "POLUSDT", "POLYXUSDT",
     "POPCATUSDT", "POWERUSDT", "PROMPTUSDT", "PROVEUSDT", "PUMPUSDT", "PURRUSDT",
-    "PYTHUSDT", "QUSDT", "QNTUSDT", "QQQUSDT", "RAVEUSDT", "RAYUSDT", "RDDTUSDT",
-    "RECALLUSDT", "RENDERUSDT", "RESOLVUSDT", "REZUSDT", "RIVERUSDT", "ROBOUSDT",
+    "PYTHUSDT", "QUSDT", "QNTUSDT", "RAVEUSDT", "RAYUSDT",     "RECALLUSDT", "RENDERUSDT", "RESOLVUSDT", "REZUSDT", "RIVERUSDT", "ROBOUSDT",
     "ROSEUSDT", "RPLUSDT", "RSRUSDT", "RUNEUSDT", "SUSDT", "SAGAUSDT", "SAHARAUSDT",
     "SANDUSDT", "SAPIENUSDT", "SEIUSDT", "SENTUSDT", "SHIBUSDT", "SIGNUSDT",
     "SIRENUSDT", "SKHYNIXUSDT", "SKRUSDT", "SKYUSDT", "SKYAIUSDT", "SLPUSDT",
     "SNXUSDT", "SOLUSDT", "SOMIUSDT", "SONICUSDT", "SOONUSDT", "SOPHUSDT",
     "SPACEUSDT", "SPKUSDT", "SPXUSDT", "SQDUSDT", "SSVUSDT",
-    "STABLEUSDT", "STBLUSDT", "STEEMUSDT", "STOUSDT", "STRKUSDT", "STXUSDT",
+    "STBLUSDT", "STEEMUSDT", "STOUSDT", "STRKUSDT", "STXUSDT",
     "SUIUSDT", "SUNUSDT", "SUPERUSDT", "SUSHIUSDT", "SYRUPUSDT", "TUSDT",
     "TACUSDT", "TAGUSDT", "TAIKOUSDT", "TAOUSDT", "THEUSDT", "THETAUSDT",
     "TIAUSDT", "TNSRUSDT", "TONUSDT", "TOSHIUSDT", "TOWNSUSDT", "TRBUSDT",
     "TRIAUSDT", "TRUMPUSDT", "TRXUSDT", "TURBOUSDT", "UAIUSDT", "UBUSDT",
-    "UMAUSDT", "UNIUSDT", "USUSDT", "USDCUSDT", "USDKRWUSDT", "USELESSUSDT",
+    "UMAUSDT", "UNIUSDT", "USUSDT", "USDKRWUSDT", "USELESSUSDT",
     "USUALUSDT", "VANAUSDT", "VANRYUSDT", "VETUSDT", "VINEUSDT", "VIRTUALUSDT",
     "VTHOUSDT", "VVVUSDT", "WUSDT", "WALUSDT", "WAXPUSDT", "WCTUSDT", "WETUSDT",
-    "WIFUSDT", "WLDUSDT", "WLFIUSDT", "WOOUSDT", "WTIUSDT", "XAGUSDT", "XAIUSDT",
-    "XAUTUSDT", "XCUUSDT", "XDCUSDT", "XLMUSDT", "XMRUSDT", "XPDUSDT", "XPINUSDT",
+    "WIFUSDT", "WLDUSDT", "WLFIUSDT", "WOOUSDT", "WTIUSDT", "XAIUSDT",
+"XCUUSDT", "XDCUSDT", "XLMUSDT", "XMRUSDT", "XPDUSDT", "XPINUSDT",
     "XPLUSDT", "XRPUSDT", "XTZUSDT", "XVGUSDT", "YGGUSDT", "YZYUSDT", "ZAMAUSDT",
     "ZBTUSDT", "ZECUSDT", "ZENUSDT", "ZEREBROUSDT", "ZETAUSDT", "ZILUSDT",
     "ZKUSDT", "ZKCUSDT", "ZKJUSDT", "ZKPUSDT", "ZORAUSDT", "ZROUSDT",
@@ -519,19 +492,6 @@ def find_compression_zone(candles):
         zone_candles = scan_slice[start:end+1]
         avg_vol = sum(c["volume_usd"] for c in zone_candles) / length
 
-        # ── CHOPPY FILTER (v2.7) ─────────────────────────────────────────────
-        # Zona dengan range keseluruhan < 10% tetap bisa berisi candle-candle
-        # besar secara individual ("choppy sideways"). Ini bukan compression
-        # sejati. Kalibrasi dari forensik: BEAT avg_candle_range = 3.64% (false),
-        # valid coins (IOTA/ARPA/NOT) semua < 1.5%. Threshold 2.0% aman.
-        choppy_max = cfg.get("compression_choppy_max", 0.02)
-        avg_candle_range = sum(
-            (c["high"] - c["low"]) / c["low"]
-            for c in zone_candles if c["low"] > 0
-        ) / length
-        if avg_candle_range > choppy_max:
-            continue  # zona terlalu choppy, cari zona lain
-
         # Hitung "age" — berapa candle dari akhir zona ke candle terkini
         age = (n - 1) - end  # 0 = zona berakhir di candle terbaru
 
@@ -540,16 +500,15 @@ def find_compression_zone(candles):
 
         if best is None or quality > best["quality"]:
             best = {
-                "start_idx":   start,
-                "end_idx":     end,
-                "low":         zone_low,
-                "high":        zone_high,
-                "length":      length,
-                "avg_vol":     avg_vol,
+                "start_idx":  start,
+                "end_idx":    end,
+                "low":        zone_low,
+                "high":       zone_high,
+                "length":     length,
+                "avg_vol":    avg_vol,
                 "age_candles": age,
-                "quality":     quality,
-                "range_pct":   (zone_high - zone_low) / zone_low,
-                "avg_candle_range": avg_candle_range,
+                "quality":    quality,
+                "range_pct":  (zone_high - zone_low) / zone_low,
             }
 
         # Setelah menemukan zona valid, geser end ke awal zona untuk efisiensi
@@ -753,7 +712,7 @@ def calc_entry_targets(candles, compression_zone):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🔬  FORENSIC PATTERN DETECTORS (v2.7)
+#  🔬  FORENSIC PATTERN DETECTORS (v2.6)
 #  Tiga pola yang TERBUKTI konsisten di XAN/MYX/CUS sebelum pump besar.
 #  Dibuktikan dari analisa candle-by-candle data forensik nyata.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -932,28 +891,11 @@ def master_score(symbol, ticker):
         ma_bearish   = ma_gap > 0.025 and ma20_falling and ma50_falling
 
         if ma_bearish:
-            # ── MA BYPASS (v2.7) — jika sudah bounce kuat dari recent low ────
-            # Masalah: ARIA dan PEPE punya downtrend sebelum compression, sehingga
-            # MA bearish gate aktif padahal harga sudah reversal dan bounce jauh.
-            # Jika harga sudah naik > 15% dari recent low 72H, reversal nyata
-            # sudah terjadi — MA bearish dari downtrend lama tidak relevan lagi.
-            bypass_pct  = CONFIG.get("ma_bypass_bounce_pct", 0.15)
-            bypass_look = CONFIG.get("ma_bypass_lookback", 72)
-            recent_candles = c1h[-min(bypass_look, len(c1h)):]
-            recent_low  = min(c["low"] for c in recent_candles)
-            bounce_pct  = (price_now - recent_low) / recent_low if recent_low > 0 else 0
-            ma_bypassed = bounce_pct >= bypass_pct
+            log.info(f"  {symbol}: SKIP MA bearish — gap MA={ma_gap*100:.1f}% > 2.5%, "
+                     f"MA20={ma20_now:.6g} < MA50={ma50_now:.6g}, keduanya turun")
+            return None
 
-            if ma_bypassed:
-                log.info(f"  {symbol}: MA bearish (gap={ma_gap*100:.1f}%) tapi BYPASS "
-                         f"— bounce {bounce_pct*100:.1f}% dari recent low "
-                         f"(threshold={bypass_pct*100:.0f}%) → lanjut analisa")
-            else:
-                log.info(f"  {symbol}: SKIP MA bearish — gap={ma_gap*100:.1f}% > 2.5%, "
-                         f"bounce {bounce_pct*100:.1f}% < {bypass_pct*100:.0f}% threshold")
-                return None
-
-    # ── Gate: POST-PUMP DETECTION (BARU v2.7) ───────────────────────────────
+    # ── Gate: POST-PUMP DETECTION (BARU v2.6) ───────────────────────────────
     # Masalah dari data nyata (GAS/1MBABYDOGE): pump sudah terjadi, harga koreksi
     # kembali ke zona compression → scanner kirim alert padahal moment sudah lewat.
     #
@@ -1043,7 +985,7 @@ def master_score(symbol, ticker):
     liq_sweep    = detect_liquidity_sweep(c1h, comp_low)
     candle_score, candle_label = analyze_candle_structure(c1h[-1])
 
-    # ── Forensic pattern detectors (v2.7) ────────────────────────────────────
+    # ── Forensic pattern detectors (v2.6) ────────────────────────────────────
     # Tiga pola yang terbukti konsisten sebelum pump besar dari data forensik
     # XAN/CUS/MYX — lebih reliable dari RSI atau candle structure saja.
     higher_lows        = detect_higher_lows(c1h, lookback=4)
@@ -1115,7 +1057,7 @@ def master_score(symbol, ticker):
         score += 5
         score_breakdown.append("Vol compress: +5 (ATR7/ATR30 < 0.75)")
 
-    # ── Bonus forensik v2.7 — terbukti dari data nyata XAN/CUS/MYX ──────────
+    # ── Bonus forensik v2.6 — terbukti dari data nyata XAN/CUS/MYX ──────────
 
     # Higher lows (+8): smart money akumulasi, tidak mau biarkan harga turun
     # Terbukti di semua 3 coin sebelum pump besar
@@ -1248,7 +1190,7 @@ def build_alert(r, rank=None):
     forensic_str = "  " + " · ".join(forensic_checks) if forensic_checks else "  — tidak ada pola akumulasi"
 
     msg = (
-        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.7</b>\n\n"
+        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.6</b>\n\n"
         f"<b>Symbol  :</b> {r['symbol']} [{r['sector']}]\n"
         f"<b>Skor    :</b> {sc}/100  {bar}\n"
         f"<b>Urgency :</b> {r['urgency']}\n\n"
@@ -1316,15 +1258,13 @@ def build_summary(results):
 def build_candidate_list(tickers):
     candidates    = []
     not_found     = []
-    vol_high_list = []   # simpan list untuk analisa
-    chg_ext_list  = []
     stats         = defaultdict(int)
 
     log.info("=" * 70)
-    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.7")
+    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.6")
     log.info("=" * 70)
 
-    for sym in sorted(WHITELIST_SYMBOLS):
+    for sym in WHITELIST_SYMBOLS:
         if sym in MANUAL_EXCLUDE:
             stats["manual_exclude"] += 1
             continue
@@ -1349,11 +1289,9 @@ def build_candidate_list(tickers):
             continue
         if vol > CONFIG["max_vol_24h"]:
             stats["vol_too_high"] += 1
-            vol_high_list.append((sym, vol))
             continue
         if abs(chg) > CONFIG["gate_chg_24h_max"]:
             stats["change_extreme"] += 1
-            chg_ext_list.append((sym, chg))
             continue
         if price <= 0:
             stats["invalid_price"] += 1
@@ -1361,27 +1299,15 @@ def build_candidate_list(tickers):
 
         candidates.append((sym, t))
 
-    total     = len(WHITELIST_SYMBOLS)
+    total    = len(WHITELIST_SYMBOLS)
     will_scan = len(candidates)
-    filtered  = total - will_scan - len(not_found)
 
-    log.info(f"\n📊 Pre-filter summary:")
-    log.info(f"   Whitelist total  : {total} coin")
-    log.info(f"   Akan di-scan     : {will_scan} coin ({will_scan/total*100:.0f}%)")
-    log.info(f"   Tidak di Bitget  : {len(not_found)} coin")
-    log.info(f"   Cooldown aktif   : {stats['cooldown']} coin")
-    log.info(f"   Vol < ${CONFIG['pre_filter_vol']/1e3:.0f}K  : {stats['vol_too_low']} coin")
-    log.info(f"   Vol > ${CONFIG['max_vol_24h']/1e9:.1f}B  : {stats['vol_too_high']} coin"
-             + (f" → {', '.join(f'{s}(${v/1e6:.0f}M)' for s,v in vol_high_list[:5])}" if vol_high_list else ""))
-    log.info(f"   Chg > ±{CONFIG['gate_chg_24h_max']:.0f}%    : {stats['change_extreme']} coin"
-             + (f" → {', '.join(f'{s}({c:+.0f}%)' for s,c in chg_ext_list[:5])}" if chg_ext_list else ""))
-    if stats['manual_exclude']:
-        log.info(f"   Manual exclude   : {stats['manual_exclude']} coin")
-    if not_found and len(not_found) <= 15:
-        log.info(f"   Tidak di Bitget  : {', '.join(not_found)}")
-    elif not_found:
-        log.info(f"   Tidak di Bitget (top 10): {', '.join(not_found[:10])}")
-    log.info(f"\n   ⏱️  Est. waktu scan: ~{will_scan * CONFIG['sleep_coins'] / 60:.1f} menit")
+    log.info(f"\n📊 Pre-filter: {will_scan}/{total} coin akan di-scan")
+    log.info(f"   Cooldown: {stats['cooldown']} | Vol rendah: {stats['vol_too_low']} | "
+             f"Vol tinggi: {stats['vol_too_high']} | Chg ekstrem: {stats['change_extreme']}")
+    if not_found:
+        log.info(f"   Tidak di Bitget: {len(not_found)} coin")
+    log.info(f"   ⏱️  Est. waktu: ~{will_scan * CONFIG['sleep_coins'] / 60:.1f} menit")
     log.info("=" * 70)
 
     return candidates
@@ -1391,7 +1317,7 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v2.7 — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v2.6 — {utc_now()} ===")
 
     tickers = get_all_tickers()
     if not tickers:
@@ -1403,91 +1329,50 @@ def run_scan():
     candidates = build_candidate_list(tickers)
     results    = []
 
-    # Counter gate untuk ringkasan akhir
-    gate_stats = defaultdict(int)
-    gate_stats["total_scanned"] = 0
-
     for i, (sym, t) in enumerate(candidates):
         try:
             vol = float(t.get("quoteVolume", 0))
         except:
             vol = 0
 
+        # Final volume check
         if vol < CONFIG["min_vol_24h"]:
-            gate_stats["vol_min"] += 1
             continue
 
-        gate_stats["total_scanned"] += 1
         log.info(f"[{i+1}/{len(candidates)}] {sym} (vol ${vol/1e3:.0f}K)...")
 
         try:
             res = master_score(sym, t)
             if res:
-                comp = res['compression']
-                awk  = res['awakening']
-                log.info(
-                    f"  ✅ SIGNAL! Score={res['score']:3d} | "
-                    f"Coil={comp['length']}h ({comp['range_pct']*100:.1f}% range, "
-                    f"candle_range={comp.get('avg_candle_range',0)*100:.2f}%) | "
-                    f"Vol={awk['best_mult']:.1f}x RVOL={res['rvol']:.1f}x | "
-                    f"Rise={res['rise_from_low']*100:.1f}% | "
-                    f"RSI={res['rsi']:.0f} | "
-                    f"Forensik: {'+'.join([k for k,v in [('HL',res.get('higher_lows')),('PA',res.get('price_accel')),('PSB',res.get('pre_spike_label','') and 'bull' in res.get('pre_spike_label',''))] if v])}"
-                )
+                log.info(f"  ✅ SIGNAL! Score={res['score']} "
+                         f"Coil={res['compression']['length']}h "
+                         f"VolSpike={res['awakening']['best_mult']:.1f}x "
+                         f"Rise={res['rise_from_low']*100:.1f}%")
                 results.append(res)
-                gate_stats["passed"] += 1
-            else:
-                gate_stats["filtered"] += 1
         except Exception as ex:
             log.warning(f"  Error {sym}: {ex}", exc_info=True)
-            gate_stats["error"] += 1
 
         time.sleep(CONFIG["sleep_coins"])
 
-    # ── Ringkasan gate setelah scan ───────────────────────────────────────────
-    log.info(f"\n{'='*70}")
-    log.info(f"📊 RINGKASAN SCAN — {utc_now()}")
-    log.info(f"{'='*70}")
-    log.info(f"   Di-scan       : {gate_stats['total_scanned']} coin")
-    log.info(f"   ✅ Lolos      : {gate_stats['passed']} coin")
-    log.info(f"   ❌ Difilter   : {gate_stats['filtered']} coin (lihat log per-coin di atas)")
-    log.info(f"   ⚠️  Error     : {gate_stats['error']} coin")
-    log.info(f"   Vol < min     : {gate_stats['vol_min']} coin (${CONFIG['min_vol_24h']/1e3:.0f}K)")
-
-    # Breakdown gate dari log (estimasi dari keyword search di recent logs)
-    log.info(f"\n   Gate breakdown (dari log per-coin):")
-    log.info(f"   Cek file log: {_log_file} untuk detail per coin")
-    log.info(f"   Grep tips:")
-    log.info(f"     SKIP karena...  : grep 'SKIP' {_log_file} | tail -50")
-    log.info(f"     Compression OK  : grep 'Compression found' {_log_file} | tail -20")
-    log.info(f"     Sinyal lolos    : grep 'SIGNAL!' {_log_file}")
-    log.info(f"     MA bypass       : grep 'BYPASS' {_log_file}")
-    log.info(f"{'='*70}\n")
-
-    # Sort: murni berdasarkan score
+    # Sort: utamakan score tinggi, tapi juga pertimbangkan rise_from_low rendah
     results.sort(key=lambda x: x["score"], reverse=True)
 
+    log.info(f"\n{'='*70}")
     log.info(f"✅ Total sinyal lolos: {len(results)} coin")
-    if results:
-        log.info("   Ranking:")
-        for i, r in enumerate(results, 1):
-            comp = r['compression']
-            log.info(f"   #{i} {r['symbol']:15s} Score={r['score']:3d} | "
-                     f"Coil={comp['length']}h | "
-                     f"Vol={r['awakening']['best_mult']:.1f}x | "
-                     f"Rise={r['rise_from_low']*100:.1f}% | "
-                     f"T1=+{r['entry']['t1_pct']:.0f}% R/R=1:{r['entry']['rr']}")
+    log.info(f"{'='*70}\n")
 
     if not results:
-        log.info("Tidak ada sinyal pre-pump saat ini.")
+        log.info("Tidak ada sinyal pre-pump saat ini")
         return
 
     top = results[:CONFIG["max_alerts_per_run"]]
 
+    # Kirim summary dulu
     if len(top) >= 2:
         send_telegram(build_summary(top))
         time.sleep(2)
 
+    # Kirim detail per coin
     for rank, r in enumerate(top, 1):
         ok = send_telegram(build_alert(r, rank=rank))
         if ok:
@@ -1503,7 +1388,7 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v2.7                            ║")
+    log.info("║  PRE-PUMP SCANNER v2.6                            ║")
     log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
     log.info("║  Target: entry sekarang, TP 1-2 hari (+10-100%)  ║")
     log.info("╚════════════════════════════════════════════════════╝")
