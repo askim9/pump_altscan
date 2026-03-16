@@ -97,11 +97,32 @@ CONFIG = {
     "candle_limit_1h":            720,     # 30 hari data 1H — dinaikkan agar XAN-type (flat 40 hari) terdeteksi
 
     # ── COMPRESSION DETECTION ─────────────────────────────────────────────────
-    # Fase 1: coin harus "tidur pulas" minimal 36 jam di range sempit
-    "compression_min_candles":     36,     # minimal 36 candle 1H = 1.5 hari
-    "compression_max_candles":    672,     # naik 480 → 672 (28 hari), selaras lookback
-    "compression_range_pct":      0.10,    # range high-low < 10%
-    "compression_lookback":       672,     # 28 hari — selaras dengan candle_limit_1h baru
+    "compression_min_candles":     36,
+    "compression_max_candles":    672,
+    # 11% — dinaikkan dari 10% berdasarkan forensik BLAST (range 10.23%)
+    "compression_range_pct":      0.11,
+    "compression_lookback":       672,
+
+    # ── ZONE PURITY CHECK (v2.8) ──────────────────────────────────────────────
+    # Masalah dari 2ZUSDT: pump terjadi DALAM zona compression (13-15 Mar),
+    # lalu koreksi, lalu scanner kirim sinyal seolah-olah ini pre-pump baru.
+    # Gate sebelumnya (post_pump 6H) tidak menangkap karena pump sudah > 6 jam.
+    #
+    # Fix: zona compression tidak boleh mengandung banyak candle volume ekstrim.
+    # Candle vol > 5× avg_zone = ada aksi besar yang sudah terjadi dalam zona.
+    # Jika ada ≥ 3 candle seperti ini → zona "terkontaminasi" → bukan zona tidur → SKIP
+    #
+    # Kalibrasi dari data forensik:
+    #   2Z (false positive): ~6 candle pump dalam zona → SKIP ✅
+    #   XAN (valid): 0 candle vol>5x avg dalam zona → LOLOS ✅
+    #   BLAST (valid): 1 candle outlier → LOLOS ✅
+    "zone_purity_vol_mult":        5.0,   # candle vol > 5× avg_zone = spike besar
+    "zone_purity_spike_max":       1,     # toleransi 1 spike; ke-2 = terkontaminasi
+
+    # ── CHOPPY FILTER ─────────────────────────────────────────────────────────
+    # avg (high-low)/low per candle dalam zona < 2% → zona benar-benar flat
+    # Kalibrasi: BEAT 3.64% (false) vs IOTA 0.74% / ARPA 0.84% / NOT 1.23% (valid)
+    "compression_choppy_max":      0.02,  # avg candle range < 2% dalam zona
 
     # ── VOLUME AWAKENING ──────────────────────────────────────────────────────
     # Fase 2: volume mulai "bangun" — ini trigger utama
@@ -143,8 +164,15 @@ CONFIG = {
     #   GAS post-pump     : avg_vol_6h = 150x comp_avg → SKIP  ✅
     #   BABYDOGE post-pump: avg_vol_6h = 8.0x comp_avg → SKIP  ✅
     #   Threshold 7x memberikan margin aman di antara keduanya
-    "post_pump_vol_mult":            7.0,   # avg_vol_6h > comp_avg * 7 → skip
-    "post_pump_lookback_candles":      6,   # rata-rata 6 candle terakhir
+    "post_pump_vol_mult":            7.0,   # avg_vol_6h > comp_avg * 7 → skip (pump baru)
+    "post_pump_lookback_candles":      6,   # window 6H untuk pump sangat baru
+
+    # ── POST-PUMP 48H GATE (v2.8) ─────────────────────────────────────────────
+    # Menangkap pump yang terjadi 6-48 jam lalu (2Z-type false positive).
+    # Threshold lebih rendah dari gate 6H karena window lebih panjang.
+    # Kalibrasi: 2Z avg_48H/comp_avg ≈ 4-5x, XAN/MYX ≈ 1-3x.
+    "post_pump_lookback_48h":        48,   # window 48H
+    "post_pump_vol_mult_48h":       4.0,   # avg_48h > comp_avg * 4 → skip
 
     # ── G3: BREAKOUT GATE (v2.6) ──────────────────────────────────────────────
     # Jika harga sekarang sudah > comp_high × 1.03 → coin sedang/sudah breakout.
@@ -492,6 +520,31 @@ def find_compression_zone(candles):
         zone_candles = scan_slice[start:end+1]
         avg_vol = sum(c["volume_usd"] for c in zone_candles) / length
 
+        # ── CHOPPY FILTER (v2.8) ─────────────────────────────────────────────
+        # Zona dengan range < 11% tapi candle-candle individualnya besar = choppy.
+        # Kalibrasi: BEAT avg_candle_range=3.64% (false), valid coins < 1.5%.
+        choppy_max = cfg.get("compression_choppy_max", 0.02)
+        avg_candle_range = sum(
+            (c["high"] - c["low"]) / c["low"]
+            for c in zone_candles if c["low"] > 0
+        ) / length
+        if avg_candle_range > choppy_max:
+            continue
+
+        # ── ZONE PURITY CHECK (v2.8) ─────────────────────────────────────────
+        # Zona tidak boleh mengandung banyak candle volume ekstrim.
+        # Candle vol >> avg_zone = ada aksi besar yang sudah terjadi dalam zona.
+        # Kalibrasi: spike_max=1 memberi toleransi 1 spike outlier (seperti BLAST),
+        # tapi 2Z dengan 5-6 pump candles dalam zona pasti terfilter.
+        purity_mult = cfg.get("zone_purity_vol_mult", 5.0)
+        purity_max  = cfg.get("zone_purity_spike_max", 1)
+        spike_count = sum(
+            1 for c in zone_candles
+            if avg_vol > 0 and c["volume_usd"] > purity_mult * avg_vol
+        )
+        if spike_count > purity_max:
+            continue  # zona terkontaminasi
+
         # Hitung "age" — berapa candle dari akhir zona ke candle terkini
         age = (n - 1) - end  # 0 = zona berakhir di candle terbaru
 
@@ -500,15 +553,17 @@ def find_compression_zone(candles):
 
         if best is None or quality > best["quality"]:
             best = {
-                "start_idx":  start,
-                "end_idx":    end,
-                "low":        zone_low,
-                "high":       zone_high,
-                "length":     length,
-                "avg_vol":    avg_vol,
-                "age_candles": age,
-                "quality":    quality,
-                "range_pct":  (zone_high - zone_low) / zone_low,
+                "start_idx":        start,
+                "end_idx":          end,
+                "low":              zone_low,
+                "high":             zone_high,
+                "length":           length,
+                "avg_vol":          avg_vol,
+                "age_candles":      age,
+                "quality":          quality,
+                "range_pct":        (zone_high - zone_low) / zone_low,
+                "avg_candle_range": avg_candle_range,
+                "spike_count":      spike_count,
             }
 
         # Setelah menemukan zona valid, geser end ke awal zona untuk efisiensi
@@ -838,7 +893,9 @@ def master_score(symbol, ticker):
     comp_age     = compression["age_candles"]
 
     log.info(f"  {symbol}: Compression found len={comp_length} age={comp_age} "
-             f"range={compression['range_pct']*100:.1f}%")
+             f"range={compression['range_pct']*100:.1f}% "
+             f"candle_range={compression.get('avg_candle_range',0)*100:.2f}% "
+             f"spikes={compression.get('spike_count',0)}")
 
     # ── Gate: compression tidak boleh terlalu tua (zona kadaluarsa) ──────────
     # Jika zona compression berakhir > 72 jam lalu dan volume belum spike, skip
@@ -895,29 +952,38 @@ def master_score(symbol, ticker):
                      f"MA20={ma20_now:.6g} < MA50={ma50_now:.6g}, keduanya turun")
             return None
 
-    # ── Gate: POST-PUMP DETECTION (BARU v2.6) ───────────────────────────────
-    # Masalah dari data nyata (GAS/1MBABYDOGE): pump sudah terjadi, harga koreksi
-    # kembali ke zona compression → scanner kirim alert padahal moment sudah lewat.
+    # ── Gate: POST-PUMP DETECTION (diperbarui v2.8) ─────────────────────────
+    # v2.6 original: window 6H, threshold 7x — menangkap GAS/BABYDOGE (pump baru)
+    # v2.8 extended: tambah window 48H, threshold 4x — menangkap 2ZUSDT (pump 2 hari lalu)
     #
-    # Cara deteksi: rata-rata volume 6 candle terakhir vs rata-rata volume selama
-    # compression. Jika rasionya > 7x, berarti kita sedang di fase aktif/post-pump:
+    # Kalibrasi 48H window dari data forensik:
+    #   XAN pre-pump  : avg_48H ≈ 2-3x comp_avg → LOLOS ✅
+    #   MYX pre-pump  : avg_48H ≈ 1-2x comp_avg → LOLOS ✅
+    #   2Z post-pump  : avg_48H ≈ 4-5x comp_avg → SKIP  ✅  (pump 48-72 jam lalu)
+    #   GAS post-pump : avg_6H  = 150x           → SKIP  ✅  (sudah tangkap di 6H gate)
     #
-    #   XAN window alert  : avg_6h = 3.4x comp_avg → LOLOS (pre-pump) ✅
-    #   MYX window alert  : avg_6h = 1.2x comp_avg → LOLOS (pre-pump) ✅
-    #   GAS post-pump     : avg_6h = 150x comp_avg → SKIP  (sudah pump) ✅
-    #   BABYDOGE post-pump: avg_6h = 8.0x comp_avg → SKIP  (sudah pump) ✅
-    #
-    # Gate ini bekerja di DIMENSI VOLUME, berbeda dari gate price level (G3/G4).
-    # Tidak ada tabrakan karena mengukur hal yang berbeda.
+    # Dua gate terpisah: 6H untuk pump sangat baru, 48H untuk pump beberapa hari lalu.
     if len(c1h) >= CONFIG["post_pump_lookback_candles"]:
         lookback_n   = CONFIG["post_pump_lookback_candles"]
         avg_vol_last = sum(c["volume_usd"] for c in c1h[-lookback_n:]) / lookback_n
         post_pump_ratio = avg_vol_last / comp_avg_vol if comp_avg_vol > 0 else 0
 
         if post_pump_ratio > CONFIG["post_pump_vol_mult"]:
-            log.info(f"  {symbol}: SKIP post-pump — avg_vol_last_{lookback_n}h = "
+            log.info(f"  {symbol}: SKIP post-pump (6H) — avg_{lookback_n}h = "
                      f"{post_pump_ratio:.1f}x comp_avg "
-                     f"(threshold={CONFIG['post_pump_vol_mult']}x) — coin sudah di fase aktif")
+                     f"(threshold={CONFIG['post_pump_vol_mult']}x)")
+            return None
+
+    # Gate 48H: deteksi pump yang terjadi 6-48 jam yang lalu (2Z-type)
+    lookback_48 = CONFIG.get("post_pump_lookback_48h", 48)
+    thresh_48   = CONFIG.get("post_pump_vol_mult_48h", 4.0)
+    if len(c1h) >= lookback_48:
+        avg_48h = sum(c["volume_usd"] for c in c1h[-lookback_48:]) / lookback_48
+        ratio_48 = avg_48h / comp_avg_vol if comp_avg_vol > 0 else 0
+        if ratio_48 > thresh_48:
+            log.info(f"  {symbol}: SKIP post-pump (48H) — avg_48h = "
+                     f"{ratio_48:.1f}x comp_avg (threshold={thresh_48}x) "
+                     f"— kemungkinan pump beberapa hari lalu")
             return None
 
     # ── Gate: G3 BREAKOUT — harga belum keluar dari zona ke atas ─────────────
@@ -1317,7 +1383,7 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v2.6 — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v2.8 — {utc_now()} ===")
 
     tickers = get_all_tickers()
     if not tickers:
@@ -1388,7 +1454,7 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v2.6                            ║")
+    log.info("║  PRE-PUMP SCANNER v2.8                            ║")
     log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
     log.info("║  Target: entry sekarang, TP 1-2 hari (+10-100%)  ║")
     log.info("╚════════════════════════════════════════════════════╝")
