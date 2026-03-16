@@ -910,36 +910,36 @@ def master_score(symbol, ticker):
              f"spikes={compression.get('spike_count',0)}")
 
     # ── Gate: PRE-ZONE PUMP CONTEXT (v2.8) ───────────────────────────────────
-    # Masalah 2ZUSDT: find_compression_zone memilih sub-zona flat yang bersih
-    # tapi mengabaikan bahwa sebelum zona tersebut ada pump besar.
-    # Zone purity di dalam find_compression_zone tidak bisa menangkap ini
-    # karena zona yang dipilih memang bersih — pump ada di luar sub-zona.
+    # Cek 48 candle sebelum zona dimulai — ada pump baru-baru ini sebelum zona?
+    # Hanya aktif untuk zona PENDEK (≤ 168H) karena pump yang terjadi
+    # 300-600 jam lalu tidak relevan untuk zona yang baru terbentuk belakangan.
     #
-    # Solusi: setelah zona ditemukan, cek 48 candle SEBELUM zona dimulai.
-    # Jika ada > 2 candle dengan vol > 3× comp_avg → ada pump baru-baru ini → SKIP.
-    #
-    # Kalibrasi dari data 2Z:
-    #   2Z: 12 candle vol > 150K (3 × 50K) di 48H sebelum zona → SKIP ✅
-    #   XAN/IOTA/NOT: 0 candle vol besar sebelum zona → LOLOS ✅
-    lookback_ctx = 48
-    pre_zone_mult= 3.0
-    pre_zone_max = 2
-    # comp_start_idx adalah indeks dalam scan_slice, bukan c1h
-    # c1h terakhir = candle terbaru, zona berakhir di age_candles dari akhir
-    # Indeks absolut zona: [len(c1h)-lookback + comp['start_idx'] .. ]
-    comp_start_abs = len(c1h) - min(CONFIG["compression_lookback"], len(c1h)) + compression["start_idx"]
-    pre_start = max(0, comp_start_abs - lookback_ctx)
-    pre_candles = c1h[pre_start:comp_start_abs]
-    if pre_candles and comp_avg_vol > 0:
-        pre_zone_spikes = sum(
-            1 for c in pre_candles
-            if c["volume_usd"] > pre_zone_mult * comp_avg_vol
-        )
-        if pre_zone_spikes > pre_zone_max:
-            log.info(f"  {symbol}: SKIP pre-zone pump — {pre_zone_spikes} candle "
-                     f"vol>{pre_zone_mult}×comp_avg dalam {len(pre_candles)}H sebelum zona "
-                     f"(threshold={pre_zone_max})")
-            return None
+    # Kalibrasi dari log nyata:
+    #   2Z (94H, 12 spikes)     → SKIP ✅  pump baru-baru ini
+    #   PEOPLE (61H, 11 spikes) → SKIP ✅  sama
+    #   PLUME (96H, 18 spikes)  → SKIP ✅  sama
+    #   ENAUSDT (149H, 3 spikes)→ LOLOS ✅ 3 < 5, wajar
+    #   ARB (315H, 4 spikes)    → gate off, zona terlalu tua untuk cek ini
+    #   SAND (351H, 3 spikes)   → gate off
+    lookback_ctx  = 48
+    pre_zone_mult = 3.0
+    pre_zone_max  = 5      # dinaikkan dari 2 → 5 (market pasti ada beberapa candle ramai)
+    max_zone_age  = 168    # hanya aktif untuk zona ≤ 7 hari
+
+    if comp_age <= max_zone_age:  # hanya cek zona yang masih "baru"
+        comp_start_abs = len(c1h) - min(CONFIG["compression_lookback"], len(c1h)) + compression["start_idx"]
+        pre_start      = max(0, comp_start_abs - lookback_ctx)
+        pre_candles    = c1h[pre_start:comp_start_abs]
+        if pre_candles and comp_avg_vol > 0:
+            pre_zone_spikes = sum(
+                1 for c in pre_candles
+                if c["volume_usd"] > pre_zone_mult * comp_avg_vol
+            )
+            if pre_zone_spikes > pre_zone_max:
+                log.info(f"  {symbol}: SKIP pre-zone pump — {pre_zone_spikes} candle "
+                         f"vol>{pre_zone_mult}×comp_avg dalam {len(pre_candles)}H sebelum zona "
+                         f"(threshold={pre_zone_max})")
+                return None
 
     # ── Gate: compression tidak boleh terlalu tua (zona kadaluarsa) ──────────
     # Jika zona compression berakhir > 72 jam lalu dan volume belum spike, skip
