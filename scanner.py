@@ -157,7 +157,7 @@ CONFIG = {
     "liq_sweep_recover_bars":        4,    # recovery dalam 4 candle setelah breakdown
 
     # ── FUNDING ───────────────────────────────────────────────────────────────
-    "funding_gate":              -0.003,   # buang jika funding < -0.003
+    "funding_gate":              -5.003,   # buang jika funding < -0.003
 
     # ── ENTRY / TARGET ────────────────────────────────────────────────────────
     "atr_sl_mult":                  1.2,
