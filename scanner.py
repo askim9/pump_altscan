@@ -1011,11 +1011,12 @@ def classify_pump_velocity(candles, comp_median_vol):
     #   CEPAT : vol ≥ 200x (override body)
     #         | vol ≥ 50x  AND body ≥ 30%          ← C: 51x+35% ✅
     #   SEDANG: vol ≥ 10x  AND body ≥ 30%          ← ARIA: 13x+33% ✅
+    #         | vol ≥ 2x   AND body ≥ 70%           ← ZKUSDT: 3.2x+86% ✅ (v3.2 fix)
     #         | vol <  10x AND body ≥ 70%           ← MYX: 9x+79% ✅
     #   LAMBAT: sisanya
-    #         → PEPE: 16x+58% = vol<50 & body<80% ... masuk SEDANG di classifier
-    #           tapi PEPE tidak akan lolos gate post_pump_48h pada kondisi real
-    #           (vol 24h PEPE konstan tinggi → post_pump gate sudah skip duluan)
+    #         → PEPE: 16x+58% = candle MERAH → LAMBAT lewat Fix 3
+    #         → BATUSDT: 1.1x+67% = body < 70% → LAMBAT ✅
+    #         → BNBUSDT: 1.4x+34% = vol < 2x, body < 70% → LAMBAT ✅
 
     if vol_mult >= hv_override:
         # Volume ekstrem (REZ/BLAST/G-type): vol sangat besar kompensasi body kecil
@@ -1027,6 +1028,15 @@ def classify_pump_velocity(candles, comp_median_vol):
 
     elif vol_mult >= mid_vol and body_pct >= 0.30:
         # Vol menengah (≥10x) + body cukup = pump sedang (ARIA-type: 13x+33%)
+        category = "SEDANG"
+
+    elif vol_mult >= 2.0 and body_pct >= 0.70:
+        # v3.2 fix: vol moderat (≥2x) + body sangat solid (≥70%)
+        # Menangkap coin aktif di mana median zona tinggi sehingga
+        # spike terlihat kecil vs median, tapi body solid konfirmasi momentum.
+        # Kalibrasi: ZKUSDT 3.2x+86.5% ✅ (awakening nyata, 5.3x avg)
+        #            COOKIEUSDT 1.6x+88% tapi lolos via branch di bawah
+        #            BATUSDT 1.1x+67% → LAMBAT ✅ (vol < 2x)
         category = "SEDANG"
 
     elif vol_mult < mid_vol and body_pct >= 0.70:
