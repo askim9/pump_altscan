@@ -39,12 +39,22 @@
 ║             XAN/C/MYX):                                                     ║
 ║  + Fungsi classify_pump_velocity() — kategorikan CEPAT/SEDANG/LAMBAT       ║
 ║  + Gate PUMP_VELOCITY: skip coin dengan pump lambat (vol<50x med, body<40%)║
-║  + Scoring bonus velocity: CEPAT +20, SEDANG +10 (menggantikan logika lama)║
-║  + Urgency label diperbarui berbasis velocity, bukan hanya vol_mult         ║
+║  + Scoring bonus velocity: CEPAT +20, SEDANG +10                           ║
+║  + Urgency label diperbarui berbasis velocity aktual                        ║
 ║  + Skor total di-cap ke 100 (mencegah overflow di Telegram bar)             ║
-║  + comp_median_vol dihitung di master_score dan diteruskan ke velocity      ║
-║  + Fix safe_get: retry loop menggunakan continue bukan break pada 429       ║
-║  + Score bar di build_alert menggunakan min(sc,100) agar tidak overflow     ║
+║  + comp_median_vol dihitung di master_score                                 ║
+║  + Fix safe_get: retry menggunakan continue bukan break pada 429            ║
+║  + Loop otomatis setiap 15 menit                                            ║
+║                                                                              ║
+║  PATCH v3.1 (dari analisa log run pertama — 342 coin, 0 sinyal):           ║
+║  + Fix gate "terlalu tua": dua lapis — age>168h skip langsung,             ║
+║    age 72-168h hanya skip jika TIDAK ADA volume spike (layer 1 check).     ║
+║    Sebelumnya: quality decay exp(-age/48) terlalu agresif → 47 coin        ║
+║    valid di-skip (butuh compression 234h agar lolos age=73h!).             ║
+║  + Fix floating point: detected = best_mult >= thresh - 1e-9               ║
+║    Sebelumnya: 1.8x terhitung 1.7999... < 1.8 → false negative (AKTUSDT). ║
+║  + Score threshold 52 → 45: velocity gate sudah menjamin kualitas pump.    ║
+║    AAVEUSDT score=47 valid tapi di-skip threshold 52 → sekarang lolos.     ║
 ║                                                                              ║
 ║  TARGET   : Entry sekarang, TP dalam 1-3 jam (+8% s/d +50%)                ║
 ║  INTERVAL : Setiap 15 menit (loop otomatis)                                 ║
@@ -200,11 +210,13 @@ CONFIG = {
     "min_target_pct":               8.0,
 
     # ── SCORING THRESHOLD ─────────────────────────────────────────────────────
-    # Dikalibrasi dari 4 chart nyata (TRUMP, PIXEL, ORCA, VVV):
-    # - Setup kuat (TRUMP/PIXEL/ORCA): skor 62-64
-    # - Setup moderat (VVV-type): skor 55-60 di kondisi real market
-    # - Threshold 52 menangkap semua 4 tipe tanpa terlalu banyak false positive
-    "score_threshold":             52,     # minimal skor untuk alert
+    # v3.0 kalibrasi ulang: threshold diturunkan 52 → 45.
+    # Justifikasi: gate pump_velocity sudah menjamin coin punya energi pump.
+    # Coin yang lolos velocity gate (SEDANG/CEPAT) sudah terkualifikasi.
+    # Threshold 52 terlalu tinggi — AAVEUSDT score=47 di-skip padahal valid.
+    # Dengan 45: coin seperti AAVEUSDT (47) lolos, false positive tetap terjaga
+    # oleh gate velocity (LAMBAT sudah di-skip sebelum scoring).
+    "score_threshold":             45,     # diturunkan dari 52 → 45 (v3.0)
 
     # ── PUMP VELOCITY FILTER (BARU v3.0) ──────────────────────────────────────
     # Root cause pump lambat (1-7% / 24 jam): scanner tidak membedakan pump
@@ -657,7 +669,7 @@ def detect_volume_awakening(candles, compression_avg_vol):
             spike_candle = i   # 1 = terbaru
             is_green     = c["close"] > c["open"]
 
-    detected = best_mult >= thresh
+    detected = best_mult >= thresh - 1e-9   # v3.0 fix: toleransi floating point
     is_mega  = best_mult >= CONFIG["mega_awakening_mult"]
 
     return {
@@ -1090,10 +1102,31 @@ def master_score(symbol, ticker):
                 return None
 
     # ── Gate: compression tidak boleh terlalu tua (zona kadaluarsa) ──────────
-    # Jika zona compression berakhir > 72 jam lalu dan volume belum spike, skip
-    if comp_age > 72 and compression["quality"] < 50:
-        log.info(f"  {symbol}: SKIP compression terlalu tua (age={comp_age}h)")
+    # v3.0 fix: gate lama (age>72 & quality<50) terlalu agresif karena quality
+    # decay exp(-age/48) sangat cepat. Compression len=50, age=73h → quality=11 → di-skip.
+    # Padahal jika ADA volume spike sekarang, usia zona kurang relevan.
+    #
+    # Logika baru (dua lapis):
+    #   Layer 1: age > 72h → cek dulu apakah ada volume spike
+    #     - Ada spike (best_mult ≥ 1.8x): lanjut evaluasi, jangan skip dulu
+    #     - Tidak ada spike: skip (zona tidur, belum ada tanda bangun)
+    #   Layer 2: age > 168h (7 hari) → skip tanpa syarat (zona benar-benar kadaluarsa)
+    #
+    # Kalibrasi:
+    #   WIFUSDT age=73h, no vol spike  → skip di vol gate ✅ (best_mult<1.8x)
+    #   AKTUSDT age=60h, best_mult=1.8 → lolos layer 1, dievaluasi ✅
+    #   ETCUSDT age=407h               → layer 2 langsung skip ✅
+    if comp_age > 168:
+        log.info(f"  {symbol}: SKIP compression kadaluarsa (age={comp_age}h > 168h)")
         return None
+    # Layer 1: 72-168h — hanya skip jika belum ada awakening sama sekali
+    if comp_age > 72:
+        _quick_awk = detect_volume_awakening(c1h, comp_avg_vol)
+        if not _quick_awk["detected"]:
+            log.info(f"  {symbol}: SKIP compression tua & tidak ada spike "
+                     f"(age={comp_age}h, best_mult={_quick_awk['best_mult']:.1f}x)")
+            return None
+        # Ada spike → lanjut, biarkan gate-gate selanjutnya yang memutuskan
 
     # ── Gate: harga masih di dekat zona compression ──────────────────────────
     price_now = c1h[-1]["close"]
