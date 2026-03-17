@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v3.0 — PRE-PUMP DETECTION + VELOCITY FILTER          ║
+║  PIVOT BOUNCE SCANNER v3.2 — PRE-PUMP DETECTION + VELOCITY FILTER          ║
 ║                                                                              ║
 ║  FILOSOFI CORE:                                                              ║
 ║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
@@ -49,15 +49,26 @@
 ║  PATCH v3.1 (dari analisa log run pertama — 342 coin, 0 sinyal):           ║
 ║  + Fix gate "terlalu tua": dua lapis — age>168h skip langsung,             ║
 ║    age 72-168h hanya skip jika TIDAK ADA volume spike (layer 1 check).     ║
-║    Sebelumnya: quality decay exp(-age/48) terlalu agresif → 47 coin        ║
-║    valid di-skip (butuh compression 234h agar lolos age=73h!).             ║
 ║  + Fix floating point: detected = best_mult >= thresh - 1e-9               ║
-║    Sebelumnya: 1.8x terhitung 1.7999... < 1.8 → false negative (AKTUSDT). ║
-║  + Score threshold 52 → 45: velocity gate sudah menjamin kualitas pump.    ║
-║    AAVEUSDT score=47 valid tapi di-skip threshold 52 → sekarang lolos.     ║
+║  + Score threshold 52 → 45                                                 ║
+║                                                                              ║
+║  PATCH v3.2 (dari analisa 6 coin: MERL/XLM/IO/MUBARAK/POLYX/AIN):         ║
+║  + Fix 1 — compression_min_candles: 36 → 16                                ║
+║    Root: AIN zona valid hanya 16H (range 4.7%, avg_rng 1.71%)              ║
+║    Mitigasi: compression_range_pct diperketat 11% → 8% jika length < 24H  ║
+║    (short_compression_range_pct=0.08 berlaku untuk zona 16-23H)            ║
+║  + Fix 2 — zone_purity baseline: MEDIAN → P75 (persentil ke-75)           ║
+║    Root: POLYX median=$1,670 terlalu kecil → semua candle ">3x median"     ║
+║    Solusi: pakai P75 sebagai baseline — lebih robust untuk low-liquidity   ║
+║    Kalibrasi: POLYX 0 spike >3xP75 → LOLOS; BLAST masih 10 spike → SKIP   ║
+║  + Fix 3 — velocity gate: spike candle WAJIB HIJAU (close > open)          ║
+║    Root: MERL/IO pump candle terbesar adalah MERAH (selling climax dump)   ║
+║    Gate selling climax yang ada hanya cek "merah + harga di bawah zona"    ║
+║    Fix baru: velocity LAMBAT jika spike candle merah, APAPUN vol-nya       ║
+║  + Hapus loop otomatis — sudah ada scheduler .yml eksternal                 ║
 ║                                                                              ║
 ║  TARGET   : Entry sekarang, TP dalam 1-3 jam (+8% s/d +50%)                ║
-║  INTERVAL : Setiap 15 menit (loop otomatis)                                 ║
+║  INTERVAL : Diatur oleh scheduler eksternal (.yml)                          ║
 ║  EXCHANGE : Bitget USDT-Futures                                             ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
@@ -115,26 +126,30 @@ CONFIG = {
     "candle_limit_1h":            720,     # 30 hari data 1H — dinaikkan agar XAN-type (flat 40 hari) terdeteksi
 
     # ── COMPRESSION DETECTION ─────────────────────────────────────────────────
-    "compression_min_candles":     36,
+    # v3.2: diturunkan dari 36 → 16 agar coin dengan zona pendek-tapi-valid
+    # (seperti AIN: 16H, range 4.7%, avg_candle_range 1.71%) bisa terdeteksi.
+    # Mitigasi false positive: zona pendek (16-23H) mensyaratkan range lebih ketat
+    # (short_compression_range_pct = 0.08) vs zona panjang (0.11).
+    "compression_min_candles":     16,
     "compression_max_candles":    672,
-    # 11% — dinaikkan dari 10% berdasarkan forensik BLAST (range 10.23%)
+    # Range untuk zona PANJANG (≥24H): 11% — tetap seperti sebelumnya
     "compression_range_pct":      0.11,
+    # Range untuk zona PENDEK (16-23H): lebih ketat 8%
+    # Tanpa ini, semua coin dengan sideways 16H bebas masuk (terlalu banyak FP)
+    "short_compression_range_pct": 0.08,
     "compression_lookback":       672,
 
-    # ── ZONE PURITY CHECK (v2.8) ──────────────────────────────────────────────
-    # Masalah dari 2ZUSDT: pump terjadi DALAM zona compression (13-15 Mar),
-    # lalu koreksi, lalu scanner kirim sinyal seolah-olah ini pre-pump baru.
-    # Gate sebelumnya (post_pump 6H) tidak menangkap karena pump sudah > 6 jam.
-    #
-    # Fix: zona compression tidak boleh mengandung banyak candle volume ekstrim.
-    # Candle vol > 5× avg_zone = ada aksi besar yang sudah terjadi dalam zona.
-    # Jika ada ≥ 3 candle seperti ini → zona "terkontaminasi" → bukan zona tidur → SKIP
-    #
-    # Zone purity — sekarang menggunakan MEDIAN sebagai baseline (v2.8 fix):
-    # Median tidak terpengaruh pump candle outlier, sehingga threshold 3x median
-    # lebih akurat mendeteksi aktivitas besar dalam zona.
-    # Kalibrasi: 2Z ~14 candle >3× median → SKIP ✅, BLAST 1 candle → LOLOS ✅
-    "zone_purity_vol_mult":        3.0,   # candle vol > 3× median_zone = spike besar
+    # ── ZONE PURITY CHECK (v3.2) ──────────────────────────────────────────────
+    # v3.2: baseline diubah dari MEDIAN → P75 (persentil ke-75 vol zona).
+    # Root cause dari POLYX miss: median $1,670 terlalu kecil untuk coin
+    # low-liquidity → candle $5K-$10K yang normal sudah >3x median → 11 "spikes"
+    # padahal bukan spike nyata.
+    # P75 lebih representatif sebagai "batas atas vol normal" zona compression.
+    # Kalibrasi (pre-pump window):
+    #   POLYX: P75=$5,015 → 1 candle >3xP75 → LOLOS ✅ (sebelumnya 11 spike FAIL)
+    #   BLAST: P75=$3,589 → 10 spike >3xP75 → SKIP ✅ (benar di-skip, sudah pump)
+    #   XAN:   P75=$2.7M  → 1 candle >3xP75 → LOLOS ✅
+    "zone_purity_vol_mult":        3.0,   # candle vol > 3× P75_zone = spike besar
     "zone_purity_spike_max":       1,     # toleransi 1 spike; ke-2 = terkontaminasi
 
     # ── CHOPPY FILTER ─────────────────────────────────────────────────────────
@@ -524,27 +539,25 @@ def find_compression_zone(candles):
     Cari rentang candle di mana high-low range < compression_range_pct.
     Return zona terbaik beserta metriknya.
 
-    Return dict:
-      start_idx, end_idx   — index candle zona compression
-      low, high            — batas zona
-      length               — jumlah candle dalam zona
-      avg_vol              — rata-rata volume selama compression
-      age_candles          — berapa candle lalu zona ini berakhir (0 = masih aktif)
+    v3.2 changes:
+    - min_len: 36 → 16  (tangkap zona pendek seperti AIN 16H)
+    - short_compression_range_pct: 0.08 berlaku untuk zona 16-23H
+      (mitigasi false positive dari zona terlalu pendek)
+    - zone_purity baseline: MEDIAN → P75 (persentil ke-75)
+      (robust untuk coin low-liquidity seperti POLYX)
     """
     cfg        = CONFIG
-    min_len    = cfg["compression_min_candles"]
+    min_len    = cfg["compression_min_candles"]     # 16
     max_len    = cfg["compression_max_candles"]
-    range_pct  = cfg["compression_range_pct"]
+    range_pct  = cfg["compression_range_pct"]       # 0.11 untuk ≥24H
+    short_rng  = cfg.get("short_compression_range_pct", 0.08)  # 0.08 untuk 16-23H
     lookback   = min(cfg["compression_lookback"], len(candles))
     scan_slice = candles[-lookback:]
     n          = len(scan_slice)
 
     best = None
 
-    # Geser window dari kanan (terbaru)
-    # Kita cari zona paling baru yang cukup panjang
     for end in range(n - 1, min_len - 2, -1):
-        # Ekspansi ke kiri selama range masih dalam batas
         zone_high = scan_slice[end]["high"]
         zone_low  = scan_slice[end]["low"]
         start     = end
@@ -556,8 +569,7 @@ def find_compression_zone(candles):
             rng      = (new_high - new_low) / new_low if new_low > 0 else 999
 
             if rng > range_pct:
-                # Range sudah terlalu lebar, hentikan ekspansi
-                start += 1  # step back satu agar valid
+                start += 1
                 break
             zone_high = new_high
             zone_low  = new_low
@@ -566,17 +578,21 @@ def find_compression_zone(candles):
         if length < min_len:
             continue
 
-        # Zona valid ditemukan
+        # ── Fix 1 v3.2: Zona pendek (16-23H) harus punya range lebih ketat ──
+        # Tanpa ini, coin dengan sideways 16H yang bergerak 10% bisa lolos.
+        # Threshold 8% untuk zona pendek vs 11% untuk zona panjang.
+        actual_range = (zone_high - zone_low) / zone_low if zone_low > 0 else 999
+        if length < 24 and actual_range > short_rng:
+            continue  # zona terlalu pendek DAN range terlalu lebar → skip
+
+        # Zona valid — hitung statistik
         zone_candles = scan_slice[start:end+1]
         vols_zone    = sorted(c["volume_usd"] for c in zone_candles)
-        # Gunakan MEDIAN sebagai baseline — robust terhadap pump candle outlier
-        # avg terpengaruh pump candle (misal 2Z: avg naik dari 50K ke 102K karena pump)
-        # median tidak terpengaruh → baseline tetap mencerminkan "vol tidur" yang sebenarnya
-        mid = length // 2
-        median_vol = (vols_zone[mid] + vols_zone[~mid]) / 2 if length > 1 else vols_zone[0]
-        avg_vol    = sum(vols_zone) / length  # tetap simpan untuk gate lain
+        mid          = length // 2
+        median_vol   = (vols_zone[mid] + vols_zone[~mid]) / 2 if length > 1 else vols_zone[0]
+        avg_vol      = sum(vols_zone) / length
 
-        # ── CHOPPY FILTER (v2.8) ─────────────────────────────────────────────
+        # ── CHOPPY FILTER ─────────────────────────────────────────────────────
         choppy_max = cfg.get("compression_choppy_max", 0.02)
         avg_candle_range = sum(
             (c["high"] - c["low"]) / c["low"]
@@ -585,33 +601,33 @@ def find_compression_zone(candles):
         if avg_candle_range > choppy_max:
             continue
 
-        # ── ZONE PURITY CHECK (v2.8, median-based) ───────────────────────────
-        # Masalah dengan avg: jika ada pump candle dalam zona, avg naik sehingga
-        # threshold 5x avg menjadi lebih longgar dan pump candle tidak terdeteksi.
-        #
-        # Solusi: gunakan MEDIAN sebagai baseline.
-        # Median zona tidur (2Z flat): ~50K
-        # Median zona 2Z (termasuk pump): tetap ~50K (pump candle tidak mempengaruhi median)
-        # → Pump candle 400K = 8x median → terdeteksi sebagai spike
+        # ── ZONE PURITY CHECK (v3.2, P75-based) ──────────────────────────────
+        # v3.2: baseline diubah dari MEDIAN → P75 (persentil ke-75).
+        # Root cause POLYX miss: median $1,670 terlalu kecil untuk coin sepi
+        # → candle $5K yang normal sudah >3x median → 11 "spikes" yang palsu.
+        # P75 lebih representatif sebagai "batas atas vol normal" zona.
         #
         # Kalibrasi:
-        #   2Z: 14 pump candles > 3× median(50K) = 150K → spike_count ≥ 5 → SKIP ✅
-        #   XAN/IOTA/NOT: 0-1 candle > 3× median → LOLOS ✅
-        #   BLAST: 1 spike 13x median → spike_count = 1 ≤ 1 → LOLOS ✅
+        #   POLYX P75=$5,015 → 0 candle >3xP75 → spike_count=0 ≤ 1 → LOLOS ✅
+        #   BLAST P75=$3,589 → 10 candle >3xP75 → spike_count=10 > 1 → SKIP ✅
+        #   XAN   P75=$2.7M  → 1 candle >3xP75 → spike_count=1 ≤ 1 → LOLOS ✅
+        p75_idx   = int(length * 0.75)
+        p75_vol   = vols_zone[min(p75_idx, length - 1)]
+        # Fallback: jika P75 = 0 (semua candle vol 0), pakai median
+        purity_base = p75_vol if p75_vol > 0 else median_vol
+
         purity_mult = cfg.get("zone_purity_vol_mult", 3.0)
         purity_max  = cfg.get("zone_purity_spike_max", 1)
         spike_count = sum(
             1 for c in zone_candles
-            if median_vol > 0 and c["volume_usd"] > purity_mult * median_vol
+            if purity_base > 0 and c["volume_usd"] > purity_mult * purity_base
         )
         if spike_count > purity_max:
-            continue  # zona terkontaminasi — ada terlalu banyak aksi besar di dalamnya
+            continue  # zona terkontaminasi
 
-        # Hitung "age" — berapa candle dari akhir zona ke candle terkini
-        age = (n - 1) - end  # 0 = zona berakhir di candle terbaru
-
-        # Skor kualitas: lebih panjang lebih baik, lebih baru lebih baik
-        quality = length * math.exp(-age / 48)  # decay jika sudah lama
+        # Hitung "age" dan quality
+        age     = (n - 1) - end
+        quality = length * math.exp(-age / 48)
 
         if best is None or quality > best["quality"]:
             best = {
@@ -623,12 +639,11 @@ def find_compression_zone(candles):
                 "avg_vol":          avg_vol,
                 "age_candles":      age,
                 "quality":          quality,
-                "range_pct":        (zone_high - zone_low) / zone_low,
+                "range_pct":        actual_range,
                 "avg_candle_range": avg_candle_range,
                 "spike_count":      spike_count,
             }
 
-        # Setelah menemukan zona valid, geser end ke awal zona untuk efisiensi
         end = start
 
     return best
@@ -959,6 +974,17 @@ def classify_pump_velocity(candles, comp_median_vol):
     rng      = spike_c["high"] - spike_c["low"]
     body_abs = abs(spike_c["close"] - spike_c["open"])
     body_pct = body_abs / rng if rng > 0 else 0.0   # 0.0–1.0
+
+    # ── Fix 3 v3.2: Spike candle WAJIB HIJAU ────────────────────────────────
+    # Root cause MERL/IO false signal: pump candle terbesar adalah MERAH
+    # MERL: vol=20x median tapi candle_chg=-0.6% → selling climax / dump
+    # IO:   vol=12x median tapi candle_chg=-2.5% → jelas dump, bukan pump
+    # Gate selling climax lama hanya cek "merah + harga di bawah zona"
+    # yang tidak menangkap kasus di mana harga masih di zona tapi candle merah besar.
+    # Solusi: jika candle spike MERAH → otomatis LAMBAT, apapun vol-nya.
+    spike_is_green = spike_c["close"] > spike_c["open"]
+    if not spike_is_green:
+        return "LAMBAT", round(vol_mult, 1), round(body_pct * 100, 1)
 
     # ── Threshold dari CONFIG ──────────────────────────────────────────────
     fast_vol   = CONFIG["velocity_fast_vol_mult"]      # 50x
@@ -1726,27 +1752,13 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v3.0                            ║")
+    log.info("║  PRE-PUMP SCANNER v3.2                            ║")
     log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
     log.info("║  Target: pump energetik ≥8% dalam 1-3 jam        ║")
-    log.info("║  Gate baru: Pump Velocity CEPAT/SEDANG (v3.0)    ║")
     log.info("╚════════════════════════════════════════════════════╝")
 
     if not BOT_TOKEN or not CHAT_ID:
         log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan di environment!")
         exit(1)
 
-    interval = CONFIG["scan_interval_sec"]
-    log.info(f"Loop otomatis setiap {interval // 60} menit. Ctrl+C untuk berhenti.")
-
-    while True:
-        try:
-            run_scan()
-        except KeyboardInterrupt:
-            log.info("Scanner dihentikan oleh user.")
-            break
-        except Exception as exc:
-            log.error(f"Error tidak terduga di run_scan: {exc}", exc_info=True)
-
-        log.info(f"Tidur {interval // 60} menit sebelum scan berikutnya...")
-        time.sleep(interval)
+    run_scan()
