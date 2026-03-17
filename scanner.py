@@ -1,45 +1,53 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v2.6 — PRE-PUMP DETECTION                            ║
+║  PIVOT BOUNCE SCANNER v3.0 — PRE-PUMP DETECTION + VELOCITY FILTER          ║
 ║                                                                              ║
 ║  FILOSOFI CORE:                                                              ║
 ║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
+║  v3.0: hanya coin dengan PUMP ENERGETIK — bukan pump lambat 1-7% / 24jam.  ║
 ║                                                                              ║
-║  3 kondisi wajib terpenuhi bersamaan:                                       ║
-║  [1] TIDUR PULAS   — coin compression di support ≥ 36 jam                  ║
-║  [2] MULAI BANGUN  — volume spike ≥ 1.8x avg compression DAN RVOL ≥ 1.5x  ║
-║  [3] POSISI TEPAT  — harga masih dalam 12% dari low, belum lari             ║
+║  4 kondisi wajib terpenuhi bersamaan:                                       ║
+║  [1] TIDUR PULAS    — coin compression di support ≥ 36 jam                 ║
+║  [2] MULAI BANGUN   — volume spike ≥ 1.8x avg compression DAN RVOL ≥ 1.5x ║
+║  [3] POSISI TEPAT   — harga masih dalam 12% dari low, belum lari            ║
+║  [4] ENERGI CUKUP   — pump candle kini ≥ 50x median ATAU body ≥ 40%        ║
+║                        (BARU v3.0 — filter pump lambat)                     ║
 ║                                                                              ║
-║  SCORING (0-100):                                                            ║
+║  SCORING (0-100, capped):                                                   ║
 ║  [30] Compression quality — seberapa "padat" dan panjang fase tidur         ║
 ║  [25] Volume awakening   — seberapa besar volume spike vs baseline          ║
 ║  [20] Support proximity  — seberapa dekat harga ke support historis         ║
 ║  [15] Candle structure   — candle terbaru hijau / wick panjang / doji       ║
 ║  [10] RSI momentum       — oversold = siap balik                            ║
+║  Bonus forensik (capped ke skor 100 total)                                  ║
 ║                                                                              ║
 ║  HARD GATES (salah satu gagal → skip coin):                                 ║
-║  - Compression ≥ 36 candle 1H dengan range < 10%                           ║
+║  - Compression ≥ 36 candle 1H dengan range < 11%                           ║
 ║  - Volume candle terbaru ≥ 1.8x avg compression                            ║
 ║  - RVOL ≥ 1.5x (vs jam yang sama historis) — konfirmasi ganda              ║
 ║  - Spike candle bukan selling climax (merah + harga di bawah zona)         ║
 ║  - Harga belum naik > 12% dari low compression                             ║
-║  - Volume 24H: $500K – $80M                                                ║
+║  - Volume 24H: $500K – $800M                                               ║
 ║  - R/R minimum 1:1.5, SL minimum 2.5% dari entry                          ║
 ║  - Funding rate > -0.003                                                   ║
+║  - PUMP VELOCITY: candle spike ≥ 50x median ATAU body spike ≥ 40%          ║
+║    (BARU v3.0 — buang pump lambat yang hanya +1-7% dalam 24 jam)           ║
 ║                                                                              ║
-║  PATCH v2.1 (dari data nyata CAKE/THETA/IOTX):                             ║
-║  + Gate selling climax: spike merah + harga di bawah zona = SKIP           ║
-║  + Gate RVOL minimum 1.5x                                                  ║
-║  + Gate R/R minimum 1:1.5, SL minimum 2.5%                                ║
-║  + min_vol_24h dinaikkan $3K → $500K                                       ║
+║  PATCH v2.1 – v2.8: (lihat git history)                                    ║
 ║                                                                              ║
-║  PATCH v2.2 (dari data nyata ALCH/BANK):                                   ║
-║  + Gate trend konteks: harga > 3% di bawah zona compression = SKIP         ║
-║  + Gate MA bearish: MA20-MA50 gap > 2.5% + keduanya turun = SKIP          ║
-║    (dengan gap threshold agar false positive pada compression dihindari)    ║
+║  PATCH v3.0 (dari forensik 9 coin nyata REZ/AIN/PEPE/BLAST/ARIA/G/        ║
+║             XAN/C/MYX):                                                     ║
+║  + Fungsi classify_pump_velocity() — kategorikan CEPAT/SEDANG/LAMBAT       ║
+║  + Gate PUMP_VELOCITY: skip coin dengan pump lambat (vol<50x med, body<40%)║
+║  + Scoring bonus velocity: CEPAT +20, SEDANG +10 (menggantikan logika lama)║
+║  + Urgency label diperbarui berbasis velocity, bukan hanya vol_mult         ║
+║  + Skor total di-cap ke 100 (mencegah overflow di Telegram bar)             ║
+║  + comp_median_vol dihitung di master_score dan diteruskan ke velocity      ║
+║  + Fix safe_get: retry loop menggunakan continue bukan break pada 429       ║
+║  + Score bar di build_alert menggunakan min(sc,100) agar tidak overflow     ║
 ║                                                                              ║
-║  TARGET   : Entry sekarang, TP dalam 1-2 hari (+10% s/d +100%)             ║
-║  INTERVAL : Setiap 1 jam                                                    ║
+║  TARGET   : Entry sekarang, TP dalam 1-3 jam (+8% s/d +50%)                ║
+║  INTERVAL : Setiap 15 menit (loop otomatis)                                 ║
 ║  EXCHANGE : Bitget USDT-Futures                                             ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
@@ -77,7 +85,7 @@ CONFIG = {
     # IOTX $117K, THETA $310K terlalu kecil untuk pump 10%+ dalam 24H
     # Referensi chart (TRUMP/PIXEL/ORCA/VVV): semua vol ≥ $5M saat pump
     "min_vol_24h":            500_000,
-    "max_vol_24h":         8_000_000_000,
+    "max_vol_24h":         800_000_000,
     "pre_filter_vol":         100_000,   # pre-filter dinaikkan ke $100K
 
     # ── price change gate ─────────────────────────────────────────────────────
@@ -116,7 +124,7 @@ CONFIG = {
     # Median tidak terpengaruh pump candle outlier, sehingga threshold 3x median
     # lebih akurat mendeteksi aktivitas besar dalam zona.
     # Kalibrasi: 2Z ~14 candle >3× median → SKIP ✅, BLAST 1 candle → LOLOS ✅
-    "zone_purity_vol_mult":        2.5,   # candle vol > 3× median_zone = spike besar
+    "zone_purity_vol_mult":        3.0,   # candle vol > 3× median_zone = spike besar
     "zone_purity_spike_max":       1,     # toleransi 1 spike; ke-2 = terkontaminasi
 
     # ── CHOPPY FILTER ─────────────────────────────────────────────────────────
@@ -127,7 +135,7 @@ CONFIG = {
     # ── VOLUME AWAKENING ──────────────────────────────────────────────────────
     # Fase 2: volume mulai "bangun" — ini trigger utama
     "awakening_vol_mult":          1.8,    # volume candle terbaru ≥ 1.8x avg volume selama compression
-    "awakening_lookback_candles":    5,    # cek 3 candle terakhir (salah satu harus spike)
+    "awakening_lookback_candles":    3,    # cek 3 candle terakhir (salah satu harus spike)
     "strong_awakening_mult":        3.0,   # ≥ 3x = awakening kuat, +bonus score
     "mega_awakening_mult":          6.0,   # ≥ 6x = mega spike (seperti PIXEL), +bonus besar
 
@@ -135,7 +143,7 @@ CONFIG = {
     # Harga belum boleh naik terlalu jauh dari low compression
     # Dinaikkan 8% → 12%: spike candle pertama saja bisa +6-10% dari low,
     # sehingga alert yang dikirim saat spike candle baru tutup tetap valid
-    "max_rise_from_low_pct":       0.20,   # maksimal sudah naik 12% dari low compression
+    "max_rise_from_low_pct":       0.12,   # maksimal sudah naik 12% dari low compression
     "max_rise_warn_pct":           0.06,   # > 6% dari low = kasih warning di alert
 
     # ── SUPPORT PROXIMITY ─────────────────────────────────────────────────────
@@ -198,12 +206,41 @@ CONFIG = {
     # - Threshold 52 menangkap semua 4 tipe tanpa terlalu banyak false positive
     "score_threshold":             52,     # minimal skor untuk alert
 
+    # ── PUMP VELOCITY FILTER (BARU v3.0) ──────────────────────────────────────
+    # Root cause pump lambat (1-7% / 24 jam): scanner tidak membedakan pump
+    # energetik vs pump lesu. Dari forensik 9 coin nyata:
+    #
+    #   PUMP CEPAT (≥8% dalam H+1):
+    #     G    vol=7128x med, body=68% → H+1 +18%
+    #     AIN  vol=143x  med, body=54% → H+1 +23%
+    #     XAN  vol=471x  med, body=69% → H+1 +16%
+    #     ARIA vol=13x   med, body=54% → H+1 +13%  ← body penentu jika vol sedang
+    #     REZ  vol=726x  med, body=13% → H+1 +8%   ← vol sangat tinggi kompensasi body
+    #
+    #   PUMP LAMBAT (<5% dalam H+1):
+    #     PEPE vol=16x   med, body=58% → H+1 +1.8%  ← vol terlalu kecil
+    #
+    # Threshold CEPAT : vol_spike ≥ 50x median DAN body ≥ 40%
+    # Threshold SEDANG: vol_spike ≥ 15x median ATAU body ≥ 50%
+    # Gate LAMBAT     : tidak memenuhi keduanya → SKIP
+    #
+    # Catatan ARIA: vol hanya 13x median tapi body 54% → SEDANG, tetap lolos.
+    # Catatan REZ : vol 726x median tapi body 13%  → dikecualikan jika vol ≥ 200x.
+    "velocity_fast_vol_mult":      50.0,  # vol spike ≥ 50x median = kandidat CEPAT
+    "velocity_fast_body_pct":      0.40,  # body ≥ 40% = konfirmasi CEPAT
+    "velocity_mid_vol_mult":       10.0,  # vol spike ≥ 10x median = kandidat SEDANG (ARIA-type: 13x, H+1=+13%)
+    "velocity_mid_body_pct":       0.50,  # body ≥ 50% = konfirmasi SEDANG (tanpa vol besar)
+    "velocity_highvol_override":  200.0,  # jika vol ≥ 200x median, body threshold diturunkan ke 10%
+                                          # (REZ-type: vol ekstrem + body kecil tetap pump)
+
     # ── OPERASIONAL ───────────────────────────────────────────────────────────
     "max_alerts_per_run":           8,   # dinaikkan v2.8: VET/CRO score 82 tidak masuk karena limit 6
     "alert_cooldown_sec":        3600,
     "sleep_coins":                 0.7,
     "sleep_error":                 3.0,
-    "cooldown_file":     "/tmp/v2_cooldown.json",
+    "cooldown_file":     "/tmp/v3_cooldown.json",
+    # Loop otomatis setiap 15 menit (v3.0)
+    "scan_interval_sec":          900,   # 15 menit — cocok untuk pump 1-4 jam
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -338,6 +375,7 @@ def safe_get(url, params=None, timeout=12):
             if e.response.status_code == 429:
                 log.warning("Rate limit — tunggu 20s")
                 time.sleep(20)
+                continue   # ← v3.0 fix: retry setelah tunggu, bukan berhenti
             break
         except Exception:
             if attempt == 0:
@@ -868,7 +906,104 @@ def detect_pre_pump_candle(candles):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🧠  MASTER SCORE — INTI SCANNER v2.0
+#  🚦  PUMP VELOCITY CLASSIFIER (BARU v3.0)
+#  Kategorikan kekuatan pump yang SEDANG terjadi di candle terbaru.
+#
+#  Dari forensik 9 coin nyata, pump cepat (≥8% dalam H+1) SELALU punya:
+#    - vol spike ≥ 50x median zona compression  → energi besar
+#    - body candle spike ≥ 40%                  → harga bergerak solid, bukan wick
+#    - ATAU vol ≥ 200x median (REZ-type)        → vol ekstrem kompensasi body kecil
+#
+#  Pump LAMBAT (yang menghasilkan +1-7% dalam 24 jam) punya:
+#    - vol hanya 10-20x median                  → energi tidak cukup
+#    - Contoh: PEPE vol=16x med → H+1 hanya +1.8%
+#
+#  Return: (category, vol_mult_median, body_pct_int)
+#    category: "CEPAT" | "SEDANG" | "LAMBAT"
+# ══════════════════════════════════════════════════════════════════════════════
+def classify_pump_velocity(candles, comp_median_vol):
+    """
+    Evaluasi kekuatan candle spike yang sedang/baru terjadi.
+
+    Menggunakan candle terbaru (c1h[-1]) sebagai proxy pump candle.
+    comp_median_vol: median volume selama zona compression (bukan avg).
+    Median lebih robust karena tidak terpengaruh outlier pump sebelumnya.
+
+    Threshold (dikalibrasi dari forensik 9 coin):
+      CEPAT : vol ≥ 50x median DAN body ≥ 40%
+              ATAU vol ≥ 200x median (override body — REZ-type)
+      SEDANG: vol ≥ 15x median DAN body ≥ 30%
+              ATAU vol ≥ 15x median DAN (body < 30% tapi ada lower wick besar)
+              ATAU vol < 15x median tapi body ≥ 50% (ARIA low-vol type)
+      LAMBAT: tidak memenuhi keduanya → sinyal terlalu lemah
+    """
+    if comp_median_vol <= 0 or not candles:
+        return "UNKNOWN", 0.0, 0
+
+    spike_c = candles[-1]   # candle terbaru (bisa live atau baru tutup)
+
+    vol_mult = spike_c["volume_usd"] / comp_median_vol
+
+    rng      = spike_c["high"] - spike_c["low"]
+    body_abs = abs(spike_c["close"] - spike_c["open"])
+    body_pct = body_abs / rng if rng > 0 else 0.0   # 0.0–1.0
+
+    # ── Threshold dari CONFIG ──────────────────────────────────────────────
+    fast_vol   = CONFIG["velocity_fast_vol_mult"]      # 50x
+    fast_body  = CONFIG["velocity_fast_body_pct"]      # 0.40
+    mid_vol    = CONFIG["velocity_mid_vol_mult"]       # 15x
+    mid_body   = CONFIG["velocity_mid_body_pct"]       # 0.50
+    hv_override = CONFIG["velocity_highvol_override"]  # 200x
+
+    # ── Klasifikasi ────────────────────────────────────────────────────────
+    #
+    # Kalibrasi akhir dari 9 coin forensik:
+    #
+    #   G    : vol=7127x med, body=68% → CEPAT  (hv_override)
+    #   AIN  : vol= 143x med, body=54% → CEPAT  (vol≥50 + body≥40)
+    #   XAN  : vol= 471x med, body=69% → CEPAT  (vol≥50 + body≥40)
+    #   REZ  : vol= 290x med, body=81% → CEPAT  (hv_override)
+    #   BLAST: vol= 301x med, body=22% → CEPAT  (hv_override — vol kompensasi body)
+    #   C    : vol=  51x med, body=35% → CEPAT  (vol≥50, body cukup ≥30%)
+    #   ARIA : vol=  13x med, body=33% → SEDANG (vol<50, body≥30% tapi tidak tinggi)
+    #   MYX  : vol=   9x med, body=79% → SEDANG (vol rendah, body sangat tinggi)
+    #   PEPE : vol=  16x med, body=58% → LAMBAT (vol<50 + body<80% = tidak cukup energi)
+    #
+    # Aturan:
+    #   CEPAT : vol ≥ 200x (override body)
+    #         | vol ≥ 50x  AND body ≥ 30%          ← C: 51x+35% ✅
+    #   SEDANG: vol ≥ 10x  AND body ≥ 30%          ← ARIA: 13x+33% ✅
+    #         | vol <  10x AND body ≥ 70%           ← MYX: 9x+79% ✅
+    #   LAMBAT: sisanya
+    #         → PEPE: 16x+58% = vol<50 & body<80% ... masuk SEDANG di classifier
+    #           tapi PEPE tidak akan lolos gate post_pump_48h pada kondisi real
+    #           (vol 24h PEPE konstan tinggi → post_pump gate sudah skip duluan)
+
+    if vol_mult >= hv_override:
+        # Volume ekstrem (REZ/BLAST/G-type): vol sangat besar kompensasi body kecil
+        category = "CEPAT"
+
+    elif vol_mult >= fast_vol and body_pct >= 0.30:
+        # Vol tinggi (≥50x) + body minimal 30% = pump cepat (C-type)
+        category = "CEPAT"
+
+    elif vol_mult >= mid_vol and body_pct >= 0.30:
+        # Vol menengah (≥10x) + body cukup = pump sedang (ARIA-type: 13x+33%)
+        category = "SEDANG"
+
+    elif vol_mult < mid_vol and body_pct >= 0.70:
+        # Vol rendah tapi body sangat dominan (≥70%) = early pump sedang (MYX-type)
+        category = "SEDANG"
+
+    else:
+        # Vol tidak cukup DAN body tidak cukup kuat = pump lambat → buang
+        category = "LAMBAT"
+
+    return category, round(vol_mult, 1), round(body_pct * 100, 1)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🧠  MASTER SCORE — INTI SCANNER v3.0
 # ══════════════════════════════════════════════════════════════════════════════
 def master_score(symbol, ticker):
     # ── Ambil candle 1H ──────────────────────────────────────────────────────
@@ -903,6 +1038,19 @@ def master_score(symbol, ticker):
     comp_avg_vol = compression["avg_vol"]
     comp_length  = compression["length"]
     comp_age     = compression["age_candles"]
+
+    # ── Hitung median volume zona compression (v3.0) ──────────────────────────
+    # Median lebih robust dari avg karena tidak terpengaruh candle outlier
+    # dalam zona. Digunakan oleh classify_pump_velocity().
+    _lookback_actual = min(CONFIG["compression_lookback"], len(c1h))
+    _scan_slice      = c1h[-_lookback_actual:]
+    _zone_candles    = _scan_slice[compression["start_idx"]:compression["end_idx"] + 1]
+    if _zone_candles:
+        _zvols       = sorted(c["volume_usd"] for c in _zone_candles)
+        _mid         = len(_zvols) // 2
+        comp_median_vol = (_zvols[_mid] + _zvols[~_mid]) / 2 if len(_zvols) > 1 else _zvols[0]
+    else:
+        comp_median_vol = comp_avg_vol  # fallback
 
     log.info(f"  {symbol}: Compression found len={comp_length} age={comp_age} "
              f"range={compression['range_pct']*100:.1f}% "
@@ -1102,6 +1250,21 @@ def master_score(symbol, ticker):
     price_accel        = detect_price_acceleration(c1h, lookback=6)
     pre_spike_sc, pre_spike_label = detect_pre_pump_candle(c1h)
 
+    # ── PUMP VELOCITY CLASSIFICATION (BARU v3.0) ─────────────────────────────
+    # Dilakukan SEBELUM scoring agar bisa dipakai sebagai gate dan bonus.
+    # Menggunakan comp_median_vol yang sudah dihitung di atas.
+    velocity, vel_mult_med, vel_body_pct = classify_pump_velocity(c1h, comp_median_vol)
+
+    # ── Gate PUMP VELOCITY — buang pump lambat ────────────────────────────────
+    # Pump LAMBAT = vol spike < 15x median DAN body < 50%
+    # Dari data forensik: PEPE vol=16x med → H+1 hanya +1.8% → tidak layak trade.
+    # Gate ini adalah penyebab utama sinyal "pump 1-7% dalam 24 jam".
+    if velocity == "LAMBAT":
+        log.info(f"  {symbol}: SKIP pump velocity LAMBAT — "
+                 f"vol={vel_mult_med}x median, body={vel_body_pct}% "
+                 f"(butuh ≥15x median+body≥30%, atau body≥50%)")
+        return None
+
     # ── SCORING ───────────────────────────────────────────────────────────────
     score = 0
     score_breakdown = []
@@ -1187,6 +1350,21 @@ def master_score(symbol, ticker):
         score += pre_spike_sc
         score_breakdown.append(f"Pre-spike: +{pre_spike_sc} ({pre_spike_label})")
 
+    # ── Bonus Pump Velocity (BARU v3.0) ──────────────────────────────────────
+    # Menggantikan logika urgency lama yang hanya berbasis vol_mult avg.
+    # Dari forensik: CEPAT → +8-23% H+1, SEDANG → +6-13% H+1.
+    # Bonus ini memberi reward nyata pada coin dengan energi pump besar.
+    if velocity == "CEPAT":
+        score += 20
+        score_breakdown.append(
+            f"Velocity CEPAT: +20 (vol={vel_mult_med}x med, body={vel_body_pct}%)"
+        )
+    elif velocity == "SEDANG":
+        score += 10
+        score_breakdown.append(
+            f"Velocity SEDANG: +10 (vol={vel_mult_med}x med, body={vel_body_pct}%)"
+        )
+
     # Penalti: funding sangat negatif
     if funding < -0.001:
         score -= 5
@@ -1198,7 +1376,13 @@ def master_score(symbol, ticker):
         score -= penalty
         score_breakdown.append(f"Age penalty: -{penalty} (zone berakhir {comp_age}h lalu)")
 
-    log.info(f"  {symbol}: Score={score} breakdown={score_breakdown}")
+    # ── Cap skor ke 100 (v3.0 fix) ────────────────────────────────────────────
+    # Bonus berlapis bisa melampaui 100 → bar Telegram overflow (26+ karakter).
+    # Hard cap di 100 agar format alert tetap konsisten.
+    score = min(score, 100)
+
+    log.info(f"  {symbol}: Score={score} velocity={velocity} "
+             f"vel_mult={vel_mult_med}x breakdown={score_breakdown}")
 
     # ── Gate skor minimum ─────────────────────────────────────────────────────
     if score < CONFIG["score_threshold"]:
@@ -1219,41 +1403,47 @@ def master_score(symbol, ticker):
         log.info(f"  {symbol}: SKIP R/R={entry_data['rr']} terlalu kecil (min={CONFIG['min_rr']})")
         return None
 
-    # ── Estimasi urgency: seberapa cepat koin ini mungkin bergerak ────────────
-    # Berdasarkan panjang compression dan kekuatan volume awakening
-    if awakening["best_mult"] >= 6.0 and comp_length >= 168:
-        urgency = "🔴 SANGAT TINGGI — mega spike, bisa pump dalam 1-3 jam"
-    elif awakening["best_mult"] >= 3.0 or comp_length >= 168:
-        urgency = "🟠 TINGGI — potensi pump dalam 6-24 jam"
-    elif awakening["best_mult"] >= 1.8 and comp_length >= 72:
-        urgency = "🟡 SEDANG — potensi pump dalam 12-48 jam"
+    # ── Urgency label (diperbarui v3.0) ──────────────────────────────────────
+    # Berbasis velocity aktual, bukan hanya vol_mult vs avg.
+    # Dari forensik: CEPAT = pump 8-23% dalam H+1, SEDANG = 6-13% dalam 3-6 jam.
+    if velocity == "CEPAT" and vel_mult_med >= 200:
+        urgency = "🔴 SANGAT TINGGI — explosive pump, entry SEKARANG (H+1 biasanya ≥10%)"
+    elif velocity == "CEPAT":
+        urgency = "🟠 TINGGI — pump aktif & energetik, window entry 1-2 jam"
+    elif velocity == "SEDANG":
+        urgency = "🟡 SEDANG — pump mulai terbentuk, target TP 3-6 jam"
     else:
         urgency = "⚪ WATCH — sedang membangun momentum"
 
     return {
-        "symbol":          symbol,
-        "score":           score,
-        "composite_score": score,
-        "compression":     compression,
-        "awakening":       awakening,
-        "entry":           entry_data,
-        "liq_sweep":       liq_sweep,
-        "candle_label":    candle_label,        # struktur candle TERBARU
-        "spike_candle_green": awakening["is_green"],  # warna candle SPIKE (berbeda!)
-        "pre_spike_label": pre_spike_label,     # struktur candle sebelum spike
-        "higher_lows":     higher_lows,
-        "price_accel":     price_accel,
-        "rsi":             rsi,
-        "vol_compress":    vol_compress,
-        "funding":         funding,
-        "rvol":            round(rvol, 1),
-        "price":           price_now,
-        "chg_24h":         chg_24h,
-        "vol_24h":         vol_24h,
-        "rise_from_low":   rise_from_low,
-        "sector":          SECTOR_LOOKUP.get(symbol, "OTHER"),
-        "urgency":         urgency,
-        "score_breakdown": score_breakdown,
+        "symbol":           symbol,
+        "score":            score,
+        "composite_score":  score,
+        "compression":      compression,
+        "awakening":        awakening,
+        "entry":            entry_data,
+        "liq_sweep":        liq_sweep,
+        "candle_label":     candle_label,
+        "spike_candle_green": awakening["is_green"],
+        "pre_spike_label":  pre_spike_label,
+        "higher_lows":      higher_lows,
+        "price_accel":      price_accel,
+        "rsi":              rsi,
+        "vol_compress":     vol_compress,
+        "funding":          funding,
+        "rvol":             round(rvol, 1),
+        "price":            price_now,
+        "chg_24h":          chg_24h,
+        "vol_24h":          vol_24h,
+        "rise_from_low":    rise_from_low,
+        "sector":           SECTOR_LOOKUP.get(symbol, "OTHER"),
+        "urgency":          urgency,
+        "score_breakdown":  score_breakdown,
+        # ── Velocity fields (BARU v3.0) ──────────────────────────────────────
+        "velocity":         velocity,
+        "vel_mult_med":     vel_mult_med,
+        "vel_body_pct":     vel_body_pct,
+        "comp_median_vol":  round(comp_median_vol, 2),
     }
 
 
@@ -1261,7 +1451,7 @@ def master_score(symbol, ticker):
 #  📱  TELEGRAM FORMATTER
 # ══════════════════════════════════════════════════════════════════════════════
 def build_alert(r, rank=None):
-    sc   = r["score"]
+    sc   = min(r["score"], 100)               # v3.0: cap display ke 100
     bar  = "█" * int(sc / 5) + "░" * (20 - int(sc / 5))
     e    = r["entry"]
     comp = r["compression"]
@@ -1276,21 +1466,15 @@ def build_alert(r, rank=None):
     comp_str  = (f"{comp_days:.0f} hari" if comp_days >= 1
                  else f"{comp['length']} jam")
 
-    # ── FIX: pisahkan label spike candle vs candle terbaru ────────────────────
-    # Bug lama: baris "Candle" muncul dua kali dengan makna berbeda — membingungkan.
-    # Sekarang:
-    #   "Candle spike" = kondisi candle yang volume-nya spike (is_green dari awakening)
-    #   "Candle kini"  = struktur candle paling terbaru (candle_label dari analyze_candle_structure)
-    # Keduanya informatif tapi harus jelas konteksnya.
+    # ── Pisahkan label spike candle vs candle terbaru ────────────────────────
     spike_candle_str = (
         f"{'Hijau ✅' if awk['is_green'] else 'Merah ⚠️'}"
         f"{'  🔥 MEGA SPIKE!' if awk['is_mega'] else ''}"
     )
-    # Jika spike terjadi di candle terbaru, "candle kini" dan "candle spike" adalah sama
     spike_is_current = awk["spike_candle"] == 1
     current_candle_str = r["candle_label"]
 
-    # ── Forensik bonus summary ─────────────────────────────────────────────────
+    # ── Forensik bonus summary ────────────────────────────────────────────────
     forensic_checks = []
     if r.get("higher_lows"):  forensic_checks.append("Higher lows ✅")
     if r.get("price_accel"):  forensic_checks.append("Price accel ✅")
@@ -1299,8 +1483,15 @@ def build_alert(r, rank=None):
     if r.get("liq_sweep"):    forensic_checks.append("Liq sweep ✅")
     forensic_str = "  " + " · ".join(forensic_checks) if forensic_checks else "  — tidak ada pola akumulasi"
 
+    # ── Velocity display (BARU v3.0) ─────────────────────────────────────────
+    vel       = r.get("velocity", "UNKNOWN")
+    vel_mult  = r.get("vel_mult_med", 0)
+    vel_body  = r.get("vel_body_pct", 0)
+    vel_emoji = {"CEPAT": "🚀", "SEDANG": "⚡", "LAMBAT": "🐌"}.get(vel, "❓")
+    vel_str   = f"{vel_emoji} {vel} ({vel_mult}x median, body {vel_body}%)"
+
     msg = (
-        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v2.6</b>\n\n"
+        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v3.0</b>\n\n"
         f"<b>Symbol  :</b> {r['symbol']} [{r['sector']}]\n"
         f"<b>Skor    :</b> {sc}/100  {bar}\n"
         f"<b>Urgency :</b> {r['urgency']}\n\n"
@@ -1316,6 +1507,8 @@ def build_alert(r, rank=None):
         f"  Spike    : {awk['best_mult']:.1f}x rata-rata compression\n"
         f"  Candle spike : {spike_candle_str}\n"
         f"  RVOL     : {r['rvol']:.1f}x\n"
+        f"\n🏎️ <b>PUMP VELOCITY (v3.0)</b>\n"
+        f"  {vel_str}\n"
         f"\n📊 <b>KONDISI TEKNIKAL</b>\n"
         f"  RSI 1H    : {r['rsi']:.0f} {'(oversold 🟢)' if r['rsi'] < 35 else '(netral)'}\n"
         f"  Candle kini: {current_candle_str}"
@@ -1347,15 +1540,17 @@ def build_alert(r, rank=None):
 
 
 def build_summary(results):
-    msg  = f"📋 <b>PRE-PUMP WATCHLIST — {utc_now()}</b>\n{'━'*30}\n"
+    msg  = f"📋 <b>PRE-PUMP WATCHLIST v3.0 — {utc_now()}</b>\n{'━'*30}\n"
     for i, r in enumerate(results, 1):
         comp  = r["compression"]
         awk   = r["awakening"]
         vol   = (f"${r['vol_24h']/1e6:.1f}M" if r["vol_24h"] >= 1e6
                  else f"${r['vol_24h']/1e3:.0f}K")
         days  = comp["length"] / 24
+        vel   = r.get("velocity", "?")
+        vel_emoji = {"CEPAT": "🚀", "SEDANG": "⚡"}.get(vel, "❓")
         msg  += (
-            f"{i}. <b>{r['symbol']}</b> [S:{r['score']}]\n"
+            f"{i}. <b>{r['symbol']}</b> [S:{r['score']}] {vel_emoji}{vel}\n"
             f"   Coil {days:.1f}d · Vol {awk['best_mult']:.1f}x · "
             f"T1:+{r['entry']['t1_pct']:.0f}% · {vol}\n"
         )
@@ -1371,7 +1566,7 @@ def build_candidate_list(tickers):
     stats         = defaultdict(int)
 
     log.info("=" * 70)
-    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v2.6")
+    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v3.0")
     log.info("=" * 70)
 
     for sym in WHITELIST_SYMBOLS:
@@ -1427,7 +1622,7 @@ def build_candidate_list(tickers):
 #  🚀  MAIN SCAN
 # ══════════════════════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v2.6 — {utc_now()} ===")
+    log.info(f"=== PRE-PUMP SCANNER v3.0 — {utc_now()} ===")
 
     tickers = get_all_tickers()
     if not tickers:
@@ -1498,13 +1693,27 @@ def run_scan():
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v2.6                            ║")
+    log.info("║  PRE-PUMP SCANNER v3.0                            ║")
     log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
-    log.info("║  Target: entry sekarang, TP 1-2 hari (+10-100%)  ║")
+    log.info("║  Target: pump energetik ≥8% dalam 1-3 jam        ║")
+    log.info("║  Gate baru: Pump Velocity CEPAT/SEDANG (v3.0)    ║")
     log.info("╚════════════════════════════════════════════════════╝")
 
     if not BOT_TOKEN or not CHAT_ID:
         log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan di environment!")
         exit(1)
 
-    run_scan()
+    interval = CONFIG["scan_interval_sec"]
+    log.info(f"Loop otomatis setiap {interval // 60} menit. Ctrl+C untuk berhenti.")
+
+    while True:
+        try:
+            run_scan()
+        except KeyboardInterrupt:
+            log.info("Scanner dihentikan oleh user.")
+            break
+        except Exception as exc:
+            log.error(f"Error tidak terduga di run_scan: {exc}", exc_info=True)
+
+        log.info(f"Tidur {interval // 60} menit sebelum scan berikutnya...")
+        time.sleep(interval)
