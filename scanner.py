@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  PIVOT BOUNCE SCANNER v3.2 — PRE-PUMP DETECTION + VELOCITY FILTER          ║
-║                      (PERBAIKAN BUG & PENYELARASAN)                         ║
+║                      (DENGAN LOG PRE-FILTER LENGKAP)                        ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -551,7 +551,6 @@ def calc_entry_targets(candles, compression_zone):
     cur  = candles[-1]["close"]
     atr  = calc_atr(candles[-48:], 14) or cur * 0.025
 
-    comp_mid = (compression_zone["high"] + compression_zone["low"]) / 2
     entry    = min(cur * 0.999, compression_zone["high"] * 1.005)
 
     sl = compression_zone["low"] - atr * CONFIG["atr_sl_mult"]
@@ -698,7 +697,7 @@ def classify_pump_velocity(spike_candle, comp_median_vol):
     return "LAMBAT", round(vol_mult, 1), round(body_pct * 100, 1)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🧠  MASTER SCORE — DIPERBAIKI
+#  🧠  MASTER SCORE — INTI SCANNER (dengan perbaikan)
 # ══════════════════════════════════════════════════════════════════════════════
 def master_score(symbol, ticker):
     c1h = get_candles(symbol, "1h", CONFIG["candle_limit_1h"])
@@ -855,7 +854,7 @@ def master_score(symbol, ticker):
         spike_idx = -awakening["spike_candle"]  # indeks negatif
         last_vol       = c1h[spike_idx]["volume_usd"]
         target_hour    = (c1h[spike_idx]["ts"] // 3_600_000) % 24
-        same_hour_vols = [c["volume_usd"] for c in c1h[:spike_idx]  # hanya candle sebelum spike
+        same_hour_vols = [c["volume_usd"] for c in c1h[:spike_idx]
                           if (c["ts"] // 3_600_000) % 24 == target_hour]
         avg_same_hour  = sum(same_hour_vols) / len(same_hour_vols) if same_hour_vols else 1
         rvol           = last_vol / avg_same_hour if avg_same_hour > 0 else 1.0
@@ -1017,7 +1016,7 @@ def master_score(symbol, ticker):
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  📱  TELEGRAM FORMATTER (DIPERBAIKI, hapus vwap/z2)
+#  📱  TELEGRAM FORMATTER (tidak diubah)
 # ══════════════════════════════════════════════════════════════════════════════
 def build_alert(r, rank=None):
     sc   = min(r["score"], 100)
@@ -1118,7 +1117,7 @@ def build_summary(results):
     return msg
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🔍  BUILD CANDIDATE LIST (tidak diubah)
+#  🔍  BUILD CANDIDATE LIST (DENGAN LOG PRE-FILTER LENGKAP)
 # ══════════════════════════════════════════════════════════════════════════════
 def build_candidate_list(tickers):
     candidates    = []
@@ -1131,12 +1130,15 @@ def build_candidate_list(tickers):
 
     for sym in WHITELIST_SYMBOLS:
         if sym in MANUAL_EXCLUDE:
+            log.info(f"  {sym}: SKIP manual exclude")
             stats["manual_exclude"] += 1
             continue
         if is_cooldown(sym):
+            log.info(f"  {sym}: SKIP cooldown")
             stats["cooldown"] += 1
             continue
         if sym not in tickers:
+            log.info(f"  {sym}: SKIP tidak ditemukan di ticker Bitget")
             not_found.append(sym)
             continue
 
@@ -1145,20 +1147,25 @@ def build_candidate_list(tickers):
             vol   = float(t.get("quoteVolume", 0))
             chg   = float(t.get("change24h",   0)) * 100
             price = float(t.get("lastPr",       0))
-        except:
+        except Exception as e:
+            log.info(f"  {sym}: SKIP parse error - {e}")
             stats["parse_error"] += 1
             continue
 
         if vol < CONFIG["pre_filter_vol"]:
+            log.info(f"  {sym}: SKIP pre-filter vol terlalu rendah ({vol/1e3:.0f}K < {CONFIG['pre_filter_vol']/1e3:.0f}K)")
             stats["vol_too_low"] += 1
             continue
         if vol > CONFIG["max_vol_24h"]:
+            log.info(f"  {sym}: SKIP pre-filter vol terlalu tinggi ({vol/1e6:.1f}M > {CONFIG['max_vol_24h']/1e6:.0f}M)")
             stats["vol_too_high"] += 1
             continue
         if abs(chg) > CONFIG["gate_chg_24h_max"]:
+            log.info(f"  {sym}: SKIP pre-filter chg 24h ekstrem ({chg:.1f}% > {CONFIG['gate_chg_24h_max']}%)")
             stats["change_extreme"] += 1
             continue
         if price <= 0:
+            log.info(f"  {sym}: SKIP harga tidak valid ({price})")
             stats["invalid_price"] += 1
             continue
 
@@ -1168,8 +1175,9 @@ def build_candidate_list(tickers):
     will_scan = len(candidates)
 
     log.info(f"\n📊 Pre-filter: {will_scan}/{total} coin akan di-scan")
-    log.info(f"   Cooldown: {stats['cooldown']} | Vol rendah: {stats['vol_too_low']} | "
-             f"Vol tinggi: {stats['vol_too_high']} | Chg ekstrem: {stats['change_extreme']}")
+    log.info(f"   Cooldown: {stats['cooldown']} | Manual exclude: {stats['manual_exclude']} | Parse error: {stats['parse_error']}")
+    log.info(f"   Vol rendah: {stats['vol_too_low']} | Vol tinggi: {stats['vol_too_high']} | Chg ekstrem: {stats['change_extreme']}")
+    log.info(f"   Harga invalid: {stats['invalid_price']}")
     if not_found:
         log.info(f"   Tidak di Bitget: {len(not_found)} coin")
     log.info(f"   ⏱️  Est. waktu: ~{will_scan * CONFIG['sleep_coins'] / 60:.1f} menit")
@@ -1200,6 +1208,9 @@ def run_scan():
             vol = 0
 
         if vol < CONFIG["min_vol_24h"]:
+            # Ini adalah filter akhir, tapi seharusnya sudah terfilter di pre-filter.
+            # Namun kita tetap log untuk jaga-jaga.
+            log.info(f"  {sym}: SKIP final volume terlalu rendah ({vol/1e3:.0f}K < {CONFIG['min_vol_24h']/1e3:.0f}K)")
             continue
 
         log.info(f"[{i+1}/{len(candidates)}] {sym} (vol ${vol/1e3:.0f}K)...")
@@ -1244,7 +1255,7 @@ def run_scan():
 
 if __name__ == "__main__":
     log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v3.2 (FIXED)                    ║")
+    log.info("║  PRE-PUMP SCANNER v3.2 (FIXED + LOG PRE-FILTER)   ║")
     log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
     log.info("║  Target: pump energetik ≥8% dalam 1-3 jam        ║")
     log.info("╚════════════════════════════════════════════════════╝")
