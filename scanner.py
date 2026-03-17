@@ -77,7 +77,7 @@ CONFIG = {
     # IOTX $117K, THETA $310K terlalu kecil untuk pump 10%+ dalam 24H
     # Referensi chart (TRUMP/PIXEL/ORCA/VVV): semua vol ≥ $5M saat pump
     "min_vol_24h":            500_000,
-    "max_vol_24h":         800_000_000,
+    "max_vol_24h":         8_000_000_000,
     "pre_filter_vol":         100_000,   # pre-filter dinaikkan ke $100K
 
     # ── price change gate ─────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ CONFIG = {
     # Median tidak terpengaruh pump candle outlier, sehingga threshold 3x median
     # lebih akurat mendeteksi aktivitas besar dalam zona.
     # Kalibrasi: 2Z ~14 candle >3× median → SKIP ✅, BLAST 1 candle → LOLOS ✅
-    "zone_purity_vol_mult":        3.0,   # candle vol > 3× median_zone = spike besar
+    "zone_purity_vol_mult":        2.5,   # candle vol > 3× median_zone = spike besar
     "zone_purity_spike_max":       1,     # toleransi 1 spike; ke-2 = terkontaminasi
 
     # ── CHOPPY FILTER ─────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ CONFIG = {
     # ── VOLUME AWAKENING ──────────────────────────────────────────────────────
     # Fase 2: volume mulai "bangun" — ini trigger utama
     "awakening_vol_mult":          1.8,    # volume candle terbaru ≥ 1.8x avg volume selama compression
-    "awakening_lookback_candles":    3,    # cek 3 candle terakhir (salah satu harus spike)
+    "awakening_lookback_candles":    5,    # cek 3 candle terakhir (salah satu harus spike)
     "strong_awakening_mult":        3.0,   # ≥ 3x = awakening kuat, +bonus score
     "mega_awakening_mult":          6.0,   # ≥ 6x = mega spike (seperti PIXEL), +bonus besar
 
@@ -135,7 +135,7 @@ CONFIG = {
     # Harga belum boleh naik terlalu jauh dari low compression
     # Dinaikkan 8% → 12%: spike candle pertama saja bisa +6-10% dari low,
     # sehingga alert yang dikirim saat spike candle baru tutup tetap valid
-    "max_rise_from_low_pct":       0.12,   # maksimal sudah naik 12% dari low compression
+    "max_rise_from_low_pct":       0.20,   # maksimal sudah naik 12% dari low compression
     "max_rise_warn_pct":           0.06,   # > 6% dari low = kasih warning di alert
 
     # ── SUPPORT PROXIMITY ─────────────────────────────────────────────────────
