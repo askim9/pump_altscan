@@ -1,84 +1,39 @@
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  PIVOT BOUNCE SCANNER v3.2 — PRE-PUMP DETECTION + VELOCITY FILTER          ║
-║                                                                              ║
-║  FILOSOFI CORE:                                                              ║
-║  Deteksi TRANSISI dari Fase Tidur → Fase Bangun, SEBELUM harga lari.        ║
-║  v3.0: hanya coin dengan PUMP ENERGETIK — bukan pump lambat 1-7% / 24jam.  ║
-║                                                                              ║
-║  4 kondisi wajib terpenuhi bersamaan:                                       ║
-║  [1] TIDUR PULAS    — coin compression di support ≥ 36 jam                 ║
-║  [2] MULAI BANGUN   — volume spike ≥ 1.8x avg compression DAN RVOL ≥ 1.5x ║
-║  [3] POSISI TEPAT   — harga masih dalam 12% dari low, belum lari            ║
-║  [4] ENERGI CUKUP   — pump candle kini ≥ 50x median ATAU body ≥ 40%        ║
-║                        (BARU v3.0 — filter pump lambat)                     ║
-║                                                                              ║
-║  SCORING (0-100, capped):                                                   ║
-║  [30] Compression quality — seberapa "padat" dan panjang fase tidur         ║
-║  [25] Volume awakening   — seberapa besar volume spike vs baseline          ║
-║  [20] Support proximity  — seberapa dekat harga ke support historis         ║
-║  [15] Candle structure   — candle terbaru hijau / wick panjang / doji       ║
-║  [10] RSI momentum       — oversold = siap balik                            ║
-║  Bonus forensik (capped ke skor 100 total)                                  ║
-║                                                                              ║
-║  HARD GATES (salah satu gagal → skip coin):                                 ║
-║  - Compression ≥ 36 candle 1H dengan range < 11%                           ║
-║  - Volume candle terbaru ≥ 1.8x avg compression                            ║
-║  - RVOL ≥ 1.5x (vs jam yang sama historis) — konfirmasi ganda              ║
-║  - Spike candle bukan selling climax (merah + harga di bawah zona)         ║
-║  - Harga belum naik > 12% dari low compression                             ║
-║  - Volume 24H: $500K – $800M                                               ║
-║  - R/R minimum 1:1.5, SL minimum 2.5% dari entry                          ║
-║  - Funding rate > -0.003                                                   ║
-║  - PUMP VELOCITY: candle spike ≥ 50x median ATAU body spike ≥ 40%          ║
-║    (BARU v3.0 — buang pump lambat yang hanya +1-7% dalam 24 jam)           ║
-║                                                                              ║
-║  PATCH v2.1 – v2.8: (lihat git history)                                    ║
-║                                                                              ║
-║  PATCH v3.0 (dari forensik 9 coin nyata REZ/AIN/PEPE/BLAST/ARIA/G/        ║
-║             XAN/C/MYX):                                                     ║
-║  + Fungsi classify_pump_velocity() — kategorikan CEPAT/SEDANG/LAMBAT       ║
-║  + Gate PUMP_VELOCITY: skip coin dengan pump lambat (vol<50x med, body<40%)║
-║  + Scoring bonus velocity: CEPAT +20, SEDANG +10                           ║
-║  + Urgency label diperbarui berbasis velocity aktual                        ║
-║  + Skor total di-cap ke 100 (mencegah overflow di Telegram bar)             ║
-║  + comp_median_vol dihitung di master_score                                 ║
-║  + Fix safe_get: retry menggunakan continue bukan break pada 429            ║
-║  + Loop otomatis setiap 15 menit                                            ║
-║                                                                              ║
-║  PATCH v3.1 (dari analisa log run pertama — 342 coin, 0 sinyal):           ║
-║  + Fix gate "terlalu tua": dua lapis — age>168h skip langsung,             ║
-║    age 72-168h hanya skip jika TIDAK ADA volume spike (layer 1 check).     ║
-║  + Fix floating point: detected = best_mult >= thresh - 1e-9               ║
-║  + Score threshold 52 → 45                                                 ║
-║                                                                              ║
-║  PATCH v3.2 (dari analisa 6 coin: MERL/XLM/IO/MUBARAK/POLYX/AIN):         ║
-║  + Fix 1 — compression_min_candles: 36 → 16                                ║
-║    Root: AIN zona valid hanya 16H (range 4.7%, avg_rng 1.71%)              ║
-║    Mitigasi: compression_range_pct diperketat 11% → 8% jika length < 24H  ║
-║    (short_compression_range_pct=0.08 berlaku untuk zona 16-23H)            ║
-║  + Fix 2 — zone_purity baseline: MEDIAN → P75 (persentil ke-75)           ║
-║    Root: POLYX median=$1,670 terlalu kecil → semua candle ">3x median"     ║
-║    Solusi: pakai P75 sebagai baseline — lebih robust untuk low-liquidity   ║
-║    Kalibrasi: POLYX 0 spike >3xP75 → LOLOS; BLAST masih 10 spike → SKIP   ║
-║  + Fix 3 — velocity gate: spike candle WAJIB HIJAU (close > open)          ║
-║    Root: MERL/IO pump candle terbesar adalah MERAH (selling climax dump)   ║
-║    Gate selling climax yang ada hanya cek "merah + harga di bawah zona"    ║
-║    Fix baru: velocity LAMBAT jika spike candle merah, APAPUN vol-nya       ║
-║  + Hapus loop otomatis — sudah ada scheduler .yml eksternal                 ║
-║                                                                              ║
-║  TARGET   : Entry sekarang, TP dalam 1-3 jam (+8% s/d +50%)                ║
-║  INTERVAL : Diatur oleh scheduler eksternal (.yml)                          ║
-║  EXCHANGE : Bitget USDT-Futures                                             ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════════╗
+║  PRE-PUMP SCANNER SR v1.0                                               ║
+║                                                                          ║
+║  BERDASARKAN: Forensik 4 chart pump (TRUMP +51%, PIXEL +228%,           ║
+║               ORCA +79%, VVV +165%) menggunakan indikator               ║
+║               "Support and Resistance (High Volume Boxes) [ChartPrime]" ║
+║                                                                          ║
+║  FITUR BARU vs v9.10:                                                   ║
+║    SR ENGINE  : Replikasi Pine Script SR indicator                      ║
+║    • Support box  = pivotLow  + volume positif spike                   ║
+║    • Resistance box = pivotHigh + volume negatif spike                  ║
+║    • Break Res  = harga crossover resistance → sinyal pump              ║
+║    • Break Sup  = harga crossunder support → ANTI-BREAK SUPPORT        ║
+║    • Res→Sup flip = resistance lama jadi support → konfirmasi kuat     ║
+║                                                                          ║
+║  ENTRY/SL/TP CANGGIH:                                                   ║
+║    • Entry = tepat di atas support box ATAU di retest level             ║
+║    • SL = di BAWAH support box (bukan % fixed)                         ║
+║    • TP1 = resistance terdekat berikutnya                               ║
+║    • TP2 = resistance ke-2 / proyeksi ATR                              ║
+║    • Anti-Break Support Gate: blok sinyal jika support baru saja jebol ║
+║                                                                          ║
+║  DIPERTAHANKAN dari v9.10:                                              ║
+║    • Semua 324 coin whitelist                                           ║
+║    • Net Flow multi-TF (GC-6)                                          ║
+║    • Whale scoring, OI acceleration, Linea signature                   ║
+║    • Format Telegram HTML (kompatibel 100%)                            ║
+║    • Cooldown, OI snapshot, log file                                   ║
+╚══════════════════════════════════════════════════════════════════════════╝
 """
 
-import requests, time, os, math, json, logging
-import logging.handlers as _lh
+import requests, time, os, math, json, logging, logging.handlers as _lh
 from datetime import datetime, timezone
 from collections import defaultdict
 
-# ─── env ──────────────────────────────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -88,281 +43,224 @@ except ImportError:
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
 
-# ─── logging ──────────────────────────────────────────────────────────────────
-_fmt  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-_root = logging.getLogger()
-_root.setLevel(logging.INFO)
-_ch = logging.StreamHandler();  _ch.setFormatter(_fmt); _root.addHandler(_ch)
-_fh = _lh.RotatingFileHandler("/tmp/scanner_v2.log", maxBytes=10*1024*1024, backupCount=3)
-_fh.setFormatter(_fmt); _root.addHandler(_fh)
+# ── Logging ───────────────────────────────────────────────────────────────
+_log_fmt  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+_log_root = logging.getLogger()
+_log_root.setLevel(logging.INFO)
+_ch = logging.StreamHandler(); _ch.setFormatter(_log_fmt); _log_root.addHandler(_ch)
+_fh = _lh.RotatingFileHandler("/tmp/scanner_SR.log", maxBytes=10*1024*1024, backupCount=3)
+_fh.setFormatter(_log_fmt); _log_root.addHandler(_fh)
 log = logging.getLogger(__name__)
 
-# ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════
 #  ⚙️  CONFIG
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 CONFIG = {
-    # ── volume 24h filter ─────────────────────────────────────────────────────
-    # Dinaikkan dari $3K → $500K berdasarkan data nyata:
-    # IOTX $117K, THETA $310K terlalu kecil untuk pump 10%+ dalam 24H
-    # Referensi chart (TRUMP/PIXEL/ORCA/VVV): semua vol ≥ $5M saat pump
-    "min_vol_24h":            500_000,
-    "max_vol_24h":         800_000_000,
-    "pre_filter_vol":         100_000,   # pre-filter dinaikkan ke $100K
+    # ── Alert threshold ───────────────────────────────────────
+    "min_composite_alert":    38,
+    "min_prob_alert":        0.35,
+    "min_score_alert":        25,
+    "min_whale_score":        10,
+    "max_alerts_per_run":     15,
 
-    # ── price change gate ─────────────────────────────────────────────────────
-    "gate_chg_24h_max":            40.0,   # coin yang sudah naik >40% 24h pasti terlambat
+    # Bobot composite
+    "composite_w_layer":     0.55,
+    "composite_w_prob":      0.45,
 
-    # ── RVOL minimum gate ─────────────────────────────────────────────────────
-    # Data nyata: THETA RVOL=1.2x lolos tapi bukan awakening sejati
-    # RVOL dihitung vs jam yang sama minggu lalu — lebih jujur dari vol_mult
-    "min_rvol_gate":               1.5,   # RVOL < 1.5x = SKIP
+    # ── Volume filter ─────────────────────────────────────────
+    "min_vol_24h":          3_000,
+    "max_vol_24h":     50_000_000,
+    "pre_filter_vol":       1_000,
 
-    # ── minimum R/R dan SL ────────────────────────────────────────────────────
-    # IOTX R/R=0 karena SL hampir sama dengan entry — tidak layak trade
-    "min_rr":                      1.5,   # R/R minimum 1:1.5
-    "min_sl_pct":                  2.5,   # minimum SL distance 2.5% dari entry
+    # ── Gate ──────────────────────────────────────────────────
+    "gate_chg_24h_max":       30.0,
+    "gate_chg_7d_max":        35.0,
+    "gate_chg_7d_min":       -35.0,
+    "gate_funding_extreme":  -0.002,
+    "dead_activity_threshold": 0.10,
 
-    # ── candle config ─────────────────────────────────────────────────────────
-    "candle_limit_1h":            720,     # 30 hari data 1H — dinaikkan agar XAN-type (flat 40 hari) terdeteksi
+    # ── Candle limits ─────────────────────────────────────────
+    "candle_1h":              200,
+    "candle_15m":              96,
+    "candle_4h":               42,
 
-    # ── COMPRESSION DETECTION ─────────────────────────────────────────────────
-    # v3.2: diturunkan dari 36 → 16 agar coin dengan zona pendek-tapi-valid
-    # (seperti AIN: 16H, range 4.7%, avg_candle_range 1.71%) bisa terdeteksi.
-    # Mitigasi false positive: zona pendek (16-23H) mensyaratkan range lebih ketat
-    # (short_compression_range_pct = 0.08) vs zona panjang (0.11).
-    "compression_min_candles":     16,
-    "compression_max_candles":    672,
-    # Range untuk zona PANJANG (≥24H): 11% — tetap seperti sebelumnya
-    "compression_range_pct":      0.11,
-    # Range untuk zona PENDEK (16-23H): lebih ketat 8%
-    # Tanpa ini, semua coin dengan sideways 16H bebas masuk (terlalu banyak FP)
-    "short_compression_range_pct": 0.08,
-    "compression_lookback":       672,
+    # ── SR Engine (replikasi Pine Script) ─────────────────────
+    "sr_lookback":             20,    # lookbackPeriod Pine Script
+    "sr_vol_len":               2,    # vol_len Pine Script
+    "sr_atr_period":          200,    # ATR untuk box width
+    "sr_box_width":           1.0,    # box_withd Pine Script (multiplier ATR)
+    "sr_vol_percentile":       75,    # vol spike threshold (>75th = strong)
+    "sr_min_touches":           2,    # minimum touches untuk valid SR
+    "sr_zone_tolerance":      0.015,  # ±1.5% untuk zone touch detection
+    "sr_retest_window":        10,    # bar window untuk retest detection
+    "sr_break_confirm_bars":    3,    # bar konfirmasi setelah break
 
-    # ── ZONE PURITY CHECK (v3.2) ──────────────────────────────────────────────
-    # v3.2: baseline diubah dari MEDIAN → P75 (persentil ke-75 vol zona).
-    # Root cause dari POLYX miss: median $1,670 terlalu kecil untuk coin
-    # low-liquidity → candle $5K-$10K yang normal sudah >3x median → 11 "spikes"
-    # padahal bukan spike nyata.
-    # P75 lebih representatif sebagai "batas atas vol normal" zona compression.
-    # Kalibrasi (pre-pump window):
-    #   POLYX: P75=$5,015 → 1 candle >3xP75 → LOLOS ✅ (sebelumnya 11 spike FAIL)
-    #   BLAST: P75=$3,589 → 10 spike >3xP75 → SKIP ✅ (benar di-skip, sudah pump)
-    #   XAN:   P75=$2.7M  → 1 candle >3xP75 → LOLOS ✅
-    "zone_purity_vol_mult":        3.0,   # candle vol > 3× P75_zone = spike besar
-    "zone_purity_spike_max":       1,     # toleransi 1 spike; ke-2 = terkontaminasi
+    # ── Anti-Break Support Gate ───────────────────────────────
+    "abs_break_lookback":      20,    # cek 20 bar terakhir
+    "abs_min_support_vol":   0.70,    # support harus ≥70th percentile vol
+    "abs_block_if_broken":   True,    # hard block jika support baru jebol
 
-    # ── CHOPPY FILTER ─────────────────────────────────────────────────────────
-    # avg (high-low)/low per candle dalam zona < 2% → zona benar-benar flat
-    # Kalibrasi: BEAT 3.64% (false) vs IOTA 0.74% / ARPA 0.84% / NOT 1.23% (valid)
-    "compression_choppy_max":      0.02,  # avg candle range < 2% dalam zona
+    # ── Entry/SL/TP canggih ───────────────────────────────────
+    "entry_above_support_pct":  0.3,  # entry 0.3% di atas support box top
+    "entry_retest_max_pct":     2.0,  # max jauh dari support untuk dianggap retest
+    "sl_below_support_pct":     0.5,  # SL 0.5% di bawah support box bottom
+    "sl_atr_multiplier":        1.2,  # SL = support_bottom - 1.2x ATR (ambil yang lebih rendah)
+    "tp1_resistance_buffer":    0.3,  # TP1 = resistance - 0.3% (sebelum resistance)
+    "tp2_multiplier":           1.8,  # TP2 = TP1 + (TP1-entry)*0.8 tambahan
+    "min_rr_ratio":             1.5,  # minimum R:R untuk alert
+    "min_tp1_pct":              5.0,  # minimum TP1 dari entry
+    "max_sl_pct":               6.0,  # maximum SL dari entry
 
-    # ── VOLUME AWAKENING ──────────────────────────────────────────────────────
-    # Fase 2: volume mulai "bangun" — ini trigger utama
-    "awakening_vol_mult":          1.8,    # volume candle terbaru ≥ 1.8x avg volume selama compression
-    "awakening_lookback_candles":    3,    # cek 3 candle terakhir (salah satu harus spike)
-    "strong_awakening_mult":        3.0,   # ≥ 3x = awakening kuat, +bonus score
-    "mega_awakening_mult":          6.0,   # ≥ 6x = mega spike (seperti PIXEL), +bonus besar
+    # ── Stealth ───────────────────────────────────────────────
+    "stealth_max_vol":        80_000,
+    "stealth_min_coiling":         6,
+    "stealth_max_range":         4.0,
 
-    # ── NOT TOO LATE GATE ─────────────────────────────────────────────────────
-    # Harga belum boleh naik terlalu jauh dari low compression
-    # Dinaikkan 8% → 12%: spike candle pertama saja bisa +6-10% dari low,
-    # sehingga alert yang dikirim saat spike candle baru tutup tetap valid
-    "max_rise_from_low_pct":       0.12,   # maksimal sudah naik 12% dari low compression
-    "max_rise_warn_pct":           0.06,   # > 6% dari low = kasih warning di alert
+    # ── Short squeeze ─────────────────────────────────────────
+    "squeeze_funding_max":   -0.0001,
+    "squeeze_oi_change_min":    3.0,
 
-    # ── SUPPORT PROXIMITY ─────────────────────────────────────────────────────
-    "support_proximity_pct":       0.06,   # harga dalam 6% dari support historis
+    # ── Layer max scores ──────────────────────────────────────
+    "max_vol_score":             50,
+    "max_flat_score":            20,
+    "max_struct_score":          15,
+    "max_pos_score":             15,
+    "max_tf4h_score":             8,
+    "max_ctx_score":             10,
+    "max_whale_bonus":           20,
+    "max_linea_score":           25,
+    "max_sr_score":              40,   # SR layer (BARU)
+    "max_netflow_score":         25,
+    "max_oi_accel_score":        30,
 
-    # ── TREND CONTEXT GATE ────────────────────────────────────────────────────
-    # Bug dari data nyata (ALCH/BANK): coin downtrend bisa punya compression
-    # historis + spike hijau tapi harga masih di bawah zona → false signal.
-    # Solusi: cek apakah harga sekarang MASIH di dalam atau di atas zona compression.
-    # Jika harga di bawah comp_low lebih dari threshold ini → downtrend aktif, skip.
-    "price_below_zone_max":        0.03,   # toleransi harga di bawah zona: max 3%
-                                           # > 3% di bawah comp_low = downtrend sejati, skip
-                                           # ≤ 3% = bisa jadi liq sweep sebelum bounce
+    # ── GC-2: Liquidation ─────────────────────────────────────
+    "liq_window_min":            30,
+    "liq_long_block_usd":   100_000,
+    "liq_short_bonus_usd":  150_000,
 
-    # ── POST-PUMP DETECTION GATE (BARU v2.6) ────────────────────────────────
-    # Masalah: GAS dan 1MBABYDOGE lolos karena pump sudah terjadi tapi harga
-    # kembali ke zona compression (post-pump retracement). Scanner tidak tahu
-    # bahwa volume 6H terakhir sudah jauh di atas baseline compression.
-    #
-    # Solusi: jika rata-rata volume 6H terakhir > comp_avg_vol × 7,
-    # berarti coin sedang di fase aktif/post-pump, bukan pre-pump.
-    #
-    # Dikalibrasi dari data forensik nyata:
-    #   XAN window alert  : avg_vol_6h = 3.4x comp_avg → LOLOS ✅
-    #   MYX window alert  : avg_vol_6h = 1.2x comp_avg → LOLOS ✅
-    #   GAS post-pump     : avg_vol_6h = 150x comp_avg → SKIP  ✅
-    #   BABYDOGE post-pump: avg_vol_6h = 8.0x comp_avg → SKIP  ✅
-    #   Threshold 7x memberikan margin aman di antara keduanya
-    "post_pump_vol_mult":            7.0,   # avg_vol_6h > comp_avg * 7 → skip (pump baru)
-    "post_pump_lookback_candles":      6,   # window 6H untuk pump sangat baru
+    # ── GC-3: Linea Signature ─────────────────────────────────
+    "linea_oi_1h_min":          2.0,
+    "linea_oi_24h_min":         3.0,
+    "linea_rsi_max":           48.0,
+    "linea_ls_max":             1.1,
+    "linea_price_max_chg":      5.0,
 
-    # ── POST-PUMP 48H GATE (v2.8) ─────────────────────────────────────────────
-    # Menangkap pump yang terjadi 6-48 jam lalu (2Z-type false positive).
-    # Threshold lebih rendah dari gate 6H karena window lebih panjang.
-    # Kalibrasi: 2Z avg_48H/comp_avg ≈ 4-5x, XAN/MYX ≈ 1-3x.
-    "post_pump_lookback_48h":        48,   # window 48H
-    "post_pump_vol_mult_48h":       4.0,   # avg_48h > comp_avg * 4 → skip
+    # ── GC-5: Micro-cap OI Acceleration ──────────────────────
+    "oi_accel_micro_thresh":3_000_000,
+    "oi_accel_dormant_vol":   500_000,
+    "oi_accel_weak":           15.0,
+    "oi_accel_medium":         35.0,
+    "oi_accel_strong":         70.0,
+    "oi_accel_extreme":       120.0,
+    "oi_accel_div_price_max":   5.0,
+    "oi_dormant_baseline_mult": 3.0,
 
-    # ── G3: BREAKOUT GATE (v2.6) ──────────────────────────────────────────────
-    # Jika harga sekarang sudah > comp_high × 1.03 → coin sedang/sudah breakout.
-    # Berbeda dari post_pump (dimensi volume), ini cek posisi harga vs zona.
-    "price_above_zone_max":          0.03,  # price_now max 3% di atas comp_high
+    # ── GC-6: Multi-TF Net Flow ───────────────────────────────
+    "nf_strong_buy":           12.0,
+    "nf_buy":                   5.0,
+    "nf_neutral_max":           5.0,
+    "nf_sell":                 -5.0,
+    "nf_strong_sell":         -15.0,
+    "nf_gate_72h":            -12.0,
+    "nf_gate_24h":             -8.0,
+    "nf_gate_6h":              -5.0,
+    "nf_whale_72h_max":         3.0,
+    "nf_whale_72h_min":       -15.0,
+    "nf_whale_24h_min":         3.0,
+    "nf_whale_6h_min":          5.0,
 
-    # ── LIQUIDITY SWEEP BONUS ─────────────────────────────────────────────────
-    # Bonus score jika ada false breakdown sebelum recovery (pola ORCA/PIXEL)
-    "liq_sweep_lookback":           12,    # cek 12 candle terakhir
-    "liq_sweep_recover_bars":        4,    # recovery dalam 4 candle setelah breakdown
-
-    # ── FUNDING ───────────────────────────────────────────────────────────────
-    "funding_gate":              -0.003,   # buang jika funding < -0.003
-
-    # ── ENTRY / TARGET ────────────────────────────────────────────────────────
-    "atr_sl_mult":                  1.2,
-    "min_target_pct":               8.0,
-
-    # ── SCORING THRESHOLD ─────────────────────────────────────────────────────
-    # v3.0 kalibrasi ulang: threshold diturunkan 52 → 45.
-    # Justifikasi: gate pump_velocity sudah menjamin coin punya energi pump.
-    # Coin yang lolos velocity gate (SEDANG/CEPAT) sudah terkualifikasi.
-    # Threshold 52 terlalu tinggi — AAVEUSDT score=47 di-skip padahal valid.
-    # Dengan 45: coin seperti AAVEUSDT (47) lolos, false positive tetap terjaga
-    # oleh gate velocity (LAMBAT sudah di-skip sebelum scoring).
-    "score_threshold":             45,     # diturunkan dari 52 → 45 (v3.0)
-
-    # ── PUMP VELOCITY FILTER (BARU v3.0) ──────────────────────────────────────
-    # Root cause pump lambat (1-7% / 24 jam): scanner tidak membedakan pump
-    # energetik vs pump lesu. Dari forensik 9 coin nyata:
-    #
-    #   PUMP CEPAT (≥8% dalam H+1):
-    #     G    vol=7128x med, body=68% → H+1 +18%
-    #     AIN  vol=143x  med, body=54% → H+1 +23%
-    #     XAN  vol=471x  med, body=69% → H+1 +16%
-    #     ARIA vol=13x   med, body=54% → H+1 +13%  ← body penentu jika vol sedang
-    #     REZ  vol=726x  med, body=13% → H+1 +8%   ← vol sangat tinggi kompensasi body
-    #
-    #   PUMP LAMBAT (<5% dalam H+1):
-    #     PEPE vol=16x   med, body=58% → H+1 +1.8%  ← vol terlalu kecil
-    #
-    # Threshold CEPAT : vol_spike ≥ 50x median DAN body ≥ 40%
-    # Threshold SEDANG: vol_spike ≥ 15x median ATAU body ≥ 50%
-    # Gate LAMBAT     : tidak memenuhi keduanya → SKIP
-    #
-    # Catatan ARIA: vol hanya 13x median tapi body 54% → SEDANG, tetap lolos.
-    # Catatan REZ : vol 726x median tapi body 13%  → dikecualikan jika vol ≥ 200x.
-    "velocity_fast_vol_mult":      50.0,  # vol spike ≥ 50x median = kandidat CEPAT
-    "velocity_fast_body_pct":      0.40,  # body ≥ 40% = konfirmasi CEPAT
-    "velocity_mid_vol_mult":       10.0,  # vol spike ≥ 10x median = kandidat SEDANG (ARIA-type: 13x, H+1=+13%)
-    "velocity_mid_body_pct":       0.50,  # body ≥ 50% = konfirmasi SEDANG (tanpa vol besar)
-    "velocity_highvol_override":  200.0,  # jika vol ≥ 200x median, body threshold diturunkan ke 10%
-                                          # (REZ-type: vol ekstrem + body kecil tetap pump)
-
-    # ── OPERASIONAL ───────────────────────────────────────────────────────────
-    "max_alerts_per_run":           8,   # dinaikkan v2.8: VET/CRO score 82 tidak masuk karena limit 6
-    "alert_cooldown_sec":        3600,
-    "sleep_coins":                 0.7,
-    "sleep_error":                 3.0,
-    "cooldown_file":     "/tmp/v3_cooldown.json",
-    # Loop otomatis setiap 15 menit (v3.0)
-    "scan_interval_sec":          900,   # 15 menit — cocok untuk pump 1-4 jam
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  📋  WHITELIST — 324 coin
-# ══════════════════════════════════════════════════════════════════════════════
-WHITELIST_SYMBOLS = {
-      "4USDT", "0GUSDT", "1000BONKUSDT", "1000PEPEUSDT", "1000RATSUSDT",
-    "1000SHIBUSDT", "1000XECUSDT", "1INCHUSDT", "1MBABYDOGEUSDT", "2ZUSDT",
-    "AAVEUSDT", "ACEUSDT", "ACHUSDT", "ACTUSDT", "ADAUSDT", "AEROUSDT",
-    "AGLDUSDT", "AINUSDT", "AIOUSDT", "AIXBTUSDT", "AKTUSDT", "ALCHUSDT",
-    "ALGOUSDT", "ALICEUSDT", "ALLOUSDT", "ALTUSDT", "ANIMEUSDT",
-    "ANKRUSDT", "APEUSDT", "APEXUSDT", "API3USDT", "APRUSDT", "APTUSDT",
-    "ARUSDT", "ARBUSDT", "ARCUSDT", "ARIAUSDT", "ARKUSDT", "ARKMUSDT",
-    "ARPAUSDT", "ASTERUSDT", "ATUSDT", "ATHUSDT", "ATOMUSDT", "AUCTIONUSDT",
-    "AVAXUSDT", "AVNTUSDT", "AWEUSDT", "AXLUSDT", "AXSUSDT", "AZTECUSDT",
-    "BUSDT", "B2USDT", "BABYUSDT", "BANUSDT", "BANANAUSDT",
-    "BANANAS31USDT", "BANKUSDT", "BARDUSDT", "BATUSDT", "BCHUSDT", "BEATUSDT",
-    "BERAUSDT", "BGBUSDT", "BIGTIMEUSDT", "BIOUSDT", "BIRBUSDT", "BLASTUSDT",
-    "BLESSUSDT", "BLURUSDT", "BNBUSDT", "BOMEUSDT", "BRETTUSDT", "BREVUSDT",
-    "BROCCOLIUSDT", "BSVUSDT", "BTCUSDT", "BULLAUSDT", "C98USDT", "CAKEUSDT",
-    "CCUSDT", "CELOUSDT", "CFXUSDT", "CHILLGUYUSDT", "CHZUSDT", "CLUSDT",
-    "CLANKERUSDT", "CLOUSDT", "COAIUSDT", "COMPUSDT", "COOKIEUSDT",
-    "COWUSDT", "CRCLUSDT", "CROUSDT", "CROSSUSDT", "CRVUSDT", "CTKUSDT",
-    "CVCUSDT", "CVXUSDT", "CYBERUSDT", "CYSUSDT", "DASHUSDT", "DEEPUSDT",
-    "DENTUSDT", "DEXEUSDT", "DOGEUSDT", "DOLOUSDT", "DOODUSDT", "DOTUSDT",
-    "DRIFTUSDT", "DYDXUSDT", "DYMUSDT", "EGLDUSDT", "EIGENUSDT", "ENAUSDT",
-    "ENJUSDT", "ENSUSDT", "ENSOUSDT", "EPICUSDT", "ESPUSDT", "ETCUSDT",
-    "ETHUSDT", "ETHFIUSDT", "FUSDT", "FARTCOINUSDT", "FETUSDT",
-    "FFUSDT", "FIDAUSDT", "FILUSDT", "FLOKIUSDT", "FLUIDUSDT", "FOGOUSDT",
-    "FOLKSUSDT", "FORMUSDT", "GALAUSDT", "GASUSDT", "GIGGLEUSDT",
-    "GLMUSDT", "GMTUSDT", "GMXUSDT", "GOATUSDT", "GPSUSDT", "GRASSUSDT", "GUSDT",
-    "GRIFFAINUSDT", "GRTUSDT", "GUNUSDT", "GWEIUSDT", "HUSDT", "HBARUSDT",
-    "HEIUSDT", "HEMIUSDT", "HMSTRUSDT", "HOLOUSDT", "HOMEUSDT",     "HYPEUSDT", "HYPERUSDT", "ICNTUSDT", "ICPUSDT", "IDOLUSDT", "ILVUSDT",
-    "IMXUSDT", "INITUSDT", "INJUSDT", "INXUSDT", "IOUSDT",
-    "IOTAUSDT", "IOTXUSDT", "IPUSDT", "JASMYUSDT", "JCTUSDT", "JSTUSDT",
-    "JTOUSDT", "JUPUSDT", "KAIAUSDT", "KAITOUSDT", "KASUSDT", "KAVAUSDT",
-    "kBONKUSDT", "KERNELUSDT", "KGENUSDT", "KITEUSDT", "kPEPEUSDT", "kSHIBUSDT",
-    "LAUSDT", "LABUSDT", "LAYERUSDT", "LDOUSDT", "LIGHTUSDT", "LINEAUSDT",
-    "LINKUSDT", "LITUSDT", "LPTUSDT", "LSKUSDT", "LTCUSDT", "LUNAUSDT",
-    "LUNCUSDT", "LYNUSDT", "MUSDT", "MAGICUSDT", "MAGMAUSDT", "MANAUSDT",
-    "MANTAUSDT", "MANTRAUSDT", "MASKUSDT", "MAVUSDT", "MAVIAUSDT", "MBOXUSDT",
-    "MEUSDT", "MEGAUSDT", "MELANIAUSDT", "MEMEUSDT", "MERLUSDT", "METUSDT",
-    "METAUSDT", "MEWUSDT", "MINAUSDT", "MMTUSDT", "MNTUSDT", "MONUSDT",
-    "MOODENGUSDT", "MORPHOUSDT", "MOVEUSDT", "MOVRUSDT",     "MUUSDT", "MUBARAKUSDT", "MYXUSDT", "NAORISUSDT", "NEARUSDT", "NEIROCTOUSDT",
-    "NEOUSDT", "NEWTUSDT", "NILUSDT", "NMRUSDT", "NOMUSDT", "NOTUSDT",
-    "NXPCUSDT", "ONDOUSDT", "ONGUSDT", "ONTUSDT", "OPUSDT", "OPENUSDT",
-    "OPNUSDT", "ORCAUSDT", "ORDIUSDT", "OXTUSDT", "PARTIUSDT",     "PENDLEUSDT", "PENGUUSDT", "PEOPLEUSDT", "PEPEUSDT", "PHAUSDT", "PIEVERSEUSDT",
-    "PIPPINUSDT", "PLUMEUSDT", "PNUTUSDT", "POLUSDT", "POLYXUSDT",
-    "POPCATUSDT", "POWERUSDT", "PROMPTUSDT", "PROVEUSDT", "PUMPUSDT", "PURRUSDT",
-    "PYTHUSDT", "QUSDT", "QNTUSDT", "RAVEUSDT", "RAYUSDT",     "RECALLUSDT", "RENDERUSDT", "RESOLVUSDT", "REZUSDT", "RIVERUSDT", "ROBOUSDT",
-    "ROSEUSDT", "RPLUSDT", "RSRUSDT", "RUNEUSDT", "SUSDT", "SAGAUSDT", "SAHARAUSDT",
-    "SANDUSDT", "SAPIENUSDT", "SEIUSDT", "SENTUSDT", "SHIBUSDT", "SIGNUSDT",
-    "SIRENUSDT", "SKHYNIXUSDT", "SKRUSDT", "SKYUSDT", "SKYAIUSDT", "SLPUSDT",
-    "SNXUSDT", "SOLUSDT", "SOMIUSDT", "SONICUSDT", "SOONUSDT", "SOPHUSDT",
-    "SPACEUSDT", "SPKUSDT", "SPXUSDT", "SQDUSDT", "SSVUSDT",
-    "STBLUSDT", "STEEMUSDT", "STOUSDT", "STRKUSDT", "STXUSDT",
-    "SUIUSDT", "SUNUSDT", "SUPERUSDT", "SUSHIUSDT", "SYRUPUSDT", "TUSDT",
-    "TACUSDT", "TAGUSDT", "TAIKOUSDT", "TAOUSDT", "THEUSDT", "THETAUSDT",
-    "TIAUSDT", "TNSRUSDT", "TONUSDT", "TOSHIUSDT", "TOWNSUSDT", "TRBUSDT",
-    "TRIAUSDT", "TRUMPUSDT", "TRXUSDT", "TURBOUSDT", "UAIUSDT", "UBUSDT",
-    "UMAUSDT", "UNIUSDT", "USUSDT", "USDKRWUSDT", "USELESSUSDT",
-    "USUALUSDT", "VANAUSDT", "VANRYUSDT", "VETUSDT", "VINEUSDT", "VIRTUALUSDT",
-    "VTHOUSDT", "VVVUSDT", "WUSDT", "WALUSDT", "WAXPUSDT", "WCTUSDT", "WETUSDT",
-    "WIFUSDT", "WLDUSDT", "WLFIUSDT", "WOOUSDT", "WTIUSDT", "XAIUSDT",
-"XCUUSDT", "XDCUSDT", "XLMUSDT", "XMRUSDT", "XPDUSDT", "XPINUSDT",
-    "XPLUSDT", "XRPUSDT", "XTZUSDT", "XVGUSDT", "YGGUSDT", "YZYUSDT", "ZAMAUSDT",
-    "ZBTUSDT", "ZECUSDT", "ZENUSDT", "ZEREBROUSDT", "ZETAUSDT", "ZILUSDT",
-    "ZKUSDT", "ZKCUSDT", "ZKJUSDT", "ZKPUSDT", "ZORAUSDT", "ZROUSDT",
+    # ── Operasional ───────────────────────────────────────────
+    "alert_cooldown_sec":      1800,
+    "sleep_coins":              0.8,
+    "sleep_error":              3.0,
+    "cooldown_file":   "/tmp/sr_cooldown.json",
+    "oi_snapshot_file":"/tmp/sr_oi.json",
 }
 
 MANUAL_EXCLUDE = set()
 
+# ══════════════════════════════════════════════════════════════
+#  📋  WHITELIST (324 coin dari v9.10)
+# ══════════════════════════════════════════════════════════════
+WHITELIST_SYMBOLS = {
+    "DOGEUSDT","BCHUSDT","ADAUSDT","HYPEUSDT","XMRUSDT","LINKUSDT","XLMUSDT","HBARUSDT",
+    "LTCUSDT","ZECUSDT","AVAXUSDT","SHIBUSDT","SUIUSDT","TONUSDT","WLFIUSDT","CROUSDT",
+    "UNIUSDT","DOTUSDT","TAOUSDT","MUSDT","AAVEUSDT","ASTERUSDT","PEPEUSDT","BGBUSDT",
+    "SKYUSDT","ETCUSDT","NEARUSDT","ONDOUSDT","POLUSDT","ICPUSDT","WLDUSDT","ATOMUSDT",
+    "XDCUSDT","COINUSDT","NIGHTUSDT","ENAUSDT","PIPPINUSDT","KASUSDT","TRUMPUSDT","QNTUSDT",
+    "ALGOUSDT","RENDERUSDT","FILUSDT","MORPHOUSDT","APTUSDT","SUPERUSDT","VETUSDT","PUMPUSDT",
+    "1000SATSUSDT","ARBUSDT","1000BONKUSDT","STABLEUSDT","KITEUSDT","JUPUSDT","SEIUSDT","ZROUSDT",
+    "STXUSDT","DYDXUSDT","VIRTUALUSDT","DASHUSDT","PENGUUSDT","CAKEUSDT","JSTUSDT","XTZUSDT",
+    "ETHFIUSDT","1MBABYDOGEUSDT","IPUSDT","LITUSDT","HUSDT","FETUSDT","CHZUSDT","CRVUSDT",
+    "KAIAUSDT","IMXUSDT","BSVUSDT","INJUSDT","AEROUSDT","PYTHUSDT","IOTAUSDT","EIGENUSDT",
+    "GRTUSDT","JASMYUSDT","DEXEUSDT","SPXUSDT","TIAUSDT","FLOKIUSDT","HNTUSDT","SIRENUSDT",
+    "LDOUSDT","CFXUSDT","OPUSDT","ENSUSDT","STRKUSDT","MONUSDT","AXSUSDT","SANDUSDT",
+    "PENDLEUSDT","WIFUSDT","LUNCUSDT","FFUSDT","NEOUSDT","THETAUSDT","RIVERUSDT","BATUSDT",
+    "MANAUSDT","CVXUSDT","COMPUSDT","BARDUSDT","SENTUSDT","GALAUSDT","VVVUSDT","RAYUSDT",
+    "XPLUSDT","FLUIDUSDT","FARTCOINUSDT","GLMUSDT","RUNEUSDT","0GUSDT","POWERUSDT","SKRUSDT",
+    "EGLDUSDT","BUSDT","BERAUSDT","SNXUSDT","BANUSDT","JTOUSDT","ARUSDT","COWUSDT",
+    "DEEPUSDT","SUSDT","LPTUSDT","MELANIAUSDT","UBUSDT","FOGOUSDT","ARCUSDT","WUSDT",
+    "PIEVERSEUSDT","AWEUSDT","HOMEUSDT","GASUSDT","ICNTUSDT","ZENUSDT","XVGUSDT","ROSEUSDT",
+    "MYXUSDT","KSMUSDT","RSRUSDT","ATHUSDT","KMNOUSDT","AKTUSDT","ZORAUSDT","ESPUSDT",
+    "TOSHIUSDT","STGUSDT","ZILUSDT","LYNUSDT","APEUSDT","KAITOUSDT","FORMUSDT","AZTECUSDT",
+    "QUSDT","MOVEUSDT","MINAUSDT","SOONUSDT","TUSDT","BRETTUSDT","ACHUSDT","TURBOUSDT",
+    "NXPCUSDT","ALCHUSDT","ZETAUSDT","MOCAUSDT","CYSUSDT","ASTRUSDT","ENSOUSDT","AXLUSDT",
+    "UAIUSDT","VTHOUSDT","RAVEUSDT","NMRUSDT","COAIUSDT","GWEIUSDT","MEUSDT","ORCAUSDT",
+    "BLURUSDT","MERLUSDT","MOODENGUSDT","BIOUSDT","SOMIUSDT","B2USDT","ORDIUSDT","SPKUSDT",
+    "ZAMAUSDT","PARTIUSDT","1000RATSUSDT","SSVUSDT","BIRBUSDT","POPCATUSDT","GUNUSDT","BEATUSDT",
+    "BANANAS31USDT","LAUSDT","LINEAUSDT","DRIFTUSDT","AVNTUSDT","GRASSUSDT","GPSUSDT","PNUTUSDT",
+    "CELOUSDT","LUNAUSDT","VANAUSDT","TRIAUSDT","IOTXUSDT","POLYXUSDT","ANKRUSDT","SAHARAUSDT",
+    "RPLUSDT","MASKUSDT","UMAUSDT","TAGUSDT","USELESSUSDT","MEMEUSDT","ATUSDT","KGENUSDT",
+    "SKYAIUSDT","ONTUSDT","ENJUSDT","SIGNUSDT","CTKUSDT","NOTUSDT","CYBERUSDT","GMTUSDT",
+    "FIDAUSDT","CROSSUSDT","STEEMUSDT","LABUSDT","BREVUSDT","AUCTIONUSDT","HOLOUSDT","PEOPLEUSDT",
+    "CVCUSDT","IOUSDT","BROCCOLIUSDT","SXTUSDT","CLANKERUSDT","BIGTIMEUSDT","BLASTUSDT","THEUSDT",
+    "XPINUSDT","MANTAUSDT","YGGUSDT","WAXPUSDT","ONGUSDT","LAYERUSDT","ANIMEUSDT","BOMEUSDT",
+    "C98USDT","API3USDT","AGLDUSDT","MMTUSDT","INXUSDT","GIGGLEUSDT","IDOLUSDT","ARKMUSDT",
+    "RESOLVUSDT","EULUSDT","METISUSDT","SONICUSDT","TNSRUSDT","PROMUSDT","SAPIENUSDT","VELVETUSDT",
+    "FLOCKUSDT","BANKUSDT","ALLOUSDT","USUALUSDT","SLPUSDT","ARIAUSDT","MIRAUSDT","MAGICUSDT",
+    "ZKCUSDT","INUSDT","NAORISUSDT","MAGMAUSDT","REZUSDT","WCTUSDT","FUSDT","ELSAUSDT",
+    "SPACEUSDT","APRUSDT","AIXBTUSDT","GOATUSDT","DENTUSDT","JCTUSDT","XAIUSDT","AIOUSDT",
+    "ZKPUSDT","VINEUSDT","METAUSDT","FIGHTUSDT","INITUSDT","BASUSDT","NEWTUSDT","FUNUSDT",
+    "FOLKSUSDT","ARPAUSDT","MOVRUSDT","MUBARAKUSDT","NOMUSDT","ACTUSDT","ZKJUSDT","VANRYUSDT",
+    "AINUSDT","RECALLUSDT","MAVUSDT","CLOUSDT","LIGHTUSDT","TOWNSUSDT","BLESSUSDT","HAEDALUSDT",
+    "4USDT","USUSDT","HEIUSDT","OGUSDT","PIXELUSDT",
+}
+
+GRAN_MAP = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
+
 SECTOR_MAP = {
-    "DEFI":      ["SNXUSDT","CRVUSDT","CVXUSDT","COMPUSDT","AAVEUSDT","UNIUSDT","DYDXUSDT",
-                  "COWUSDT","PENDLEUSDT","MORPHOUSDT","FLUIDUSDT","SSVUSDT","LDOUSDT","ENSUSDT"],
+    "DEFI":      ["SNXUSDT","ENSOUSDT","SIRENUSDT","CRVUSDT","CVXUSDT","COMPUSDT","AAVEUSDT",
+                  "UNIUSDT","DYDXUSDT","COWUSDT","PENDLEUSDT","MORPHOUSDT","FLUIDUSDT","SSVUSDT",
+                  "RSRUSDT","NMRUSDT","UMAUSDT","LDOUSDT","ENSUSDT"],
+    "ZK_PRIVACY":["AZTECUSDT","MINAUSDT","STRKUSDT","ZORAUSDT","POLYXUSDT"],
+    "DESCI":     ["BIOUSDT","ATHUSDT"],
     "AI_CRYPTO": ["FETUSDT","RENDERUSDT","TAOUSDT","GRASSUSDT","AKTUSDT","VANAUSDT",
                   "COAIUSDT","UAIUSDT","GRTUSDT"],
     "SOLANA_ECO":["ORCAUSDT","RAYUSDT","JTOUSDT","DRIFTUSDT","WIFUSDT","JUPUSDT",
                   "1000BONKUSDT","PYTHUSDT"],
     "LAYER1":    ["APTUSDT","SUIUSDT","SEIUSDT","INJUSDT","KASUSDT","BERAUSDT","MOVEUSDT",
                   "KAIAUSDT","TIAUSDT","EGLDUSDT","NEARUSDT","TONUSDT","ALGOUSDT","HBARUSDT"],
-    "LAYER2":    ["ARBUSDT","OPUSDT","CELOUSDT","STRKUSDT","POLUSDT","LINEAUSDT"],
+    "LAYER2":    ["ARBUSDT","OPUSDT","CELOUSDT","STRKUSDT","LDOUSDT","POLUSDT","LINEAUSDT"],
     "GAMING":    ["AXSUSDT","GALAUSDT","IMXUSDT","SANDUSDT","APEUSDT","SUPERUSDT","CHZUSDT","ENJUSDT"],
+    "LOW_CAP":   ["VVVUSDT","POWERUSDT","ARCUSDT","AGLDUSDT","VIRTUALUSDT","SPXUSDT","ONDOUSDT",
+                  "ENAUSDT","EIGENUSDT","STXUSDT","RUNEUSDT","ORDIUSDT","SKRUSDT","AEROUSDT"],
     "MEME":      ["PEPEUSDT","SHIBUSDT","FLOKIUSDT","BRETTUSDT","FARTCOINUSDT","MEMEUSDT",
-                  "TURBOUSDT","PNUTUSDT","POPCATUSDT","MOODENGUSDT","1000BONKUSDT","TRUMPUSDT","WIFUSDT"],
+                  "TURBOUSDT","PNUTUSDT","POPCATUSDT","MOODENGUSDT","1000BONKUSDT","TRUMPUSDT",
+                  "WIFUSDT","TOSHIUSDT"],
 }
 SECTOR_LOOKUP = {coin: sec for sec, coins in SECTOR_MAP.items() for coin in coins}
 
-BITGET_BASE = "https://api.bitget.com"
-GRAN_MAP    = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
-_cache      = {}
+BITGET_BASE    = "https://api.bitget.com"
+COINGECKO_BASE = "https://api.coingecko.com/api/v3"
+_cache         = {}
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  🔒  COOLDOWN
-# ══════════════════════════════════════════════════════════════════════════════
+EXCLUDED_KEYWORDS = ["XAU","PAXG","BTC","ETH","USDC","DAI","BUSD","UST","LUNC","LUNA"]
+
+
+# ══════════════════════════════════════════════════════════════
+#  🔒  COOLDOWN & OI SNAPSHOT
+# ══════════════════════════════════════════════════════════════
 def load_cooldown():
     try:
         p = CONFIG["cooldown_file"]
@@ -370,8 +268,7 @@ def load_cooldown():
             with open(p) as f:
                 data = json.load(f)
             now = time.time()
-            return {k: v for k, v in data.items()
-                    if now - v < CONFIG["alert_cooldown_sec"]}
+            return {k: v for k, v in data.items() if now - v < CONFIG["alert_cooldown_sec"]}
     except:
         pass
     return {}
@@ -383,15 +280,60 @@ def save_cooldown(state):
     except:
         pass
 
+def load_oi_snapshots():
+    try:
+        if os.path.exists(CONFIG["oi_snapshot_file"]):
+            with open(CONFIG["oi_snapshot_file"]) as f:
+                return json.load(f)
+    except:
+        pass
+    return {}
+
+def save_oi_snapshot(symbol, oi_value):
+    snaps = load_oi_snapshots()
+    now   = time.time()
+    if symbol not in snaps:
+        snaps[symbol] = []
+    snaps[symbol].append({"ts": now, "oi": oi_value})
+    snaps[symbol] = sorted(snaps[symbol], key=lambda x: x["ts"])[-100:]
+    try:
+        with open(CONFIG["oi_snapshot_file"], "w") as f:
+            json.dump(snaps, f)
+    except:
+        pass
+
+def get_oi_changes(symbol, current_oi):
+    snaps = load_oi_snapshots()
+    hist  = snaps.get(symbol, [])
+    if len(hist) < 2:
+        return 0, 0, False
+    now = time.time()
+    def nearest(target_ts, tolerance=1800):
+        cands = [d for d in hist if abs(d["ts"] - target_ts) < tolerance]
+        return min(cands, key=lambda d: abs(d["ts"] - target_ts)) if cands else None
+    old1h  = nearest(now - 3600)
+    old24h = nearest(now - 86400, tolerance=7200)
+    if not old1h:
+        older = [d for d in hist if d["ts"] < now - 60]
+        if older:
+            old1h = min(older, key=lambda d: d["ts"])
+    chg1h  = (current_oi - old1h["oi"])  / old1h["oi"]  * 100 if old1h  and old1h["oi"]  else 0
+    chg24h = (current_oi - old24h["oi"]) / old24h["oi"] * 100 if old24h and old24h["oi"] else 0
+    return chg1h, chg24h, (old1h is not None)
+
 _cooldown = load_cooldown()
-log.info(f"Cooldown aktif: {len(_cooldown)} coin")
 
-def is_cooldown(sym):  return (time.time() - _cooldown.get(sym, 0)) < CONFIG["alert_cooldown_sec"]
-def set_cooldown(sym): _cooldown[sym] = time.time(); save_cooldown(_cooldown)
+def is_cooldown(sym):
+    return (time.time() - _cooldown.get(sym, 0)) < CONFIG["alert_cooldown_sec"]
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  🌐  HTTP
-# ══════════════════════════════════════════════════════════════════════════════
+def set_cooldown(sym):
+    _cooldown[sym] = time.time()
+    save_cooldown(_cooldown)
+
+
+# ══════════════════════════════════════════════════════════════
+#  🌐  HTTP UTILITIES
+# ══════════════════════════════════════════════════════════════
 def safe_get(url, params=None, timeout=12):
     for attempt in range(2):
         try:
@@ -400,9 +342,8 @@ def safe_get(url, params=None, timeout=12):
             return r.json()
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 429:
-                log.warning("Rate limit — tunggu 20s")
-                time.sleep(20)
-                continue   # ← v3.0 fix: retry setelah tunggu, bukan berhenti
+                log.warning("Rate limit — tunggu 15s")
+                time.sleep(15)
             break
         except Exception:
             if attempt == 0:
@@ -422,19 +363,23 @@ def send_telegram(msg):
     except:
         return False
 
-def utc_now(): return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+def utc_now():  return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+def utc_hour(): return datetime.now(timezone.utc).hour
 
-# ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════
 #  📡  DATA FETCHERS
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 def get_all_tickers():
-    data = safe_get(f"{BITGET_BASE}/api/v2/mix/market/tickers",
-                    params={"productType": "usdt-futures"})
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/tickers",
+        params={"productType": "usdt-futures"},
+    )
     if data and data.get("code") == "00000":
         return {t["symbol"]: t for t in data.get("data", [])}
     return {}
 
-def get_candles(symbol, gran="1h", limit=504):
+def get_candles(symbol, gran="1h", limit=200):
     g   = GRAN_MAP.get(gran, "1H")
     key = f"c_{symbol}_{g}_{limit}"
     if key in _cache:
@@ -453,12 +398,12 @@ def get_candles(symbol, gran="1h", limit=504):
         try:
             vol_usd = float(c[6]) if len(c) > 6 else float(c[5]) * float(c[4])
             candles.append({
-                "ts":         int(c[0]),
-                "open":     float(c[1]),
-                "high":     float(c[2]),
-                "low":      float(c[3]),
-                "close":    float(c[4]),
-                "volume":   float(c[5]),
+                "ts":       int(c[0]),
+                "open":   float(c[1]),
+                "high":   float(c[2]),
+                "low":    float(c[3]),
+                "close":  float(c[4]),
+                "volume": float(c[5]),
                 "volume_usd": vol_usd,
             })
         except:
@@ -468,18 +413,115 @@ def get_candles(symbol, gran="1h", limit=504):
     return candles
 
 def get_funding(symbol):
-    data = safe_get(f"{BITGET_BASE}/api/v2/mix/market/current-fund-rate",
-                    params={"symbol": symbol, "productType": "usdt-futures"})
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/current-fund-rate",
+        params={"symbol": symbol, "productType": "usdt-futures"},
+    )
     if data and data.get("code") == "00000":
         try:
             return float(data["data"][0].get("fundingRate", 0))
         except:
             pass
-    return 0.0
+    return 0
 
-# ══════════════════════════════════════════════════════════════════════════════
+def get_open_interest(symbol):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/open-interest",
+        params={"symbol": symbol, "productType": "usdt-futures"},
+    )
+    if data and data.get("code") == "00000":
+        try:
+            oi = data.get("data", {})
+            if "openInterestList" in oi and oi["openInterestList"]:
+                return float(oi["openInterestList"][0].get("size", 0))
+            return float(oi.get("size", 0))
+        except:
+            pass
+    return 0
+
+def get_long_short_ratio(symbol):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/account-long-short-ratio",
+        params={"symbol": symbol, "period": "1H",
+                "limit": "4", "productType": "usdt-futures"},
+    )
+    if data and data.get("code") == "00000" and data.get("data"):
+        try:
+            return float(data["data"][0].get("longShortRatio", 1.0))
+        except:
+            pass
+    return None
+
+def get_trades(symbol, limit=500):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/fills",
+        params={"symbol": symbol, "productType": "usdt-futures", "limit": str(limit)},
+    )
+    if data and data.get("code") == "00000":
+        trades = []
+        for t in data.get("data", []):
+            try:
+                ts_ms = int(t.get("fillTime", t.get("cTime", t.get("ts", 0))))
+                trades.append({
+                    "price": float(t["price"]),
+                    "size":  float(t["size"]),
+                    "side":  t.get("side", "").lower(),
+                    "ts_ms": ts_ms,
+                })
+            except:
+                pass
+        return trades
+    return []
+
+def get_orderbook(symbol, levels=50):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/merge-depth",
+        params={"symbol": symbol, "productType": "usdt-futures",
+                "precision": "scale0", "limit": str(levels)},
+    )
+    if data and data.get("code") == "00000":
+        try:
+            book    = data["data"]
+            bid_vol = sum(float(b[1]) for b in book.get("bids", []))
+            ask_vol = sum(float(a[1]) for a in book.get("asks", []))
+            total   = bid_vol + ask_vol
+            ratio   = bid_vol / total if total > 0 else 0.5
+            return ratio, bid_vol, ask_vol
+        except:
+            pass
+    return 0.5, 0, 0
+
+def get_liquidations(symbol):
+    data = safe_get(
+        f"{BITGET_BASE}/api/v2/mix/market/liquidation-orders",
+        params={"symbol": symbol, "productType": "usdt-futures", "pageSize": "100"},
+    )
+    if not data or data.get("code") != "00000":
+        return 0, 0
+    try:
+        orders  = data.get("data", {}).get("liquidationOrderList", [])
+        now_ms  = int(time.time() * 1000)
+        cutoff  = now_ms - CONFIG["liq_window_min"] * 60 * 1000
+        long_liq  = 0.0
+        short_liq = 0.0
+        for o in orders:
+            ts  = int(o.get("cTime", 0))
+            if ts < cutoff:
+                continue
+            usd  = float(o.get("size", 0)) * float(o.get("fillPrice", 0))
+            side = o.get("side", "").lower()
+            if "sell" in side:
+                long_liq += usd
+            else:
+                short_liq += usd
+        return long_liq, short_liq
+    except:
+        return 0, 0
+
+
+# ══════════════════════════════════════════════════════════════
 #  📐  MATH HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 def calc_atr(candles, period=14):
     if len(candles) < period + 1:
         return None
@@ -491,6 +533,12 @@ def calc_atr(candles, period=14):
     for i in range(period, len(trs)):
         atr = (atr * (period - 1) + trs[i]) / period
     return atr
+
+def calc_atr_long(candles, period=200):
+    """ATR panjang untuk SR box width (replikasi Pine Script ta.atr(200))"""
+    if len(candles) < period + 1:
+        return calc_atr(candles, min(14, len(candles) - 1))
+    return calc_atr(candles, period)
 
 def get_rsi(candles, period=14):
     if len(candles) < period + 1:
@@ -504,18 +552,33 @@ def get_rsi(candles, period=14):
     avg_g = sum(gains[:period]) / period
     avg_l = sum(losses[:period]) / period
     for i in range(period, len(gains)):
-        avg_g = (avg_g * (period-1) + gains[i]) / period
-        avg_l = (avg_l * (period-1) + losses[i]) / period
+        avg_g = (avg_g * (period - 1) + gains[i]) / period
+        avg_l = (avg_l * (period - 1) + losses[i]) / period
     if avg_l == 0:
         return 100.0
     return 100 - (100 / (1 + avg_g / avg_l))
 
+def bbw_percentile(candles, period=20):
+    closes = [c["close"] for c in candles]
+    if len(closes) < period + 10:
+        return 0, 50
+    bbws = []
+    for i in range(period - 1, len(closes)):
+        w    = closes[i - period + 1: i + 1]
+        mean = sum(w) / period
+        std  = math.sqrt(sum((x - mean) ** 2 for x in w) / period)
+        bbws.append((4 * std / mean * 100) if mean else 0)
+    if not bbws:
+        return 0, 50
+    cur = bbws[-1]
+    pct = sum(1 for b in bbws[:-1] if b < cur) / max(len(bbws) - 1, 1) * 100
+    return cur, pct
+
 def calc_poc(candles):
-    """Point of Control — price level with highest traded volume."""
     if not candles:
         return None
-    pmin = min(c["low"]  for c in candles)
-    pmax = max(c["high"] for c in candles)
+    pmin  = min(c["low"]  for c in candles)
+    pmax  = max(c["high"] for c in candles)
     if pmax == pmin:
         return candles[-1]["close"]
     bsize   = (pmax - pmin) / 40
@@ -525,1247 +588,1721 @@ def calc_poc(candles):
         hi = int((c["high"] - pmin) / bsize)
         nb = max(hi - lo + 1, 1)
         for b in range(lo, hi + 1):
-            vol_bkt[b] += c["volume_usd"] / nb
+            vol_bkt[b] += c["volume"] / nb
     poc_b = max(vol_bkt, key=vol_bkt.get) if vol_bkt else 20
     return pmin + (poc_b + 0.5) * bsize
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  🔍  COMPRESSION ZONE DETECTOR
-#  Cari zona tidur terpanjang dan terbaru yang berakhir dengan volume spike
-# ══════════════════════════════════════════════════════════════════════════════
-def find_compression_zone(candles):
+def calc_vwap(candles):
+    cum_tv, cum_v = 0, 0
+    for c in candles:
+        tp      = (c["high"] + c["low"] + c["close"]) / 3
+        cum_tv += tp * c["volume"]
+        cum_v  += c["volume"]
+    return cum_tv / cum_v if cum_v else (candles[-1]["close"] if candles else 0)
+
+def percentile_val(values, pct):
+    if not values:
+        return 0
+    s = sorted(values)
+    idx = int(len(s) * pct / 100)
+    return s[min(idx, len(s)-1)]
+
+
+# ══════════════════════════════════════════════════════════════
+#  🎯  SR ENGINE — Replikasi Pine Script ChartPrime
+#     "Support and Resistance (High Volume Boxes)"
+# ══════════════════════════════════════════════════════════════
+def calc_delta_volume(candle):
     """
-    Scan dari kanan ke kiri (terbaru ke terlama).
-    Cari rentang candle di mana high-low range < compression_range_pct.
-    Return zona terbaik beserta metriknya.
-
-    v3.2 changes:
-    - min_len: 36 → 16  (tangkap zona pendek seperti AIN 16H)
-    - short_compression_range_pct: 0.08 berlaku untuk zona 16-23H
-      (mitigasi false positive dari zona terlalu pendek)
-    - zone_purity baseline: MEDIAN → P75 (persentil ke-75)
-      (robust untuk coin low-liquidity seperti POLYX)
+    Replikasi upAndDownVolume() dari Pine Script.
+    Buy candle: +volume, Sell candle: -volume
     """
-    cfg        = CONFIG
-    min_len    = cfg["compression_min_candles"]     # 16
-    max_len    = cfg["compression_max_candles"]
-    range_pct  = cfg["compression_range_pct"]       # 0.11 untuk ≥24H
-    short_rng  = cfg.get("short_compression_range_pct", 0.08)  # 0.08 untuk 16-23H
-    lookback   = min(cfg["compression_lookback"], len(candles))
-    scan_slice = candles[-lookback:]
-    n          = len(scan_slice)
-
-    best = None
-
-    for end in range(n - 1, min_len - 2, -1):
-        zone_high = scan_slice[end]["high"]
-        zone_low  = scan_slice[end]["low"]
-        start     = end
-
-        for start in range(end - 1, max(end - max_len, -1), -1):
-            c = scan_slice[start]
-            new_high = max(zone_high, c["high"])
-            new_low  = min(zone_low,  c["low"])
-            rng      = (new_high - new_low) / new_low if new_low > 0 else 999
-
-            if rng > range_pct:
-                start += 1
-                break
-            zone_high = new_high
-            zone_low  = new_low
-
-        length = end - start + 1
-        if length < min_len:
-            continue
-
-        # ── Fix 1 v3.2: Zona pendek (16-23H) harus punya range lebih ketat ──
-        # Tanpa ini, coin dengan sideways 16H yang bergerak 10% bisa lolos.
-        # Threshold 8% untuk zona pendek vs 11% untuk zona panjang.
-        actual_range = (zone_high - zone_low) / zone_low if zone_low > 0 else 999
-        if length < 24 and actual_range > short_rng:
-            continue  # zona terlalu pendek DAN range terlalu lebar → skip
-
-        # Zona valid — hitung statistik
-        zone_candles = scan_slice[start:end+1]
-        vols_zone    = sorted(c["volume_usd"] for c in zone_candles)
-        mid          = length // 2
-        median_vol   = (vols_zone[mid] + vols_zone[~mid]) / 2 if length > 1 else vols_zone[0]
-        avg_vol      = sum(vols_zone) / length
-
-        # ── CHOPPY FILTER ─────────────────────────────────────────────────────
-        choppy_max = cfg.get("compression_choppy_max", 0.02)
-        avg_candle_range = sum(
-            (c["high"] - c["low"]) / c["low"]
-            for c in zone_candles if c["low"] > 0
-        ) / length
-        if avg_candle_range > choppy_max:
-            continue
-
-        # ── ZONE PURITY CHECK (v3.2, P75-based) ──────────────────────────────
-        # v3.2: baseline diubah dari MEDIAN → P75 (persentil ke-75).
-        # Root cause POLYX miss: median $1,670 terlalu kecil untuk coin sepi
-        # → candle $5K yang normal sudah >3x median → 11 "spikes" yang palsu.
-        # P75 lebih representatif sebagai "batas atas vol normal" zona.
-        #
-        # Kalibrasi:
-        #   POLYX P75=$5,015 → 0 candle >3xP75 → spike_count=0 ≤ 1 → LOLOS ✅
-        #   BLAST P75=$3,589 → 10 candle >3xP75 → spike_count=10 > 1 → SKIP ✅
-        #   XAN   P75=$2.7M  → 1 candle >3xP75 → spike_count=1 ≤ 1 → LOLOS ✅
-        p75_idx   = int(length * 0.75)
-        p75_vol   = vols_zone[min(p75_idx, length - 1)]
-        # Fallback: jika P75 = 0 (semua candle vol 0), pakai median
-        purity_base = p75_vol if p75_vol > 0 else median_vol
-
-        purity_mult = cfg.get("zone_purity_vol_mult", 3.0)
-        purity_max  = cfg.get("zone_purity_spike_max", 1)
-        spike_count = sum(
-            1 for c in zone_candles
-            if purity_base > 0 and c["volume_usd"] > purity_mult * purity_base
-        )
-        if spike_count > purity_max:
-            continue  # zona terkontaminasi
-
-        # Hitung "age" dan quality
-        age     = (n - 1) - end
-        quality = length * math.exp(-age / 48)
-
-        if best is None or quality > best["quality"]:
-            best = {
-                "start_idx":        start,
-                "end_idx":          end,
-                "low":              zone_low,
-                "high":             zone_high,
-                "length":           length,
-                "avg_vol":          avg_vol,
-                "age_candles":      age,
-                "quality":          quality,
-                "range_pct":        actual_range,
-                "avg_candle_range": avg_candle_range,
-                "spike_count":      spike_count,
-            }
-
-        end = start
-
-    return best
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ⚡  VOLUME AWAKENING DETECTOR
-#  Apakah volume sudah mulai "bangun" dari tidurnya?
-# ══════════════════════════════════════════════════════════════════════════════
-def detect_volume_awakening(candles, compression_avg_vol):
-    """
-    Cek 3 candle terbaru — apakah ada yang volumenya spike signifikan
-    dibanding rata-rata selama compression?
-
-    Return dict:
-      detected       — bool
-      best_mult      — multiplier volume terbaik dari 3 candle terbaru
-      spike_candle   — index candle yang spike (dari akhir array)
-      is_green       — apakah candle spike hijau
-      is_mega        — volume ≥ 6x (seperti PIXEL)
-    """
-    if not candles or compression_avg_vol <= 0:
-        return {"detected": False, "best_mult": 0, "spike_candle": -1,
-                "is_green": False, "is_mega": False}
-
-    lookback = CONFIG["awakening_lookback_candles"]
-    thresh   = CONFIG["awakening_vol_mult"]
-
-    best_mult    = 0.0
-    spike_candle = -1
-    is_green     = False
-
-    for i in range(1, min(lookback + 1, len(candles) + 1)):
-        c    = candles[-i]
-        mult = c["volume_usd"] / compression_avg_vol if compression_avg_vol > 0 else 0
-        if mult > best_mult:
-            best_mult    = mult
-            spike_candle = i   # 1 = terbaru
-            is_green     = c["close"] > c["open"]
-
-    detected = best_mult >= thresh - 1e-9   # v3.0 fix: toleransi floating point
-    is_mega  = best_mult >= CONFIG["mega_awakening_mult"]
-
-    return {
-        "detected":     detected,
-        "best_mult":    round(best_mult, 2),
-        "spike_candle": spike_candle,
-        "is_green":     is_green,
-        "is_mega":      is_mega,
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  💧  LIQUIDITY SWEEP DETECTOR
-#  Cek apakah ada false breakdown (dip bawah support lalu recovery cepat)
-#  — pola yang sering terjadi sebelum pump besar (ORCA, PIXEL)
-# ══════════════════════════════════════════════════════════════════════════════
-def detect_liquidity_sweep(candles, support_low):
-    """
-    False breakdown = harga dip di bawah support_low tapi langsung recovery
-    dalam beberapa candle. Ini pertanda smart money ambil likuiditas.
-    """
-    lookback    = CONFIG["liq_sweep_lookback"]
-    recover_bars = CONFIG["liq_sweep_recover_bars"]
-    recent      = candles[-lookback:]
-
-    for i in range(len(recent) - 1):
-        c = recent[i]
-        # Candle ini breakdown di bawah support
-        if c["low"] < support_low * 0.99:  # minimal 1% di bawah support
-            # Cek apakah recovery dalam recover_bars candle berikutnya
-            for j in range(i + 1, min(i + recover_bars + 1, len(recent))):
-                if recent[j]["close"] > support_low:
-                    return True  # ada liquidity sweep
-    return False
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  📊  CANDLE STRUCTURE ANALYZER
-#  Analisa struktur candle terbaru — rejection / doji / engulfing
-# ══════════════════════════════════════════════════════════════════════════════
-def analyze_candle_structure(candle):
-    """
-    Return skor 0-15 berdasarkan struktur candle terbaru.
-    Bullish rejection (wick panjang bawah) = +15
-    Doji / spinning top = +8
-    Candle hijau biasa = +5
-    Candle merah = 0
-    """
-    body   = abs(candle["close"] - candle["open"])
-    rng    = candle["high"] - candle["low"]
-    if rng == 0:
-        return 0, "doji"
-
-    lower_wick = min(candle["open"], candle["close"]) - candle["low"]
-    upper_wick = candle["high"] - max(candle["open"], candle["close"])
-    body_pct   = body / rng
-    lwick_pct  = lower_wick / rng
-
-    # Bullish rejection: lower wick > 50% candle range, body kecil
-    if lwick_pct > 0.50 and body_pct < 0.35:
-        return 15, "bullish rejection wick"
-
-    # Hammer/pin bar: lower wick > 40%
-    if lwick_pct > 0.40:
-        return 12, "hammer/pin bar"
-
-    # Doji: body sangat kecil
-    if body_pct < 0.15:
-        return 8, "doji (indecision)"
-
-    # Green candle biasa
     if candle["close"] > candle["open"]:
-        return 5, "green candle"
-
-    # Red candle — bearish, nilai minimal
-    return 2, "red candle"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  🎯  ENTRY & TARGET CALCULATOR
-# ══════════════════════════════════════════════════════════════════════════════
-def calc_entry_targets(candles, compression_zone):
-    cur  = candles[-1]["close"]
-    atr  = calc_atr(candles[-48:], 14) or cur * 0.025
-
-    # Entry: dalam zona compression atau sedikit di atasnya
-    comp_mid = (compression_zone["high"] + compression_zone["low"]) / 2
-    entry    = min(cur * 0.999, compression_zone["high"] * 1.005)
-
-    # Stop loss: di bawah low compression dengan buffer ATR
-    sl = compression_zone["low"] - atr * CONFIG["atr_sl_mult"]
-    sl = max(sl, entry * 0.85)  # batas atas: SL maksimal 15% dari entry
-
-    # ── FIX: enforce minimum SL distance ─────────────────────────────────────
-    # Untuk coin harga sangat rendah, ATR tiny → SL bisa 0.01% dari entry
-    # yang tidak masuk akal. Minimum 2.5% agar ada ruang gerak yang wajar.
-    min_sl_dist = entry * (CONFIG["min_sl_pct"] / 100)
-    if (entry - sl) < min_sl_dist:
-        sl = entry - min_sl_dist
-
-    sl_pct = round((entry - sl) / entry * 100, 1)
-
-    # Target: cari resistance historis di atas harga
-    recent     = candles[-240:]  # 10 hari
-    res_levels = []
-    min_target = cur * (1 + CONFIG["min_target_pct"] / 100)
-
-    for i in range(3, len(recent) - 3):
-        h = recent[i]["high"]
-        if h <= min_target:
-            continue
-        # Minimal 2 touches dalam 10 hari
-        touches = sum(
-            1 for c in recent
-            if abs(c["high"] - h) / h < 0.02 or abs(c["low"] - h) / h < 0.02
-        )
-        if touches >= 2:
-            res_levels.append(h)
-
-    if res_levels:
-        res_levels.sort()
-        t1 = res_levels[0]
-        t2 = res_levels[1] if len(res_levels) > 1 else t1 * 1.15
+        return candle["volume_usd"]   # positif = buy pressure
     else:
-        # Fallback: ATR multiplier berbasis panjang compression.
-        # Coin yang compression sangat panjang (IOTA 256H, BCH 288H) punya ATR
-        # sangat kecil karena sudah flat lama → atr * mult bisa tetap kecil.
-        # Solusi: T1 fallback dijamin minimal 10% dari harga sekarang,
-        # dan T2 minimal 20% — mencerminkan potensi breakout dari compression panjang.
-        comp_len  = compression_zone["length"]
-        atr_mult  = min(4.0 + comp_len / 48, 10.0)
-        t1_atr    = entry + atr * atr_mult
-        t1_min    = cur * 1.10   # minimum 10% dari harga sekarang
-        t1        = max(t1_atr, t1_min)
-        t2        = max(t1 * 1.20, cur * 1.22)  # minimum 22% dari harga sekarang
+        return -candle["volume_usd"]  # negatif = sell pressure
 
-    # ── FIX: pastikan T1 dan T2 berbeda secara meaningful ────────────────────
-    if abs(t2 - t1) / t1 < 0.03:   # jika T1 dan T2 terlalu dekat (< 3% beda)
-        t2 = t1 * 1.15             # paksa T2 = T1 + 15%
+def find_pivot_high(candles, lookback):
+    """
+    Replikasi ta.pivothigh(src, lookback, lookback)
+    Pivot high di index i jika high[i] adalah max dari [i-lookback : i+lookback]
+    Return list of (bar_index, price, delta_vol)
+    """
+    pivots = []
+    for i in range(lookback, len(candles) - lookback):
+        h = candles[i]["high"]
+        window = [candles[j]["high"] for j in range(i - lookback, i + lookback + 1)]
+        if h == max(window):
+            dv = calc_delta_volume(candles[i])
+            pivots.append({
+                "idx":   i,
+                "price": h,
+                "delta_vol": dv,
+                "volume_usd": candles[i]["volume_usd"],
+                "ts":    candles[i]["ts"],
+            })
+    return pivots
 
-    t1_pct = round((t1 - cur) / cur * 100, 1)
-    t2_pct = round((t2 - cur) / cur * 100, 1)
-    rr     = round((t1 - entry) / (entry - sl), 1) if (entry - sl) > 0 else 0
+def find_pivot_low(candles, lookback):
+    """
+    Replikasi ta.pivotlow(src, lookback, lookback)
+    Pivot low di index i jika low[i] adalah min dari [i-lookback : i+lookback]
+    """
+    pivots = []
+    for i in range(lookback, len(candles) - lookback):
+        l = candles[i]["low"]
+        window = [candles[j]["low"] for j in range(i - lookback, i + lookback + 1)]
+        if l == min(window):
+            dv = calc_delta_volume(candles[i])
+            pivots.append({
+                "idx":   i,
+                "price": l,
+                "delta_vol": dv,
+                "volume_usd": candles[i]["volume_usd"],
+                "ts":    candles[i]["ts"],
+            })
+    return pivots
+
+def detect_sr_levels(candles):
+    """
+    CORE SR ENGINE:
+    Replikasi calcSupportResistance() Pine Script.
+    
+    Support  = pivotLow  dengan Vol > vol_hi (volume positif/buy spike)
+    Resistance = pivotHigh dengan Vol < vol_lo (volume negatif/sell spike)
+    
+    Returns:
+        support_levels  : list of {price, box_top, box_bottom, vol, idx, strength}
+        resist_levels   : list of {price, box_top, box_bottom, vol, idx, strength}
+        sr_analysis     : dict dengan sinyal-sinyal SR
+    """
+    if len(candles) < CONFIG["sr_lookback"] * 2 + 5:
+        return [], [], {"valid": False}
+
+    lookback = CONFIG["sr_lookback"]
+    vol_len  = CONFIG["sr_vol_len"]
+
+    # Hitung delta volume per candle
+    delta_vols = [calc_delta_volume(c) for c in candles]
+
+    # vol_hi dan vol_lo (window vol_len) — replikasi Pine Script
+    vol_hi_arr = []
+    vol_lo_arr = []
+    for i in range(len(candles)):
+        window_start = max(0, i - vol_len + 1)
+        window_dv    = [dv / 2.5 for dv in delta_vols[window_start:i+1]]
+        vol_hi_arr.append(max(window_dv) if window_dv else 0)
+        vol_lo_arr.append(min(window_dv) if window_dv else 0)
+
+    # ATR untuk box width
+    atr_long = calc_atr_long(candles, CONFIG["sr_atr_period"]) or (candles[-1]["close"] * 0.02)
+    withd    = atr_long * CONFIG["sr_box_width"]
+
+    # Temukan pivot high dan low
+    pivot_highs = find_pivot_high(candles, lookback)
+    pivot_lows  = find_pivot_low(candles, lookback)
+
+    # All delta_vols untuk percentile
+    all_dv = [abs(dv) for dv in delta_vols if dv != 0]
+
+    # ── BUILD SUPPORT LEVELS ────────────────────────────────────
+    support_levels = []
+    for pv in pivot_lows:
+        i  = pv["idx"]
+        dv = delta_vols[i]
+        # Support: pivotLow + Vol > vol_hi (buy pressure dominan)
+        if dv > vol_hi_arr[i]:
+            box_top    = pv["price"]
+            box_bottom = pv["price"] - withd
+
+            # Hitung kekuatan: berapa banyak touch pada zone ini
+            touches = 0
+            tol = CONFIG["sr_zone_tolerance"]
+            for c in candles[i:]:
+                in_zone = (box_bottom <= c["low"] <= box_top * (1 + tol) or
+                           box_bottom * (1 - tol) <= c["high"] <= box_top)
+                if in_zone:
+                    touches += 1
+
+            # Berapa besar volume relatif
+            vol_rank = sum(1 for v in all_dv if v < abs(dv)) / max(len(all_dv), 1) * 100
+
+            support_levels.append({
+                "price":      pv["price"],
+                "box_top":    box_top,
+                "box_bottom": box_bottom,
+                "delta_vol":  dv,
+                "vol_usd":    pv["volume_usd"],
+                "idx":        i,
+                "touches":    touches,
+                "vol_rank":   vol_rank,  # percentile kekuatan vol
+                "age_bars":   len(candles) - 1 - i,
+            })
+
+    # ── BUILD RESISTANCE LEVELS ─────────────────────────────────
+    resist_levels = []
+    for pv in pivot_highs:
+        i  = pv["idx"]
+        dv = delta_vols[i]
+        # Resistance: pivotHigh + Vol < vol_lo (sell pressure dominan)
+        if dv < vol_lo_arr[i]:
+            box_top    = pv["price"] + withd
+            box_bottom = pv["price"]
+
+            touches = 0
+            tol = CONFIG["sr_zone_tolerance"]
+            for c in candles[i:]:
+                in_zone = (box_bottom * (1 - tol) <= c["high"] <= box_top or
+                           box_bottom <= c["low"] <= box_top * (1 + tol))
+                if in_zone:
+                    touches += 1
+
+            vol_rank = sum(1 for v in all_dv if v < abs(dv)) / max(len(all_dv), 1) * 100
+
+            resist_levels.append({
+                "price":      pv["price"],
+                "box_top":    box_top,
+                "box_bottom": box_bottom,
+                "delta_vol":  dv,
+                "vol_usd":    pv["volume_usd"],
+                "idx":        i,
+                "touches":    touches,
+                "vol_rank":   vol_rank,
+                "age_bars":   len(candles) - 1 - i,
+            })
+
+    # Sort: support dari bawah ke atas, resist dari bawah ke atas
+    support_levels.sort(key=lambda x: x["price"])
+    resist_levels.sort(key=lambda x: x["price"])
+
+    # ── SR ANALYSIS ─────────────────────────────────────────────
+    cur_price = candles[-1]["close"]
+    cur_high  = candles[-1]["high"]
+    cur_low   = candles[-1]["low"]
+    n         = len(candles)
+
+    sr_analysis = {
+        "valid":         True,
+        "cur_price":     cur_price,
+
+        # Support terdekat di bawah harga
+        "nearest_sup":   None,
+        "is_at_support": False,
+        "sup_vol_rank":  0,
+
+        # Resistance terdekat di atas harga
+        "nearest_res":   None,
+        "is_at_resist":  False,
+
+        # Break events
+        "break_res_recent": False,   # Break Res baru terjadi (bull trigger!)
+        "break_sup_recent": False,   # Break Sup baru terjadi (BAHAYA!)
+        "res_became_sup":   False,   # Resistance flip jadi support
+        "sup_became_res":   False,   # Support flip jadi resistance
+
+        # Tren SR
+        "sup_count":     len(support_levels),
+        "res_count":     len(resist_levels),
+
+        # Anti-break support gate
+        "sup_broken":    False,
+        "sup_broken_detail": "",
+    }
+
+    # Nearest support (di bawah atau sedikit di atas harga)
+    below_sup = [s for s in support_levels if s["box_top"] <= cur_price * 1.03]
+    if below_sup:
+        sr_analysis["nearest_sup"] = below_sup[-1]  # yang paling dekat
+        sup = below_sup[-1]
+        dist_pct = (cur_price - sup["box_top"]) / cur_price * 100
+        sr_analysis["is_at_support"] = dist_pct < CONFIG["entry_retest_max_pct"]
+        sr_analysis["sup_vol_rank"]  = sup["vol_rank"]
+
+    # Nearest resistance (di atas harga)
+    above_res = [r for r in resist_levels if r["box_bottom"] >= cur_price * 0.97]
+    if above_res:
+        sr_analysis["nearest_res"] = above_res[0]  # yang paling dekat
+
+    # ── DETEKSI BREAK RES (sinyal pump utama) ──────────────────
+    # Break Res: harga baru saja melewati resistance dari bawah ke atas
+    # Cek apakah ada resistance yang harganya sekarang di bawah close
+    window_bars = CONFIG["sr_break_confirm_bars"]
+    recent_candles = candles[-window_bars-5:]  # candle belakangan
+
+    for res in resist_levels:
+        res_level = res["box_bottom"]
+        # Harga sekarang di atas resistance bottom (sudah break)
+        if cur_price > res_level * 1.001:
+            # Cek apakah sebelumnya (lookback bar lalu) harga di bawah resistance
+            lookback_idx = max(0, res["idx"] - CONFIG["sr_break_confirm_bars"])
+            # Resistance harus masih "fresh" (terbentuk dalam 50 bar terakhir)
+            if res["age_bars"] <= 50:
+                # Cek low candle recent masih di dekat resistance (retest potensial)
+                if cur_price <= res["box_top"] * 1.05:
+                    sr_analysis["break_res_recent"] = True
+                    sr_analysis["res_became_sup"]   = True
+                    # Resistance yang baru dibreak menjadi support baru
+                    if sr_analysis["nearest_sup"] is None:
+                        sr_analysis["nearest_sup"] = res
+                    break
+
+    # ── DETEKSI BREAK SUP (bahaya/anti-break) ──────────────────
+    # Break Sup: harga turun menembus support ke bawah
+    for sup in reversed(support_levels):  # dari atas ke bawah
+        sup_level = sup["box_bottom"]
+        # Harga sekarang di bawah support bottom (sudah break)
+        if cur_price < sup_level * 0.999:
+            if sup["age_bars"] <= CONFIG["abs_break_lookback"]:
+                # Support baru saja jebol!
+                sr_analysis["break_sup_recent"] = True
+                sr_analysis["sup_broken"]        = True
+                sr_analysis["sup_broken_detail"] = (
+                    f"Support ${sup['price']:.6g} jebol! "
+                    f"(vol_rank:{sup['vol_rank']:.0f}%ile, "
+                    f"{sup['age_bars']} bar lalu)"
+                )
+                break
+
+    return support_levels, resist_levels, sr_analysis
+
+
+# ══════════════════════════════════════════════════════════════
+#  🛡️  ANTI-BREAK SUPPORT GATE
+# ══════════════════════════════════════════════════════════════
+def anti_break_support_gate(sr_analysis):
+    """
+    Gate: blok sinyal jika support baru saja jebol.
+    Berdasarkan forensik: setelah Break Sup, harga biasanya
+    turun lebih jauh — bukan pump.
+    Returns: (should_block: bool, reason: str)
+    """
+    if not sr_analysis.get("valid"):
+        return False, ""
+
+    if sr_analysis.get("sup_broken") and CONFIG["abs_block_if_broken"]:
+        detail = sr_analysis.get("sup_broken_detail", "")
+        return True, f"🛡️ ANTI-BREAK SUP: {detail}"
+
+    return False, ""
+
+
+# ══════════════════════════════════════════════════════════════
+#  📍  ENTRY/SL/TP CANGGIH — Berbasis SR Level
+# ══════════════════════════════════════════════════════════════
+def calc_smart_entry(candles, sr_analysis, support_levels, resist_levels):
+    """
+    Entry/SL/TP berbasis SR level aktual (bukan % fixed).
+
+    LOGIKA:
+    1. Entry = di atas support box top (0.3% buffer)
+       Jika Break Res baru terjadi: entry = di atas resistance lama (yang jadi support)
+    2. SL = di bawah support box bottom + ATR multiplier (ambil yang lebih rendah)
+    3. TP1 = resistance terdekat berikutnya - 0.3% buffer
+    4. TP2 = resistance ke-2 atau proyeksi
+    """
+    cur      = candles[-1]["close"]
+    atr_14   = calc_atr(candles[-50:] if len(candles) >= 50 else candles, 14) or cur * 0.02
+    atr_long = calc_atr_long(candles, CONFIG["sr_atr_period"]) or cur * 0.02
+
+    entry = None
+    sl    = None
+    entry_type = "market"
+
+    nearest_sup = sr_analysis.get("nearest_sup")
+    nearest_res = sr_analysis.get("nearest_res")
+
+    # ── ENTRY ────────────────────────────────────────────────
+    if sr_analysis.get("break_res_recent") and nearest_sup:
+        # Pattern: Break Res → tunggu retest ke resistance lama (jadi support baru)
+        # Entry = di atas box_top resistance yang sudah dibreak
+        entry      = nearest_sup["box_top"] * (1 + CONFIG["entry_above_support_pct"] / 100)
+        entry_type = "retest_break_res"
+
+    elif sr_analysis.get("is_at_support") and nearest_sup:
+        # Pattern: Harga retest support box → buy di zona support
+        entry      = nearest_sup["box_top"] * (1 + CONFIG["entry_above_support_pct"] / 100)
+        entry_type = "support_retest"
+
+    elif nearest_sup:
+        # Harga di atas support, entry saat ini (momentum entry)
+        entry      = cur
+        entry_type = "momentum"
+    else:
+        # Tidak ada support valid → skip
+        return None
+
+    # ── SL ───────────────────────────────────────────────────
+    if nearest_sup:
+        # SL di bawah box_bottom support
+        sl_support = nearest_sup["box_bottom"] * (1 - CONFIG["sl_below_support_pct"] / 100)
+        # SL berbasis ATR
+        sl_atr     = entry - (atr_14 * CONFIG["sl_atr_multiplier"])
+        # Ambil yang lebih rendah (lebih protektif)
+        sl = min(sl_support, sl_atr)
+    else:
+        sl = entry * (1 - CONFIG["max_sl_pct"] / 100)
+
+    # Pastikan SL tidak terlalu jauh (max 6% dari entry)
+    sl_pct = (entry - sl) / entry * 100
+    if sl_pct > CONFIG["max_sl_pct"]:
+        sl     = entry * (1 - CONFIG["max_sl_pct"] / 100)
+        sl_pct = CONFIG["max_sl_pct"]
+
+    if sl >= entry:
+        return None  # Invalid setup
+
+    # ── TP1 — Resistance terdekat ────────────────────────────
+    above_res_for_tp = [r for r in resist_levels
+                        if r["box_bottom"] > entry * 1.03]  # min 3% di atas entry
+
+    if above_res_for_tp:
+        tp1_res = above_res_for_tp[0]  # resistance terdekat
+        tp1     = tp1_res["box_bottom"] * (1 - CONFIG["tp1_resistance_buffer"] / 100)
+    else:
+        # Tidak ada resistance — proyeksi ATR
+        tp1 = entry * (1 + max(CONFIG["min_tp1_pct"] / 100, atr_14 * 3 / entry))
+
+    # Pastikan TP1 minimal CONFIG["min_tp1_pct"]% dari entry
+    tp1_pct = (tp1 - entry) / entry * 100
+    if tp1_pct < CONFIG["min_tp1_pct"]:
+        tp1     = entry * (1 + CONFIG["min_tp1_pct"] / 100)
+        tp1_pct = CONFIG["min_tp1_pct"]
+
+    # ── TP2 — Resistance ke-2 atau proyeksi ─────────────────
+    above_res_tp2 = [r for r in resist_levels
+                     if r["box_bottom"] > tp1 * 1.03]
+
+    if above_res_tp2:
+        tp2 = above_res_tp2[0]["box_bottom"] * (1 - CONFIG["tp1_resistance_buffer"] / 100)
+    else:
+        # Proyeksi: TP2 = TP1 + (TP1-entry) * multiplier
+        tp2 = tp1 + (tp1 - entry) * (CONFIG["tp2_multiplier"] - 1)
+
+    # ── R/R RATIO ─────────────────────────────────────────────
+    risk   = entry - sl
+    reward = tp1 - entry
+    rr     = round(reward / risk, 2) if risk > 0 else 0
+
+    if rr < CONFIG["min_rr_ratio"]:
+        # R/R terlalu rendah — coba adjust tp1
+        tp1 = entry + risk * CONFIG["min_rr_ratio"]
+        tp1_pct = (tp1 - entry) / entry * 100
+        rr  = CONFIG["min_rr_ratio"]
+
+    # ── LABEL SR KONTEKS ──────────────────────────────────────
+    sup_label = f"${nearest_sup['price']:.6g}" if nearest_sup else "N/A"
+    res_label = f"${nearest_res['box_bottom']:.6g}" if nearest_res else "N/A"
 
     return {
-        "cur":    cur,
-        "entry":  round(entry, 8),
-        "sl":     round(sl, 8),
-        "sl_pct": sl_pct,
-        "t1":     round(t1, 8),
-        "t2":     round(t2, 8),
-        "t1_pct": t1_pct,
-        "t2_pct": t2_pct,
-        "rr":     rr,
-        "atr":    round(atr, 8),
+        "cur":         round(cur, 8),
+        "entry":       round(entry, 8),
+        "entry_type":  entry_type,
+        "sl":          round(sl, 8),
+        "sl_pct":      round(sl_pct, 2),
+        "tp1":         round(tp1, 8),
+        "tp1_pct":     round(tp1_pct, 2),
+        "tp2":         round(tp2, 8),
+        "tp2_pct":     round((tp2 - entry) / entry * 100, 1),
+        "rr":          rr,
+        "atr_14":      round(atr_14, 8),
+        "sup_level":   sup_label,
+        "res_level":   res_label,
+        "sup_vol_rank": nearest_sup["vol_rank"] if nearest_sup else 0,
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  🔬  FORENSIC PATTERN DETECTORS (v2.6)
-#  Tiga pola yang TERBUKTI konsisten di XAN/MYX/CUS sebelum pump besar.
-#  Dibuktikan dari analisa candle-by-candle data forensik nyata.
-# ══════════════════════════════════════════════════════════════════════════════
-
-def detect_higher_lows(candles, lookback=4):
+# ══════════════════════════════════════════════════════════════
+#  📊  SR LAYER SCORING
+# ══════════════════════════════════════════════════════════════
+def layer_sr(candles, sr_analysis, support_levels, resist_levels):
     """
-    Higher lows = harga tidak mau turun lebih rendah dari low sebelumnya.
-    Ini tanda smart money akumulasi — ada buyer yang masuk setiap dip.
-
-    Forensik:
-      XAN: lows [0.00713, 0.00730, 0.00720, 0.00736] → YES (toleransi 1.5%) ✅
-      CUS: lows [0.05431, 0.05423, 0.05426] → YES ✅
-      MYX: lows [0.34190, 0.34330, 0.34820, 0.35440] → YES ✅ (naik terus)
-
-    Toleransi 1.5%: coin low-price bergerak 0.3-0.5% per candle, noise lebih
-    besar secara proporsional. Toleransi ketat 0.5% terlalu sensitif.
+    Scoring berbasis SR pattern — replika sinyal ChartPrime indicator.
+    Max score: CONFIG['max_sr_score'] = 40
     """
-    if len(candles) < lookback:
-        return False
-    recent = candles[-lookback:]
-    lows   = [c["low"] for c in recent]
-    # Higher low dengan toleransi 1.5% untuk absorb noise candle pendek
-    for i in range(1, len(lows)):
-        if lows[i] < lows[i-1] * 0.985:   # toleransi 1.5%
-            return False
-    return True
+    score, sigs = 0, []
+
+    if not sr_analysis.get("valid"):
+        return 0, sigs
+
+    cur_price = sr_analysis["cur_price"]
+
+    # 1. Support kuat di bawah harga (dasar dari semua pump yang dianalisis)
+    nearest_sup = sr_analysis.get("nearest_sup")
+    if nearest_sup:
+        vol_rank = nearest_sup["vol_rank"]
+        touches  = nearest_sup["touches"]
+        age      = nearest_sup["age_bars"]
+
+        if vol_rank >= 90:
+            score += 12
+            sigs.append(f"🟢 Support MASIF vol {vol_rank:.0f}%ile @ ${nearest_sup['price']:.6g} ({touches} touch)")
+        elif vol_rank >= 75:
+            score += 8
+            sigs.append(f"🟢 Support kuat vol {vol_rank:.0f}%ile @ ${nearest_sup['price']:.6g}")
+        elif vol_rank >= 60:
+            score += 5
+            sigs.append(f"🟢 Support vol {vol_rank:.0f}%ile @ ${nearest_sup['price']:.6g}")
+
+        # Multi-touch = lebih kuat
+        if touches >= 4:
+            score += 5
+            sigs.append(f"  ↳ {touches}x tested — support sangat kuat!")
+        elif touches >= 3:
+            score += 3
+
+        # Support fresh (baru terbentuk) lebih valuable
+        if age <= 10:
+            score += 3
+            sigs.append(f"  ↳ Support baru ({age} bar lalu) — akumulasi aktif")
+        elif age <= 25:
+            score += 1
+
+    # 2. Break Resistance — SINYAL PUMP PALING KUAT
+    if sr_analysis.get("break_res_recent"):
+        score += 20
+        sigs.append("🚨 BREAK RESISTANCE! Harga breakout resistance box — pump trigger!")
+
+        if sr_analysis.get("res_became_sup"):
+            score += 8
+            sigs.append("  ↳ ✅ Resistance flip → Support (konfirmasi break kuat)")
+
+    # 3. Harga di zone support (retest area — entry ideal)
+    if sr_analysis.get("is_at_support") and not sr_analysis.get("break_res_recent"):
+        score += 10
+        sigs.append(f"📌 Harga retest support zone — zona entry ideal!")
+
+    # 4. Jarak ke resistance (semakin dekat = potensial breakout lebih besar)
+    nearest_res = sr_analysis.get("nearest_res")
+    if nearest_res and nearest_sup:
+        dist_to_res = (nearest_res["box_bottom"] - cur_price) / cur_price * 100
+        dist_to_sup = (cur_price - nearest_sup["box_top"]) / cur_price * 100
+
+        if 0 < dist_to_res <= 5:
+            score += 6
+            sigs.append(f"⚡ Resistance hanya {dist_to_res:.1f}% lagi — breakout imminent")
+        elif dist_to_res <= 10:
+            score += 3
+
+        # Harga lebih dekat ke support daripada resistance = posisi ideal
+        if dist_to_sup < dist_to_res:
+            score += 3
+            sigs.append(f"✅ Posisi ideal: dekat support ({dist_to_sup:.1f}%), jauh resistance ({dist_to_res:.1f}%)")
+
+    # 5. Multiple support levels = struktur kuat
+    strong_sups = [s for s in support_levels if s["vol_rank"] >= 70]
+    if len(strong_sups) >= 3:
+        score += 5
+        sigs.append(f"🏗️ {len(strong_sups)} support kuat — struktur sangat kokoh")
+    elif len(strong_sups) >= 2:
+        score += 3
+
+    # 6. Penalti jika resistance sangat banyak di atas (jalan berat)
+    strong_res_above = [r for r in resist_levels
+                        if r["box_bottom"] > cur_price and r["vol_rank"] >= 70]
+    if len(strong_res_above) >= 4:
+        score -= 5
+        sigs.append(f"⚠️ {len(strong_res_above)} resistance kuat di atas — jalan berat")
+
+    return min(score, CONFIG["max_sr_score"]), sigs
 
 
-def detect_price_acceleration(candles, lookback=6):
-    """
-    Price acceleration = separuh terakhir window menunjukkan drift positif.
-    Forensik: XAN +2.16%, MYX +4.25%, CUS +1.10% di separuh terakhir.
+# ══════════════════════════════════════════════════════════════
+#  📊  EXISTING LAYERS (dipertahankan dari v9.10)
+# ══════════════════════════════════════════════════════════════
+def calc_rvol(candles_1h):
+    if len(candles_1h) < 25:
+        return 1.0
+    last_complete = candles_1h[-2]
+    last_vol      = last_complete["volume_usd"]
+    target_hour   = (last_complete["ts"] // 3_600_000) % 24
+    same_hour_vols = [
+        c["volume_usd"] for c in candles_1h[:-2]
+        if (c["ts"] // 3_600_000) % 24 == target_hour
+    ]
+    if not same_hour_vols:
+        return 1.0
+    avg = sum(same_hour_vols) / len(same_hour_vols)
+    return min(last_vol / avg, 30.0) if avg > 0 else 1.0
 
-    Versi relaxed: cukup late drift > 0.3% (positif minimal).
-    Strict (late > early) terlalu ketat karena awal window bisa sudah naik duluan.
-    """
-    if len(candles) < lookback:
-        return False
-    window = candles[-lookback:]
-    half   = len(window) // 2
-    if half < 1:
-        return False
+def calc_volume_spike_ratio(candles_1h):
+    if len(candles_1h) < 24:
+        return 1.0, 1.0
+    vols     = [c["volume_usd"] for c in candles_1h]
+    baseline = sorted(vols[:-6])[:int(len(vols) * 0.6)]
+    base_avg = sum(baseline) / len(baseline) if baseline else 1
+    if base_avg <= 0:
+        return 1.0, 1.0
+    recent_vols = vols[-6:]
+    spikes      = [v / base_avg for v in recent_vols]
+    return max(spikes) if spikes else 1.0, sum(spikes) / len(spikes) if spikes else 1.0
 
-    late_start = window[half]["close"]
-    late_end   = window[-1]["close"]
+def calc_volume_irregularity(candles_1h):
+    window = candles_1h[-24:] if len(candles_1h) >= 24 else candles_1h
+    vols   = [c["volume_usd"] for c in window]
+    if not vols:
+        return 0.0
+    mean = sum(vols) / len(vols)
+    if mean <= 0:
+        return 0.0
+    std = math.sqrt(sum((v - mean) ** 2 for v in vols) / len(vols))
+    return std / mean
 
-    if late_start <= 0:
-        return False
+def calc_cvd_signal(candles_1h):
+    if len(candles_1h) < 12:
+        return 0, ""
+    window    = candles_1h[-24:] if len(candles_1h) >= 24 else candles_1h
+    cvd, cvd_vals = 0, []
+    for c in window:
+        rng = c["high"] - c["low"]
+        buy_ratio = (c["close"] - c["low"]) / rng if rng > 0 else 0.5
+        cvd += (buy_ratio * 2 - 1) * c["volume_usd"]
+        cvd_vals.append(cvd)
+    if len(cvd_vals) < 8:
+        return 0, ""
+    mid      = len(cvd_vals) // 2
+    cvd_early = sum(cvd_vals[:mid]) / mid
+    cvd_late  = sum(cvd_vals[mid:]) / (len(cvd_vals) - mid)
+    cvd_rising = cvd_late > cvd_early
+    p_start   = window[0]["close"]
+    p_end     = window[-1]["close"]
+    price_chg = (p_end - p_start) / p_start * 100 if p_start > 0 else 0
+    if cvd_rising and price_chg < 1.5:
+        if price_chg < -1.5:
+            return 15, f"🔍 CVD Divergence KUAT: harga {price_chg:+.1f}% tapi buy pressure dominan"
+        elif price_chg < 0:
+            return 12, f"🔍 CVD naik saat harga turun — akumulasi tersembunyi"
+        else:
+            return 8,  f"🔍 CVD naik, harga flat — hidden accumulation"
+    elif cvd_rising and 1.5 <= price_chg <= 5.0:
+        return 5, f"CVD bullish, harga naik sehat ({price_chg:+.1f}%)"
+    if not cvd_rising and price_chg > 1.5:
+        return -12, f"⚠️ CVD turun saat harga naik {price_chg:+.1f}% — distribusi tersembunyi"
+    elif not cvd_rising and -1.5 <= price_chg <= 1.5:
+        return -8, f"⚠️ CVD turun, harga flat — tekanan jual tersembunyi"
+    elif not cvd_rising and price_chg < -1.5:
+        return -5, f"⚠️ CVD turun saat harga {price_chg:+.1f}% — tren jual berlanjut"
+    return 0, ""
 
-    late_drift = (late_end - late_start) / late_start * 100
-    # Separuh terakhir naik minimal 0.3% — price building momentum
-    return late_drift > 0.3
+def calc_short_term_cvd(candles_1h):
+    if len(candles_1h) < 12:
+        return 0, ""
+    recent = candles_1h[-6:]
+    prev   = candles_1h[-12:-6]
+    def cvd_delta(candles):
+        delta = 0.0
+        for c in candles:
+            rng = c["high"] - c["low"]
+            buy_ratio = (c["close"] - c["low"]) / rng if rng > 0 else 0.5
+            delta += (buy_ratio * 2 - 1) * c["volume_usd"]
+        return delta
+    recent_d = cvd_delta(recent)
+    prev_d   = cvd_delta(prev)
+    cur      = candles_1h[-1]["close"]
+    p6h      = candles_1h[-6]["close"] if len(candles_1h) >= 6 else cur
+    price_chg_6h = (cur - p6h) / p6h * 100 if p6h > 0 else 0
+    if recent_d < 0 and recent_d < prev_d * 0.8:
+        if price_chg_6h > -2:
+            return -10, f"⚠️ CVD 6h memburuk — tekanan jual meningkat ({price_chg_6h:+.1f}% 6h)"
+        return -5, f"⚠️ CVD 6h negatif — distribusi aktif"
+    if recent_d > 0 and recent_d > prev_d * 1.2:
+        if price_chg_6h < 2:
+            return 8, f"✅ CVD 6h membaik — akumulasi baru ({price_chg_6h:+.1f}% 6h)"
+        return 4, f"CVD 6h positif — buying momentum"
+    return 0, ""
 
+def detect_higher_lows(candles):
+    if len(candles) < 6:
+        return 0, ""
+    lows       = [c["low"] for c in candles]
+    local_lows = []
+    for i in range(1, len(lows) - 1):
+        if lows[i] <= lows[i-1] and lows[i] <= lows[i+1]:
+            local_lows.append(lows[i])
+    if len(local_lows) < 2:
+        return 0, ""
+    ascending = sum(
+        1 for i in range(1, len(local_lows))
+        if local_lows[i] > local_lows[i-1] * 1.001
+    )
+    if ascending >= 2:
+        return 8, f"📐 {ascending + 1}x Higher Lows — ascending triangle"
+    elif ascending >= 1:
+        return 4, f"📐 Higher Low — struktur bullish mulai"
+    return 0, ""
 
-def detect_pre_pump_candle(candles):
-    """
-    Candle terakhir sebelum spike menunjukkan bull body signifikan.
-    Terbukti di semua 3 coin: XAN 48% body, CUS 32% body, MYX 57% body.
+def layer_volume_intelligence(candles_1h):
+    score, sigs = 0, []
+    rvol = calc_rvol(candles_1h)
+    if rvol >= 4.0:
+        score += 16; sigs.append(f"🔥🔥 RVOL {rvol:.1f}x — volume MASIF vs historis!")
+    elif rvol >= 2.8:
+        score += 13; sigs.append(f"🔥 RVOL {rvol:.1f}x — volume spike signifikan")
+    elif rvol >= 2.0:
+        score += 10; sigs.append(f"RVOL {rvol:.1f}x — volume mulai bangun")
+    elif rvol >= 1.4:
+        score += 6;  sigs.append(f"RVOL {rvol:.1f}x — di atas normal")
+    elif rvol >= 1.1:
+        score += 3
+    elif rvol < 0.4:
+        score -= 4
+    irr = calc_volume_irregularity(candles_1h)
+    if irr >= 2.5:
+        score += 10; sigs.append(f"📈 Vol Irregularity {irr:.2f} — whale masuk tidak merata")
+    elif irr >= 1.8:
+        score += 6;  sigs.append(f"Vol Irregularity {irr:.2f} — aktivitas whale")
+    elif irr >= 1.3:
+        score += 3
+    cvd_s, cvd_sig = calc_cvd_signal(candles_1h)
+    score += cvd_s
+    if cvd_sig:
+        sigs.append(cvd_sig)
+    return min(score, CONFIG["max_vol_score"]), sigs, rvol
 
-    Berbeda dari analyze_candle_structure (cek candle terbaru = spike candle),
-    fungsi ini cek candle ke-2 dari belakang = candle SEBELUM spike.
-    Tujuan: konfirmasi bahwa accumulation candle terakhir bullish.
-
-    Return (score, label):
-      +5 jika body bullish ≥ 30% dari range
-      +3 jika close di atas midpoint candle (bullish bias)
-      +0 jika bearish
-    """
-    if len(candles) < 2:
-        return 0, "insufficient data"
-
-    c   = candles[-2]  # candle SEBELUM terbaru (pre-spike candle)
-    rng = c["high"] - c["low"]
-    if rng == 0:
-        return 0, "doji pre-spike"
-
-    body     = c["close"] - c["open"]
-    body_pct = abs(body) / rng
-
-    if body > 0 and body_pct >= 0.30:
-        return 5, f"pre-spike bull body {body_pct*100:.0f}%"
-    elif c["close"] > (c["high"] + c["low"]) / 2:
-        return 3, "pre-spike close above midpoint"
+def layer_flat_accumulation(candles_1h):
+    score, sigs = 0, []
+    if len(candles_1h) < 4:
+        return 0, sigs
+    if len(candles_1h) >= 24:
+        high24 = max(c["high"] for c in candles_1h[-24:])
+        low24  = min(c["low"]  for c in candles_1h[-24:])
+        range24_pct = (high24 - low24) / low24 * 100 if low24 > 0 else 99
     else:
-        return 0, "pre-spike bearish"
+        range24_pct = 99
+    if range24_pct < 5:
+        score += 15; sigs.append(f"🎯 Range 24h sangat sempit ({range24_pct:.1f}%)")
+    elif range24_pct < 10:
+        score += 10; sigs.append(f"🎯 Range 24h sempit ({range24_pct:.1f}%)")
+    elif range24_pct < 15:
+        score += 5
+    elif range24_pct > 40:
+        score -= 5
+    # Higher lows
+    hl_sc, hl_sig = detect_higher_lows(candles_1h[-16:] if len(candles_1h) >= 16 else candles_1h)
+    score += hl_sc
+    if hl_sig:
+        sigs.append(hl_sig)
+    return min(max(score, 0), CONFIG["max_flat_score"]), sigs
 
+def layer_structure(candles_1h):
+    score, sigs = 0, []
+    bbw_val, bbw_pct = bbw_percentile(candles_1h)
+    if bbw_pct < 10:
+        score += 10; sigs.append(f"BBW Squeeze Ekstrem ({bbw_pct:.0f}%ile) — siap meledak")
+    elif bbw_pct < 25:
+        score += 7;  sigs.append(f"BBW Squeeze Kuat ({bbw_pct:.0f}%ile)")
+    elif bbw_pct < 45:
+        score += 4;  sigs.append(f"BBW Menyempit ({bbw_pct:.0f}%ile)")
+    elif bbw_pct > 85:
+        score -= 5;  sigs.append(f"⚠️ BBW Melebar ({bbw_pct:.0f}%ile) — volatilitas sudah terjadi")
+    coiling = 0
+    for c in reversed(candles_1h[-72:]):
+        body = abs(c["close"] - c["open"]) / c["open"] * 100 if c["open"] else 99
+        if body < 1.0:
+            coiling += 1
+        else:
+            break
+    if coiling >= 18:
+        score += 5; sigs.append(f"Coiling {coiling}h — energi terkumpul lama")
+    elif coiling >= 10:
+        score += 3; sigs.append(f"Coiling {coiling}h")
+    elif coiling >= 5:
+        score += 1
+    return min(score, CONFIG["max_struct_score"]), sigs, bbw_val, bbw_pct, coiling
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  🚦  PUMP VELOCITY CLASSIFIER (BARU v3.0)
-#  Kategorikan kekuatan pump yang SEDANG terjadi di candle terbaru.
-#
-#  Dari forensik 9 coin nyata, pump cepat (≥8% dalam H+1) SELALU punya:
-#    - vol spike ≥ 50x median zona compression  → energi besar
-#    - body candle spike ≥ 40%                  → harga bergerak solid, bukan wick
-#    - ATAU vol ≥ 200x median (REZ-type)        → vol ekstrem kompensasi body kecil
-#
-#  Pump LAMBAT (yang menghasilkan +1-7% dalam 24 jam) punya:
-#    - vol hanya 10-20x median                  → energi tidak cukup
-#    - Contoh: PEPE vol=16x med → H+1 hanya +1.8%
-#
-#  Return: (category, vol_mult_median, body_pct_int)
-#    category: "CEPAT" | "SEDANG" | "LAMBAT"
-# ══════════════════════════════════════════════════════════════════════════════
-def classify_pump_velocity(candles, comp_median_vol):
-    """
-    Evaluasi kekuatan candle spike yang sedang/baru terjadi.
+def layer_positioning(symbol, funding, oi_chg1h):
+    score, sigs = 0, []
+    ls_block = False
+    if funding <= -0.0004:
+        score += 8;  sigs.append(f"💰 Funding {funding:.5f} — short squeeze setup KUAT!")
+    elif -0.0004 < funding <= -0.00001:
+        score += 6;  sigs.append(f"💰 Funding {funding:.5f} — short squeeze setup")
+    elif abs(funding) < 0.00001:
+        score += 4;  sigs.append(f"Funding {funding:.5f} — netral")
+    elif funding > 0.0003:
+        score -= 5;  sigs.append(f"⚠️ Funding {funding:.5f} — long overcrowded, risiko dump")
+    if funding <= CONFIG["squeeze_funding_max"] and oi_chg1h > CONFIG["squeeze_oi_change_min"]:
+        score += 10
+        sigs.append(f"🔥 SHORT SQUEEZE: funding negatif, OI 1h +{oi_chg1h:.1f}%")
+    ls       = get_long_short_ratio(symbol)
+    ls_score = 0
+    if ls is not None:
+        if ls < 0.6:
+            ls_score = 10; sigs.append(f"🎯 L/S {ls:.2f} — short dominan, squeeze fuel besar!")
+        elif ls < 0.75:
+            ls_score = 8;  sigs.append(f"🎯 L/S {ls:.2f} — short dominan")
+        elif ls < 0.9:
+            ls_score = 5;  sigs.append(f"L/S {ls:.2f} — lebih banyak short")
+        elif ls <= 1.15:
+            ls_score = 2
+        elif 1.15 < ls <= 1.3:
+            ls_score = -5
+        elif 1.3 < ls <= 1.6:
+            ls_score = -10; sigs.append(f"⚠️ L/S {ls:.2f} — longs dominan")
+        elif 1.6 < ls <= 2.0:
+            ls_score = -16; sigs.append(f"⚠️⚠️ L/S {ls:.2f} — longs sangat dominan")
+        elif ls > 2.0:
+            ls_score  = -25
+            ls_block  = True
+            sigs.append(f"🚨 L/S {ls:.2f} — long overcrowded KRITIS, hard block")
+    return min(score + ls_score, CONFIG["max_pos_score"]), sigs, ls, ls_block
 
-    Menggunakan candle terbaru (c1h[-1]) sebagai proxy pump candle.
-    comp_median_vol: median volume selama zona compression (bukan avg).
-    Median lebih robust karena tidak terpengaruh outlier pump sebelumnya.
+def calc_4h_confluence(candles_4h):
+    if len(candles_4h) < 6:
+        return 0, ""
+    closes    = [c["close"] for c in candles_4h]
+    p_now     = closes[-1]
+    p_7d      = closes[0]
+    p_48h     = closes[-12] if len(closes) >= 12 else closes[0]
+    trend_7d  = (p_now - p_7d)  / p_7d  * 100 if p_7d  > 0 else 0
+    trend_48h = (p_now - p_48h) / p_48h * 100 if p_48h > 0 else 0
+    if trend_48h > 2 and -10 <= trend_7d <= 15:
+        return 6, f"📊 4H: reversal bullish 48h +{trend_48h:.1f}%"
+    elif trend_48h > 0 and trend_7d > -15:
+        return 3, f"📊 4H upward bias ({trend_48h:+.1f}% 48h)"
+    elif trend_48h < -8:
+        return -5, f"⚠️ 4H masih downtrend ({trend_48h:+.1f}% 48h)"
+    return 0, ""
 
-    Threshold (dikalibrasi dari forensik 9 coin):
-      CEPAT : vol ≥ 50x median DAN body ≥ 40%
-              ATAU vol ≥ 200x median (override body — REZ-type)
-      SEDANG: vol ≥ 15x median DAN body ≥ 30%
-              ATAU vol ≥ 15x median DAN (body < 30% tapi ada lower wick besar)
-              ATAU vol < 15x median tapi body ≥ 50% (ARIA low-vol type)
-      LAMBAT: tidak memenuhi keduanya → sinyal terlalu lemah
-    """
-    if comp_median_vol <= 0 or not candles:
-        return "UNKNOWN", 0.0, 0
+def get_cg_trending():
+    key = "cg_trend"
+    if key in _cache:
+        ts, val = _cache[key]
+        if time.time() - ts < 600:
+            return val
+    data   = safe_get(f"{COINGECKO_BASE}/search/trending")
+    result = [c["item"]["symbol"].upper() for c in (data or {}).get("coins", [])]
+    _cache[key] = (time.time(), result)
+    return result
 
-    spike_c = candles[-1]   # candle terbaru (bisa live atau baru tutup)
+def layer_context(symbol, tickers_dict):
+    sector = SECTOR_LOOKUP.get(symbol, "MISC")
+    peers  = SECTOR_MAP.get(sector, [])
+    pumped = []
+    for p in peers:
+        if p == symbol or p not in tickers_dict:
+            continue
+        try:
+            chg = float(tickers_dict[p].get("change24h", 0)) * 100
+            if chg > 8:
+                pumped.append((p.replace("USDT", ""), chg))
+        except:
+            continue
+    pumped.sort(key=lambda x: x[1], reverse=True)
+    sec_score, sec_sig = 0, ""
+    if pumped:
+        top       = pumped[0]
+        sec_score = 5 if top[1] > 20 else 3 if top[1] > 12 else 1
+        sec_sig   = f"🔄 {sector}: {top[0]} +{top[1]:.0f}% — rotasi potensial"
+    name       = symbol.replace("USDT", "").replace("1000", "").upper()
+    soc_score, soc_sig = 0, ""
+    if name in get_cg_trending():
+        soc_score = 3
+        soc_sig   = f"🔥 {name} trending CoinGecko"
+    sigs = [s for s in [sec_sig, soc_sig] if s]
+    return min(sec_score + soc_score, CONFIG["max_ctx_score"]), sigs, sector
 
-    vol_mult = spike_c["volume_usd"] / comp_median_vol
+def calc_whale(symbol, candles_15m, funding):
+    ws, ev = 0, []
+    cur = candles_15m[-1]["close"] if candles_15m else 0
+    trades = get_trades(symbol, 500)
+    if trades:
+        buy_v  = sum(t["size"] for t in trades if t["side"] == "buy")
+        tot_v  = sum(t["size"] for t in trades)
+        tr     = buy_v / tot_v if tot_v > 0 else 0.5
+        if tr > 0.70:
+            ws += 30; ev.append(f"✅ Taker Buy {tr:.0%} — pembeli sangat dominan")
+        elif tr > 0.62:
+            ws += 15; ev.append(f"🔶 Taker Buy {tr:.0%} — bias beli")
+        total_usd = sum(t["size"] * t["price"] for t in trades)
+        avg_trade = total_usd / len(trades) if trades else 1
+        thr       = max(avg_trade * 5, 3_000)
+        lbuy_usd  = sum(
+            t["size"] * t["price"] for t in trades
+            if t["side"] == "buy" and t["size"] * t["price"] > thr
+        )
+        if total_usd > 0 and lbuy_usd / total_usd > 0.28:
+            ws += 25; ev.append(f"✅ Smart money {lbuy_usd/total_usd:.0%} vol")
+    if candles_15m and len(candles_15m) >= 16:
+        p4h  = candles_15m[-16]["close"]
+        pchg = abs((cur - p4h) / p4h * 100) if p4h else 99
+        if pchg < 1.5:
+            ws += 15; ev.append("✅ Harga flat 4h — stealth positioning")
+        elif pchg < 3.0:
+            ws += 7;  ev.append("🔶 Harga relatif flat 4h")
+    if -0.0004 <= funding <= -0.00002:
+        ws += 10; ev.append(f"✅ Funding {funding:.5f} — short squeeze fuel")
+    ob_ratio, bid_vol, ask_vol = get_orderbook(symbol, 50)
+    if ob_ratio > 0.65:
+        ws += 15; ev.append(f"✅ OB Bid {ob_ratio:.0%} — tekanan beli di book")
+    elif ob_ratio > 0.55:
+        ws += 7;  ev.append(f"🔶 OB Bid {ob_ratio:.0%}")
+    elif ob_ratio < 0.35:
+        ws -= 10; ev.append(f"⚠️ OB Ask dominan — tekanan jual lebih besar")
+    return min(ws, 100), min(ws, 100) // 5, ev
 
-    rng      = spike_c["high"] - spike_c["low"]
-    body_abs = abs(spike_c["close"] - spike_c["open"])
-    body_pct = body_abs / rng if rng > 0 else 0.0   # 0.0–1.0
+def layer_liquidation(symbol, candles_1h):
+    long_liq, short_liq = get_liquidations(symbol)
+    score, sigs = 0, []
+    should_block = False
+    if long_liq > CONFIG["liq_long_block_usd"] * 3:
+        should_block = True
+        sigs.append(f"🚨 Long liq masif ${long_liq/1e3:.0f}K — pump aborted!")
+    elif long_liq > CONFIG["liq_long_block_usd"]:
+        score -= 15
+        sigs.append(f"⚠️ Long liq ${long_liq/1e3:.0f}K — longs baru dihancurkan")
+    if short_liq > CONFIG["liq_short_bonus_usd"] * 2:
+        score += 20; sigs.append(f"🔥🔥 Short liq ${short_liq/1e3:.0f}K — SHORT SQUEEZE AKTIF!")
+    elif short_liq > CONFIG["liq_short_bonus_usd"]:
+        score += 12; sigs.append(f"🔥 Short liq ${short_liq/1e3:.0f}K — squeeze meningkat")
+    elif short_liq > CONFIG["liq_short_bonus_usd"] * 0.5:
+        score += 6;  sigs.append(f"Short liq ${short_liq/1e3:.0f}K — short mulai kena")
+    return score, sigs, long_liq, short_liq, should_block
 
-    # ── Fix 3 v3.2: Spike candle WAJIB HIJAU ────────────────────────────────
-    # Root cause MERL/IO false signal: pump candle terbesar adalah MERAH
-    # MERL: vol=20x median tapi candle_chg=-0.6% → selling climax / dump
-    # IO:   vol=12x median tapi candle_chg=-2.5% → jelas dump, bukan pump
-    # Gate selling climax lama hanya cek "merah + harga di bawah zona"
-    # yang tidak menangkap kasus di mana harga masih di zona tapi candle merah besar.
-    # Solusi: jika candle spike MERAH → otomatis LAMBAT, apapun vol-nya.
-    spike_is_green = spike_c["close"] > spike_c["open"]
-    if not spike_is_green:
-        return "LAMBAT", round(vol_mult, 1), round(body_pct * 100, 1)
+def layer_linea_signature(candles_1h, oi_chg1h, oi_chg24h, oi_valid, ls_ratio, funding, chg_24h):
+    score, sigs, components = 0, [], 0
+    if ls_ratio is not None:
+        if ls_ratio < 0.75:
+            score += 6; components += 1
+            sigs.append(f"✅ [Linea-LS] L/S {ls_ratio:.2f} — short sangat dominan")
+        elif ls_ratio <= CONFIG["linea_ls_max"]:
+            score += 3; components += 1
+    if chg_24h < -3:
+        score += 5; components += 1
+        sigs.append(f"✅ [Linea-P] Harga {chg_24h:+.1f}% — tertekan, siap reversal")
+    elif chg_24h <= CONFIG["linea_price_max_chg"]:
+        score += 2; components += 1
+    stcvd_sc, stcvd_sig = calc_short_term_cvd(candles_1h)
+    if stcvd_sc >= 8:
+        score += 5; components += 1
+        sigs.append(f"✅ [Linea-CVD] {stcvd_sig}")
+    elif stcvd_sc > 0:
+        score += 2
+    if oi_valid:
+        oi_1h_ok  = oi_chg1h  >= CONFIG["linea_oi_1h_min"]
+        oi_24h_ok = oi_chg24h >= CONFIG["linea_oi_24h_min"]
+        if oi_chg1h >= 8.0:
+            score += 8; components += 1
+            sigs.append(f"✅ [Linea-OI1h] OI 1h +{oi_chg1h:.1f}% — posisi baru masuk MASIF")
+        elif oi_1h_ok:
+            score += 3; components += 1
+        if oi_24h_ok:
+            score += 3; components += 1
+        if oi_1h_ok and oi_24h_ok and chg_24h < 0:
+            score += 8; components += 1
+            sigs.append(f"⭐ [Linea-DIV] OI naik + Harga {chg_24h:+.1f}% — DIVERGENCE BULLISH!")
+    if components >= 4:
+        score += 5; sigs.append(f"⭐ FULL LINEA SIGNATURE ({components}/5) — pre-pump template!")
+    elif components >= 3:
+        sigs.append(f"[Linea] {components} komponen aktif")
+    return min(score, CONFIG["max_linea_score"]), sigs, components
 
-    # ── Threshold dari CONFIG ──────────────────────────────────────────────
-    fast_vol   = CONFIG["velocity_fast_vol_mult"]      # 50x
-    fast_body  = CONFIG["velocity_fast_body_pct"]      # 0.40
-    mid_vol    = CONFIG["velocity_mid_vol_mult"]       # 15x
-    mid_body   = CONFIG["velocity_mid_body_pct"]       # 0.50
-    hv_override = CONFIG["velocity_highvol_override"]  # 200x
+def layer_oi_acceleration(symbol, oi_value, chg_24h, vol_24h):
+    score, sigs, accel = 0, [], {}
+    if oi_value <= 0:
+        return 0, [], accel
+    is_micro  = oi_value < CONFIG["oi_accel_micro_thresh"]
+    is_dormant = vol_24h < CONFIG["oi_accel_dormant_vol"]
+    snaps = load_oi_snapshots()
+    hist  = snaps.get(symbol, [])
+    if len(hist) < 2:
+        return 0, [], accel
+    now = time.time()
+    def oi_at(target_ts, tolerance=900):
+        cands = [d for d in hist if abs(d["ts"] - target_ts) < tolerance]
+        return min(cands, key=lambda d: abs(d["ts"] - target_ts)) if cands else None
+    def growth_pct(old_snap):
+        if not old_snap or old_snap["oi"] <= 0:
+            return None
+        return (oi_value - old_snap["oi"]) / old_snap["oi"] * 100
+    snap_1h = oi_at(now - 3600)
+    snap_3h = oi_at(now - 10800)
+    snap_6h = oi_at(now - 21600)
+    gr_1h = growth_pct(snap_1h)
+    gr_3h = growth_pct(snap_3h)
+    gr_6h = growth_pct(snap_6h)
+    if gr_1h is not None: accel["growth_rate_1h"] = round(gr_1h, 2)
+    if gr_3h is not None: accel["growth_rate_3h"] = round(gr_3h, 2)
+    if gr_6h is not None: accel["growth_rate_6h"] = round(gr_6h, 2)
+    accel["is_micro_cap"] = is_micro
+    multiplier = 1.5 if is_micro else 1.0
+    extra_tag  = " [MICRO]" if is_micro else ""
+    primary_gr = gr_1h if gr_1h is not None else gr_3h
+    if primary_gr is not None:
+        if primary_gr >= CONFIG["oi_accel_extreme"] * multiplier:
+            score += 20; sigs.append(f"🚀 OI tumbuh +{primary_gr:.0f}%/1h{extra_tag} — EKSTREM!")
+        elif primary_gr >= CONFIG["oi_accel_strong"] * multiplier:
+            score += 14; sigs.append(f"🔥 OI tumbuh +{primary_gr:.0f}%/1h{extra_tag} — sangat kuat")
+        elif primary_gr >= CONFIG["oi_accel_medium"]:
+            score += 9;  sigs.append(f"OI tumbuh +{primary_gr:.0f}%/1h{extra_tag}")
+        elif primary_gr >= CONFIG["oi_accel_weak"]:
+            score += 4;  sigs.append(f"OI tumbuh +{primary_gr:.0f}%/1h — awal akumulasi")
+        elif primary_gr < -CONFIG["oi_accel_weak"]:
+            score -= 8;  sigs.append(f"⚠️ OI turun {primary_gr:.0f}%/1h — distribusi cepat")
+    price_flat = abs(chg_24h) <= CONFIG["oi_accel_div_price_max"]
+    oi_growing = (primary_gr or 0) >= CONFIG["oi_accel_weak"]
+    if oi_growing and price_flat and chg_24h < 0 and (primary_gr or 0) >= CONFIG["oi_accel_medium"]:
+        accel["divergence"] = True
+        score += 10
+        sigs.append(f"⭐ OI DIVERGENCE: OI +{primary_gr:.0f}% saat harga {chg_24h:+.1f}%")
+    return min(score, CONFIG["max_oi_accel_score"]), sigs, accel
 
-    # ── Klasifikasi ────────────────────────────────────────────────────────
-    #
-    # Kalibrasi akhir dari 9 coin forensik:
-    #
-    #   G    : vol=7127x med, body=68% → CEPAT  (hv_override)
-    #   AIN  : vol= 143x med, body=54% → CEPAT  (vol≥50 + body≥40)
-    #   XAN  : vol= 471x med, body=69% → CEPAT  (vol≥50 + body≥40)
-    #   REZ  : vol= 290x med, body=81% → CEPAT  (hv_override)
-    #   BLAST: vol= 301x med, body=22% → CEPAT  (hv_override — vol kompensasi body)
-    #   C    : vol=  51x med, body=35% → CEPAT  (vol≥50, body cukup ≥30%)
-    #   ARIA : vol=  13x med, body=33% → SEDANG (vol<50, body≥30% tapi tidak tinggi)
-    #   MYX  : vol=   9x med, body=79% → SEDANG (vol rendah, body sangat tinggi)
-    #   PEPE : vol=  16x med, body=58% → LAMBAT (vol<50 + body<80% = tidak cukup energi)
-    #
-    # Aturan:
-    #   CEPAT : vol ≥ 200x (override body)
-    #         | vol ≥ 50x  AND body ≥ 30%          ← C: 51x+35% ✅
-    #   SEDANG: vol ≥ 10x  AND body ≥ 30%          ← ARIA: 13x+33% ✅
-    #         | vol ≥ 2x   AND body ≥ 70%           ← ZKUSDT: 3.2x+86% ✅ (v3.2 fix)
-    #         | vol <  10x AND body ≥ 70%           ← MYX: 9x+79% ✅
-    #   LAMBAT: sisanya
-    #         → PEPE: 16x+58% = candle MERAH → LAMBAT lewat Fix 3
-    #         → BATUSDT: 1.1x+67% = body < 70% → LAMBAT ✅
-    #         → BNBUSDT: 1.4x+34% = vol < 2x, body < 70% → LAMBAT ✅
+def _candle_net_flow(candles):
+    buy_usd = sell_usd = 0.0
+    for c in candles:
+        rng = c["high"] - c["low"]
+        buy_ratio = (c["close"] - c["low"]) / rng if rng > 0 else 0.5
+        b = buy_ratio * c["volume_usd"]
+        s = (1.0 - buy_ratio) * c["volume_usd"]
+        buy_usd  += b
+        sell_usd += s
+    total   = buy_usd + sell_usd
+    net     = buy_usd - sell_usd
+    net_pct = net / total * 100 if total > 0 else 0.0
+    return net, net_pct, buy_usd, sell_usd
 
-    if vol_mult >= hv_override:
-        # Volume ekstrem (REZ/BLAST/G-type): vol sangat besar kompensasi body kecil
-        category = "CEPAT"
+def _tick_net_flow(trades, window_minutes=15):
+    if not trades:
+        return 0.0, 0.0, 0.0, 0.0, 0
+    now_ms = int(time.time() * 1000)
+    cutoff = now_ms - window_minutes * 60 * 1000
+    has_ts = any(t.get("ts_ms", 0) > 0 for t in trades)
+    recent = [t for t in trades if t.get("ts_ms", 0) > cutoff] if has_ts else trades
+    if not recent:
+        recent = trades
+    buy_usd  = sum(t["size"] * t["price"] for t in recent if "buy"  in t.get("side", ""))
+    sell_usd = sum(t["size"] * t["price"] for t in recent if "sell" in t.get("side", ""))
+    total    = buy_usd + sell_usd
+    net      = buy_usd - sell_usd
+    net_pct  = net / total * 100 if total > 0 else 0.0
+    return net, net_pct, buy_usd, sell_usd, len(recent)
 
-    elif vol_mult >= fast_vol and body_pct >= 0.30:
-        # Vol tinggi (≥50x) + body minimal 30% = pump cepat (C-type)
-        category = "CEPAT"
+def _classify_flow(net_pct):
+    if net_pct > CONFIG["nf_strong_buy"]:   return "STRONG_BUY"
+    if net_pct > CONFIG["nf_buy"]:          return "BUY"
+    if net_pct > -CONFIG["nf_neutral_max"]: return "NEUTRAL"
+    if net_pct > CONFIG["nf_strong_sell"]:  return "SELL"
+    return "STRONG_SELL"
 
-    elif vol_mult >= mid_vol and body_pct >= 0.30:
-        # Vol menengah (≥10x) + body cukup = pump sedang (ARIA-type: 13x+33%)
-        category = "SEDANG"
+def layer_net_flow(candles_1h, candles_15m, trades):
+    score, sigs = 0, []
+    flow_data   = {
+        "72h": {"net_pct": 0, "label": "NO_DATA"},
+        "24h": {"net_pct": 0, "label": "NO_DATA"},
+        "6h":  {"net_pct": 0, "label": "NO_DATA"},
+        "15m": {"net_pct": 0, "label": "NO_DATA", "count": 0},
+        "has_data": False,
+    }
+    should_block = False
+    pct_72h = pct_24h = pct_6h = pct_15m = None
 
-    elif vol_mult >= 2.0 and body_pct >= 0.70:
-        # v3.2 fix: vol moderat (≥2x) + body sangat solid (≥70%)
-        # Menangkap coin aktif di mana median zona tinggi sehingga
-        # spike terlihat kecil vs median, tapi body solid konfirmasi momentum.
-        # Kalibrasi: ZKUSDT 3.2x+86.5% ✅ (awakening nyata, 5.3x avg)
-        #            COOKIEUSDT 1.6x+88% tapi lolos via branch di bawah
-        #            BATUSDT 1.1x+67% → LAMBAT ✅ (vol < 2x)
-        category = "SEDANG"
+    if len(candles_1h) >= 72:
+        _, pct, buy, sell = _candle_net_flow(candles_1h[-72:])
+        pct_72h = pct
+        flow_data["72h"] = {"net_pct": round(pct,1), "label": _classify_flow(pct)}
+    if len(candles_1h) >= 24:
+        _, pct, buy, sell = _candle_net_flow(candles_1h[-24:])
+        pct_24h = pct
+        flow_data["24h"] = {"net_pct": round(pct,1), "label": _classify_flow(pct)}
+    if len(candles_1h) >= 6:
+        _, pct, buy, sell = _candle_net_flow(candles_1h[-6:])
+        pct_6h = pct
+        flow_data["6h"] = {"net_pct": round(pct,1), "label": _classify_flow(pct)}
+    if trades:
+        _, pct, _, _, cnt = _tick_net_flow(trades, 15)
+        pct_15m = pct
+        flow_data["15m"] = {"net_pct": round(pct,1), "label": _classify_flow(pct), "count": cnt}
 
-    elif vol_mult < mid_vol and body_pct >= 0.70:
-        # Vol rendah tapi body sangat dominan (≥70%) = early pump sedang (MYX-type)
-        category = "SEDANG"
+    flow_data["has_data"] = (pct_24h is not None)
+    if not flow_data["has_data"]:
+        return 0, [], flow_data, False
 
+    # Gate distribusi sistematis
+    if (pct_72h is not None
+            and pct_72h < CONFIG["nf_gate_72h"]
+            and pct_24h < CONFIG["nf_gate_24h"]
+            and pct_6h  < CONFIG["nf_gate_6h"]):
+        should_block = True
+        sigs.append(
+            f"🚨 NET FLOW DISTRIBUSI: 72h={pct_72h:+.1f}% "
+            f"24h={pct_24h:+.1f}% 6h={pct_6h:+.1f}% — whale keluar semua TF"
+        )
+        return score, sigs, flow_data, should_block
+
+    # Whale accumulation funnel pattern
+    if (pct_72h is not None
+            and CONFIG["nf_whale_72h_min"] <= pct_72h <= CONFIG["nf_whale_72h_max"]
+            and pct_24h is not None and pct_24h >= CONFIG["nf_whale_24h_min"]
+            and pct_6h  is not None and pct_6h  >= CONFIG["nf_whale_6h_min"]):
+        score += 20
+        sigs.append(
+            f"🐋 WHALE FUNNEL: 72h={pct_72h:+.1f}% → 24h={pct_24h:+.1f}% → "
+            f"6h={pct_6h:+.1f}% — akumulasi 3 hari!"
+        )
+    elif (pct_72h is not None and pct_72h > CONFIG["nf_buy"]
+            and pct_24h is not None and pct_24h > CONFIG["nf_buy"]
+            and pct_6h  is not None and pct_6h  > CONFIG["nf_buy"]):
+        score += 15
+        sigs.append(f"✅ NET FLOW BULLISH semua TF: 72h={pct_72h:+.1f}% 24h={pct_24h:+.1f}% 6h={pct_6h:+.1f}%")
     else:
-        # Vol tidak cukup DAN body tidak cukup kuat = pump lambat → buang
-        category = "LAMBAT"
+        if pct_24h is not None and pct_24h > CONFIG["nf_buy"] and pct_6h is not None and pct_6h > CONFIG["nf_buy"]:
+            score += 10
+        elif pct_6h is not None and pct_6h > CONFIG["nf_strong_buy"]:
+            score += 7
+        if pct_72h is not None and CONFIG["nf_strong_sell"] < pct_72h < 0 and pct_24h is not None and pct_24h > CONFIG["nf_buy"]:
+            score += 5; sigs.append(f"📈 Flow shifting: 72h={pct_72h:+.1f}% → 24h={pct_24h:+.1f}%")
 
-    return category, round(vol_mult, 1), round(body_pct * 100, 1)
+    if pct_72h is not None:
+        if pct_72h < CONFIG["nf_strong_sell"]:
+            score -= 12; sigs.append(f"⚠️ Net Flow 72h={pct_72h:+.1f}% — distribusi besar 3 hari")
+        elif pct_72h < CONFIG["nf_sell"]:
+            score -= 6
+    if pct_24h is not None:
+        if pct_24h < CONFIG["nf_strong_sell"]:
+            score -= 10; sigs.append(f"⚠️ Net Flow 24h={pct_24h:+.1f}% — distribusi aktif")
+        elif pct_24h < CONFIG["nf_sell"]:
+            score -= 5
+
+    if pct_15m is not None and flow_data["15m"]["count"] >= 10:
+        if pct_15m > CONFIG["nf_strong_buy"]:
+            score += 4; sigs.append(f"✅ Ticks 15m={pct_15m:+.1f}% — beli dominan real-time")
+        elif pct_15m < CONFIG["nf_strong_sell"]:
+            score -= 5; sigs.append(f"⚠️ Ticks 15m={pct_15m:+.1f}% — jual dominan sekarang")
+
+    return min(score, CONFIG["max_netflow_score"]), sigs, flow_data, should_block
+
+def compute_pump_probability(candles_1h, whale_score=0):
+    if len(candles_1h) < 24:
+        return {"probability_score": 0.3, "classification": "Data Kurang", "metrics": {}}
+    max_spike, avg_spike = calc_volume_spike_ratio(candles_1h)
+    irr      = calc_volume_irregularity(candles_1h)
+    atr_14   = calc_atr(candles_1h[-24:], 14) or 0
+    cur      = candles_1h[-1]["close"] or 1
+    norm_atr = (atr_14 / cur) * 100
+    def clamp(v, lo, hi):
+        return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 0.5
+    n_mvs   = clamp(max_spike,  1.0, 10.0)
+    n_irr   = clamp(irr,        0.5,  3.5)
+    n_avs   = clamp(avg_spike,  0.5,  2.0)
+    n_atr   = 1.0 - clamp(norm_atr, 0.05, 3.0)
+    n_whale = whale_score / 100.0
+    score = max(0.0, min(1.0,
+        n_mvs * 0.30 + n_irr * 0.20 + n_avs * 0.12 + n_atr * 0.25 + n_whale * 0.13
+    ))
+    if score < 0.30:   cls = "Noise"
+    elif score < 0.45: cls = "Sideways"
+    elif score < 0.60: cls = "Accumulation"
+    elif score < 0.75: cls = "Pre-Pump"
+    else:               cls = "Imminent Pump"
+    return {
+        "probability_score": score,
+        "classification":    cls,
+        "metrics": {
+            "max_vol_spike":    round(max_spike, 2),
+            "vol_irregularity": round(irr, 3),
+            "norm_atr_pct":     round(norm_atr, 4),
+        },
+    }
+
+def is_already_pumped(oi_chg24h, chg_24h, oi_valid):
+    if not oi_valid:
+        if chg_24h > 15:
+            return True, f"Harga +{chg_24h:.0f}% — pump sudah terjadi"
+        return False, ""
+    if oi_chg24h > 35 and chg_24h > 3:
+        return True, f"OI 24h +{oi_chg24h:.0f}% + Harga +{chg_24h:.0f}% — TERLAMBAT"
+    if oi_chg24h > 15 and chg_24h > 10:
+        return True, f"OI +{oi_chg24h:.0f}% + Harga +{chg_24h:.0f}% — momentum sudah habis"
+    return False, ""
+
+def get_time_mult():
+    h = utc_hour()
+    if h in [5, 6, 7, 8, 11, 12, 13, 19, 20, 21]:
+        return 1.15, f"⏰ High-prob window ({h}:00 UTC)"
+    if h in [1, 2, 3, 4]:
+        return 0.85, "Low-prob window"
+    return 1.0, ""
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  🧠  MASTER SCORE — INTI SCANNER v3.0
-# ══════════════════════════════════════════════════════════════════════════════
-def master_score(symbol, ticker):
-    # ── Ambil candle 1H ──────────────────────────────────────────────────────
-    c1h = get_candles(symbol, "1h", CONFIG["candle_limit_1h"])
-    if len(c1h) < 72:  # minimal 3 hari data
+# ══════════════════════════════════════════════════════════════
+#  🧠  MASTER SCORE
+# ══════════════════════════════════════════════════════════════
+def master_score(symbol, ticker, tickers_dict):
+    c1h  = get_candles(symbol, "1h",  CONFIG["candle_1h"])
+    c15m = get_candles(symbol, "15m", CONFIG["candle_15m"])
+    c4h  = get_candles(symbol, "4h",  CONFIG["candle_4h"])
+
+    if len(c1h) < 48 or len(c15m) < 20:
         return None
+
+    # Dead activity gate
+    if len(c1h) >= 7:
+        last_vol   = c1h[-1]["volume_usd"]
+        avg_vol_6h = sum(c["volume_usd"] for c in c1h[-7:-1]) / 6
+        if avg_vol_6h > 0 and last_vol / avg_vol_6h < CONFIG["dead_activity_threshold"]:
+            log.info(f"  {symbol}: GATE dead activity")
+            return None
+
+    funding = get_funding(symbol)
+
+    try:
+        p7d_ago = c1h[-168]["close"] if len(c1h) >= 168 else c1h[0]["close"]
+        chg_7d  = (c1h[-1]["close"] - p7d_ago) / p7d_ago * 100 if p7d_ago > 0 else 0
+    except:
+        chg_7d = 0
 
     try:
         chg_24h = float(ticker.get("change24h", 0)) * 100
         vol_24h = float(ticker.get("quoteVolume", 0))
-        price   = float(ticker.get("lastPr", 0))
     except:
+        chg_24h, vol_24h = 0, 0
+
+    # Gates
+    if chg_7d > CONFIG["gate_chg_7d_max"]:
+        oi_v = get_open_interest(symbol)
+        oi_c1h, _, oi_vld = get_oi_changes(symbol, oi_v) if oi_v > 0 else (0, 0, False)
+        if not (funding <= CONFIG["squeeze_funding_max"] and oi_vld and oi_c1h > CONFIG["squeeze_oi_change_min"]):
+            log.info(f"  {symbol}: GATE overbought ({chg_7d:.1f}%)")
+            return None
+    if chg_7d < CONFIG["gate_chg_7d_min"]:
+        log.info(f"  {symbol}: GATE downtrend ({chg_7d:.1f}%)")
+        return None
+    if funding < CONFIG["gate_funding_extreme"]:
+        log.info(f"  {symbol}: GATE funding ekstrem ({funding:.5f})")
         return None
 
-    if price <= 0:
+    # ── SR ENGINE ────────────────────────────────────────────────────────────
+    support_levels, resist_levels, sr_analysis = detect_sr_levels(c1h)
+
+    # ── ANTI-BREAK SUPPORT GATE ─────────────────────────────────────────────
+    abs_block, abs_reason = anti_break_support_gate(sr_analysis)
+    if abs_block:
+        log.info(f"  {symbol}: {abs_reason}")
         return None
 
-    # ── Gate: harga tidak sedang pompa duluan ────────────────────────────────
-    # Jika coin sudah naik >40% dalam 24 jam, kemungkinan sudah terlambat
-    if chg_24h > 40.0:
-        log.info(f"  {symbol}: SKIP chg_24h={chg_24h:.1f}% sudah naik duluan")
-        return None
+    score, sigs, bd = 0, [], {}
 
-    # ── FASE 1: Cari Compression Zone ────────────────────────────────────────
-    compression = find_compression_zone(c1h)
-    if compression is None:
-        log.info(f"  {symbol}: SKIP tidak ada compression zone yang valid")
-        return None
+    # SR Layer (BARU — paling penting)
+    sr_sc, sr_sigs = layer_sr(c1h, sr_analysis, support_levels, resist_levels)
+    score += sr_sc; sigs += sr_sigs; bd["sr"] = sr_sc
 
-    comp_low    = compression["low"]
-    comp_high   = compression["high"]
-    comp_avg_vol = compression["avg_vol"]
-    comp_length  = compression["length"]
-    comp_age     = compression["age_candles"]
+    # Volume layer
+    v_sc, v_sigs, rvol = layer_volume_intelligence(c1h)
+    score += v_sc; sigs += v_sigs; bd["vol"] = v_sc
 
-    # ── Hitung median volume zona compression (v3.0) ──────────────────────────
-    # Median lebih robust dari avg karena tidak terpengaruh candle outlier
-    # dalam zona. Digunakan oleh classify_pump_velocity().
-    _lookback_actual = min(CONFIG["compression_lookback"], len(c1h))
-    _scan_slice      = c1h[-_lookback_actual:]
-    _zone_candles    = _scan_slice[compression["start_idx"]:compression["end_idx"] + 1]
-    if _zone_candles:
-        _zvols       = sorted(c["volume_usd"] for c in _zone_candles)
-        _mid         = len(_zvols) // 2
-        comp_median_vol = (_zvols[_mid] + _zvols[~_mid]) / 2 if len(_zvols) > 1 else _zvols[0]
+    # Short-term CVD
+    stcvd_sc, stcvd_sig = calc_short_term_cvd(c1h)
+    score += stcvd_sc
+    if stcvd_sig:
+        sigs.append(stcvd_sig)
+    bd["stcvd"] = stcvd_sc
+
+    # Flat accumulation
+    fa_sc, fa_sigs = layer_flat_accumulation(c1h)
+    score += fa_sc; sigs += fa_sigs; bd["flat"] = fa_sc
+
+    # Structure
+    st_sc, st_sigs, bbw_val, bbw_pct, coiling = layer_structure(c1h)
+    score += st_sc; sigs += st_sigs; bd["struct"] = st_sc
+
+    # Stealth bonus
+    if len(c1h) >= 6:
+        pre6       = c1h[-6:]
+        avg_vol_6h = sum(c["volume_usd"] for c in pre6) / 6
+        high_6h    = max(c["high"] for c in pre6)
+        low_6h     = min(c["low"]  for c in pre6)
+        range_6h   = (high_6h - low_6h) / low_6h * 100 if low_6h > 0 else 0
     else:
-        comp_median_vol = comp_avg_vol  # fallback
+        avg_vol_6h, range_6h = 0, 0
 
-    log.info(f"  {symbol}: Compression found len={comp_length} age={comp_age} "
-             f"range={compression['range_pct']*100:.1f}% "
-             f"candle_range={compression.get('avg_candle_range',0)*100:.2f}% "
-             f"spikes={compression.get('spike_count',0)}")
+    stealth_bonus = 0
+    if (avg_vol_6h < CONFIG["stealth_max_vol"]
+            and coiling > CONFIG["stealth_min_coiling"]
+            and range_6h < CONFIG["stealth_max_range"]):
+        stealth_bonus = 25
+        sigs.append(f"🕵️ STEALTH PATTERN: vol ${avg_vol_6h:.0f}/h coiling {coiling}h")
+    score += stealth_bonus; bd["stealth"] = stealth_bonus
 
-    # ── Gate: PRE-ZONE PUMP CONTEXT (v2.8) ───────────────────────────────────
-    # Cek 48 candle sebelum zona dimulai — ada pump baru-baru ini sebelum zona?
-    # Hanya aktif untuk zona PENDEK (≤ 168H) karena pump yang terjadi
-    # 300-600 jam lalu tidak relevan untuk zona yang baru terbentuk belakangan.
-    #
-    # Kalibrasi dari log nyata:
-    #   2Z (94H, 12 spikes)     → SKIP ✅  pump baru-baru ini
-    #   PEOPLE (61H, 11 spikes) → SKIP ✅  sama
-    #   PLUME (96H, 18 spikes)  → SKIP ✅  sama
-    #   ENAUSDT (149H, 3 spikes)→ LOLOS ✅ 3 < 5, wajar
-    #   ARB (315H, 4 spikes)    → gate off, zona terlalu tua untuk cek ini
-    #   SAND (351H, 3 spikes)   → gate off
-    lookback_ctx  = 48
-    pre_zone_mult = 3.0
-    pre_zone_max  = 5      # dinaikkan dari 2 → 5 (market pasti ada beberapa candle ramai)
-    max_zone_age  = 168    # hanya aktif untuk zona ≤ 7 hari
+    # OI
+    oi_value  = get_open_interest(symbol)
+    oi_chg1h  = oi_chg24h = 0
+    oi_valid  = False
+    if oi_value > 0:
+        save_oi_snapshot(symbol, oi_value)
+        oi_chg1h, oi_chg24h, oi_valid = get_oi_changes(symbol, oi_value)
 
-    if comp_age <= max_zone_age:  # hanya cek zona yang masih "baru"
-        comp_start_abs = len(c1h) - min(CONFIG["compression_lookback"], len(c1h)) + compression["start_idx"]
-        pre_start      = max(0, comp_start_abs - lookback_ctx)
-        pre_candles    = c1h[pre_start:comp_start_abs]
-        if pre_candles and comp_avg_vol > 0:
-            pre_zone_spikes = sum(
-                1 for c in pre_candles
-                if c["volume_usd"] > pre_zone_mult * comp_avg_vol
-            )
-            if pre_zone_spikes > pre_zone_max:
-                log.info(f"  {symbol}: SKIP pre-zone pump — {pre_zone_spikes} candle "
-                         f"vol>{pre_zone_mult}×comp_avg dalam {len(pre_candles)}H sebelum zona "
-                         f"(threshold={pre_zone_max})")
-                return None
-
-    # ── Gate: compression tidak boleh terlalu tua (zona kadaluarsa) ──────────
-    # v3.0 fix: gate lama (age>72 & quality<50) terlalu agresif karena quality
-    # decay exp(-age/48) sangat cepat. Compression len=50, age=73h → quality=11 → di-skip.
-    # Padahal jika ADA volume spike sekarang, usia zona kurang relevan.
-    #
-    # Logika baru (dua lapis):
-    #   Layer 1: age > 72h → cek dulu apakah ada volume spike
-    #     - Ada spike (best_mult ≥ 1.8x): lanjut evaluasi, jangan skip dulu
-    #     - Tidak ada spike: skip (zona tidur, belum ada tanda bangun)
-    #   Layer 2: age > 168h (7 hari) → skip tanpa syarat (zona benar-benar kadaluarsa)
-    #
-    # Kalibrasi:
-    #   WIFUSDT age=73h, no vol spike  → skip di vol gate ✅ (best_mult<1.8x)
-    #   AKTUSDT age=60h, best_mult=1.8 → lolos layer 1, dievaluasi ✅
-    #   ETCUSDT age=407h               → layer 2 langsung skip ✅
-    if comp_age > 168:
-        log.info(f"  {symbol}: SKIP compression kadaluarsa (age={comp_age}h > 168h)")
+    pumped, pump_reason = is_already_pumped(oi_chg24h, chg_24h, oi_valid)
+    if pumped:
+        log.info(f"  {symbol}: GATE already pumped — {pump_reason}")
         return None
-    # Layer 1: 72-168h — hanya skip jika belum ada awakening sama sekali
-    if comp_age > 72:
-        _quick_awk = detect_volume_awakening(c1h, comp_avg_vol)
-        if not _quick_awk["detected"]:
-            log.info(f"  {symbol}: SKIP compression tua & tidak ada spike "
-                     f"(age={comp_age}h, best_mult={_quick_awk['best_mult']:.1f}x)")
+
+    # Positioning
+    pos_sc, pos_sigs, ls_ratio, ls_block = layer_positioning(symbol, funding, oi_chg1h)
+    if ls_block:
+        log.info(f"  {symbol}: GATE L/S overcrowded (L/S={ls_ratio:.2f})")
+        return None
+    score += pos_sc; sigs += pos_sigs; bd["pos"] = pos_sc
+
+    # 4H confluence
+    tf4h_sc = 0
+    if c4h:
+        tf4h_sc, tf4h_sig = calc_4h_confluence(c4h)
+        if tf4h_sig:
+            sigs.append(tf4h_sig)
+    score += tf4h_sc; bd["tf4h"] = tf4h_sc
+
+    # Context
+    ctx_sc, ctx_sigs, sector = layer_context(symbol, tickers_dict)
+    score += ctx_sc; sigs += ctx_sigs; bd["ctx"] = ctx_sc
+
+    # Whale
+    ws, whale_bonus, wev = calc_whale(symbol, c15m, funding)
+    score += whale_bonus; bd["whale"] = whale_bonus
+
+    # Liquidation
+    liq_sc, liq_sigs, long_liq, short_liq, liq_block = layer_liquidation(symbol, c1h)
+    if liq_block:
+        log.info(f"  {symbol}: GATE liquidation")
+        return None
+    score += liq_sc; sigs += liq_sigs; bd["liq"] = liq_sc
+
+    # RSI
+    rsi_1h = get_rsi(c1h[-48:] if len(c1h) >= 48 else c1h)
+
+    # Linea signature
+    linea_sc, linea_sigs, linea_components = layer_linea_signature(
+        c1h, oi_chg1h, oi_chg24h, oi_valid, ls_ratio, funding, chg_24h
+    )
+    if linea_components >= 2 and rsi_1h < CONFIG["linea_rsi_max"]:
+        linea_sc += 5; linea_sigs.append(f"✅ [Linea-RSI] {rsi_1h:.1f} — oversold, siap reversal")
+    score += linea_sc; sigs += linea_sigs; bd["linea"] = linea_sc
+
+    # OI acceleration
+    oi_accel_sc, oi_accel_sigs, oi_accel_data = layer_oi_acceleration(symbol, oi_value, chg_24h, vol_24h)
+    score += oi_accel_sc; sigs += oi_accel_sigs; bd["oi_accel"] = oi_accel_sc
+
+    # Net flow
+    trades_for_flow = get_trades(symbol, 500)
+    nf_sc, nf_sigs, nf_data, nf_block = layer_net_flow(c1h, c15m, trades_for_flow)
+    if nf_block:
+        log.info(f"  {symbol}: GATE net flow distribusi sistematis")
+        return None
+    score += nf_sc; sigs += nf_sigs; bd["netflow"] = nf_sc
+
+    # OI decline penalties
+    if oi_value > 0 and oi_valid:
+        if oi_chg24h > 35 and chg_24h > 3:
             return None
-        # Ada spike → lanjut, biarkan gate-gate selanjutnya yang memutuskan
-
-    # ── Gate: harga masih di dekat zona compression ──────────────────────────
-    price_now = c1h[-1]["close"]
-    rise_from_low = (price_now - comp_low) / comp_low if comp_low > 0 else 999
-
-    if rise_from_low > CONFIG["max_rise_from_low_pct"]:
-        log.info(f"  {symbol}: SKIP sudah naik {rise_from_low*100:.1f}% dari low compression — terlambat")
-        return None
-
-    # ── Gate: TREND KONTEKS — harga tidak boleh terlalu jauh di bawah zona ───
-    # Bug dari data nyata (ALCH/BANK): harga di bawah zona compression tapi
-    # spike candle hijau → scanner lolos. Ini adalah bounce kecil dalam downtrend.
-    #
-    # Logika:
-    #   - Harga DALAM zona (comp_low ≤ price ≤ comp_high): ideal, coin di support
-    #   - Harga SEDIKIT di bawah zona (< 3%): toleransi liq sweep, masih valid
-    #   - Harga JAUH di bawah zona (> 3%): downtrend aktif, zona sudah tidak relevan
-    #
-    # ALCH: comp_low $0.0724, harga $0.0692 → 4.4% di bawah → downtrend, SKIP
-    # BANK: comp_low $0.0365, harga $0.0380 → +4.1% di atas → VALID (ini bounce)
-    price_below_zone_pct = (comp_low - price_now) / comp_low if price_now < comp_low else 0
-
-    if price_below_zone_pct > CONFIG["price_below_zone_max"]:
-        log.info(f"  {symbol}: SKIP downtrend aktif — harga {price_below_zone_pct*100:.1f}% "
-                 f"di bawah zona compression (max={CONFIG['price_below_zone_max']*100:.0f}%)")
-        return None
-
-    # ── Gate: MA trend — konfirmasi downtrend dengan gap MA signifikan ────────
-    # Revisi penting: gate lama (MA20 < MA50 + keduanya turun) terlalu sensitif.
-    # Selama COMPRESSION, MA20 dan MA50 hampir sama dan bisa saling mendahului
-    # karena oscillasi kecil → false positive pada TRUMP/PIXEL/VVV type.
-    #
-    # Fix: bearish HANYA jika gap MA20-MA50 > 2.5% (downtrend sejati punya gap besar)
-    # ALCH gap = 3.0% → SKIP ✅ | TRUMP gap = 1.2% → LOLOS ✅
-    if len(c1h) >= 55:
-        closes    = [c["close"] for c in c1h]
-        ma20_now  = sum(closes[-20:])   / 20
-        ma50_now  = sum(closes[-50:])   / 50
-        ma20_ago  = sum(closes[-25:-5]) / 20
-        ma50_ago  = sum(closes[-55:-5]) / 50
-        ma_gap    = (ma50_now - ma20_now) / ma50_now if ma50_now > 0 else 0
-        ma20_falling = ma20_now < ma20_ago
-        ma50_falling = ma50_now < ma50_ago
-        ma_bearish   = ma_gap > 0.025 and ma20_falling and ma50_falling
-
-        if ma_bearish:
-            log.info(f"  {symbol}: SKIP MA bearish — gap MA={ma_gap*100:.1f}% > 2.5%, "
-                     f"MA20={ma20_now:.6g} < MA50={ma50_now:.6g}, keduanya turun")
+        if oi_chg24h < -20:
+            score -= 25; sigs.append(f"⚠️ OI 24h turun {oi_chg24h:.1f}% — distribusi masif")
+        elif oi_chg24h < -10:
+            score -= 15
+        elif oi_chg24h < -5:
+            score -= 10
+        if oi_chg1h < -8:
+            score -= 20; sigs.append(f"🚨 OI 1h turun {oi_chg1h:.1f}% — distribusi CEPAT!")
+        elif oi_chg1h < -5:
+            score -= 12
+        elif oi_chg1h > 5:
+            score += 5; sigs.append(f"✅ OI 1h naik {oi_chg1h:.1f}% — posisi baru masuk")
+        if oi_chg24h < -3 and oi_chg1h < -2:
+            log.info(f"  {symbol}: GATE multi-TF OI decline")
             return None
+        if rvol > 1.5 and oi_chg24h > 5:
+            score += 8; sigs.append(f"✅ Vol naik + OI naik — akumulasi kuat")
 
-    # ── Gate: POST-PUMP DETECTION (diperbarui v2.8) ─────────────────────────
-    # v2.6 original: window 6H, threshold 7x — menangkap GAS/BABYDOGE (pump baru)
-    # v2.8 extended: tambah window 48H, threshold 4x — menangkap 2ZUSDT (pump 2 hari lalu)
-    #
-    # Kalibrasi 48H window dari data forensik:
-    #   XAN pre-pump  : avg_48H ≈ 2-3x comp_avg → LOLOS ✅
-    #   MYX pre-pump  : avg_48H ≈ 1-2x comp_avg → LOLOS ✅
-    #   2Z post-pump  : avg_48H ≈ 4-5x comp_avg → SKIP  ✅  (pump 48-72 jam lalu)
-    #   GAS post-pump : avg_6H  = 150x           → SKIP  ✅  (sudah tangkap di 6H gate)
-    #
-    # Dua gate terpisah: 6H untuk pump sangat baru, 48H untuk pump beberapa hari lalu.
-    if len(c1h) >= CONFIG["post_pump_lookback_candles"]:
-        lookback_n   = CONFIG["post_pump_lookback_candles"]
-        avg_vol_last = sum(c["volume_usd"] for c in c1h[-lookback_n:]) / lookback_n
-        post_pump_ratio = avg_vol_last / comp_avg_vol if comp_avg_vol > 0 else 0
+    bd["oi_change"]    = round(oi_chg24h, 1)
+    bd["oi_change_1h"] = round(oi_chg1h, 1)
+    bd["oi_valid"]     = oi_valid
 
-        if post_pump_ratio > CONFIG["post_pump_vol_mult"]:
-            log.info(f"  {symbol}: SKIP post-pump (6H) — avg_{lookback_n}h = "
-                     f"{post_pump_ratio:.1f}x comp_avg "
-                     f"(threshold={CONFIG['post_pump_vol_mult']}x)")
-            return None
+    tmult, tsig = get_time_mult()
+    raw_score   = int(score * tmult)
+    if tsig:
+        sigs.append(tsig)
 
-    # Gate 48H: deteksi pump yang terjadi 6-48 jam yang lalu (2Z-type)
-    lookback_48 = CONFIG.get("post_pump_lookback_48h", 48)
-    thresh_48   = CONFIG.get("post_pump_vol_mult_48h", 4.0)
-    if len(c1h) >= lookback_48:
-        avg_48h = sum(c["volume_usd"] for c in c1h[-lookback_48:]) / lookback_48
-        ratio_48 = avg_48h / comp_avg_vol if comp_avg_vol > 0 else 0
-        if ratio_48 > thresh_48:
-            log.info(f"  {symbol}: SKIP post-pump (48H) — avg_48h = "
-                     f"{ratio_48:.1f}x comp_avg (threshold={thresh_48}x) "
-                     f"— kemungkinan pump beberapa hari lalu")
-            return None
+    prob = compute_pump_probability(c1h, ws)
+    bd["prob_score"] = round(prob["probability_score"] * 100, 1)
+    bd["prob_class"] = prob["classification"]
 
-    # ── Gate: G3 BREAKOUT — harga belum keluar dari zona ke atas ─────────────
-    # Forensik XAN/MYX: alert harus keluar saat harga masih di dalam zona.
-    # Jika price_now sudah > comp_high × 1.03 → breakout sedang/sudah terjadi.
-    # Tidak bertabrakan dengan post_pump gate karena:
-    #   - post_pump cek VOLUME historis 6H (dimensi volume)
-    #   - G3 cek HARGA sekarang vs batas atas zona (dimensi harga/posisi)
-    # Coin yang baru mulai breakout (1 candle) akan di-skip G3.
-    # Coin yang sudah pump lama lalu balik ke zona: lolos G3, di-skip post_pump.
-    price_above_zone_pct = (price_now - comp_high) / comp_high if price_now > comp_high else 0
-    if price_above_zone_pct > CONFIG.get("price_above_zone_max", 0.03):
-        log.info(f"  {symbol}: SKIP G3 breakout — harga {price_above_zone_pct*100:.1f}% "
-                 f"di atas comp_high ${comp_high:.6g}")
-        return None
-    awakening = detect_volume_awakening(c1h, comp_avg_vol)
+    composite = int(
+        min(raw_score, 100) * CONFIG["composite_w_layer"]
+        + prob["probability_score"] * 100 * CONFIG["composite_w_prob"]
+    )
+    composite = min(composite, 100)
+    bd["composite"] = composite
+    bd["rsi_1h"]    = round(rsi_1h, 1)
+    bd["linea_comp"] = linea_components
 
-    if not awakening["detected"]:
-        log.info(f"  {symbol}: SKIP volume belum bangun (best_mult={awakening['best_mult']:.1f}x)")
+    # ── SMART ENTRY/SL/TP (berbasis SR) ─────────────────────────────────────
+    entry = calc_smart_entry(c1h, sr_analysis, support_levels, resist_levels)
+    if not entry:
+        log.info(f"  {symbol}: SKIP — tidak ada setup SR valid untuk entry")
         return None
 
-    # ── Gate: SELLING CLIMAX — spike merah + harga di bawah zona ────────────
-    # CAKE case: spike 12.1x tapi candle merah + harga di bawah zona = dump.
-    spike_candle     = c1h[-awakening["spike_candle"]] if awakening["spike_candle"] >= 1 else c1h[-1]
-    spike_is_red     = spike_candle["close"] < spike_candle["open"]
-    price_below_zone = price_now < comp_low * 0.99
-
-    if spike_is_red and price_below_zone:
-        log.info(f"  {symbol}: SKIP selling climax — spike merah + harga di bawah zona compression")
-        return None
-
-    log.info(f"  {symbol}: Volume awakening! {awakening['best_mult']:.1f}x compression avg")
-
-    # ── Funding gate ─────────────────────────────────────────────────────────
-    funding = get_funding(symbol)
-    if funding < CONFIG["funding_gate"]:
-        log.info(f"  {symbol}: SKIP funding terlalu negatif ({funding:.5f})")
-        return None
-
-    # ── Hitung RVOL (relatif vs jam yang sama) ────────────────────────────────
-    # Dilakukan di sini agar bisa dipakai sebagai gate sebelum scoring penuh
-    if len(c1h) >= 25:
-        last_vol       = c1h[-2]["volume_usd"]
-        target_hour    = (c1h[-2]["ts"] // 3_600_000) % 24
-        same_hour_vols = [c["volume_usd"] for c in c1h[:-2]
-                          if (c["ts"] // 3_600_000) % 24 == target_hour]
-        avg_same_hour  = sum(same_hour_vols) / len(same_hour_vols) if same_hour_vols else 1
-        rvol           = last_vol / avg_same_hour if avg_same_hour > 0 else 1.0
-    else:
-        rvol = 1.0
-
-    # ── Gate: RVOL minimum ────────────────────────────────────────────────────
-    # Data nyata: THETA RVOL=1.2x lolos scoring tapi tidak ada awakening nyata.
-    # RVOL dihitung vs jam yang sama → lebih jujur dari vol_mult (yang vs avg compression).
-    # Kedua sinyal harus konfirmasi bersamaan.
-    if rvol < CONFIG["min_rvol_gate"]:
-        log.info(f"  {symbol}: SKIP RVOL={rvol:.2f}x terlalu rendah (min={CONFIG['min_rvol_gate']}x)")
-        return None
-
-    # ── Metrik tambahan ───────────────────────────────────────────────────────
-    rsi          = get_rsi(c1h[-50:], 14)
-    atr_7        = calc_atr(c1h[-10:],  7) or price_now * 0.02
-    atr_30       = calc_atr(c1h[-33:], 30) or price_now * 0.02
-    vol_compress = (atr_7 / atr_30) < 0.75 if atr_30 > 0 else False
-    liq_sweep    = detect_liquidity_sweep(c1h, comp_low)
-    candle_score, candle_label = analyze_candle_structure(c1h[-1])
-
-    # ── Forensic pattern detectors (v2.6) ────────────────────────────────────
-    # Tiga pola yang terbukti konsisten sebelum pump besar dari data forensik
-    # XAN/CUS/MYX — lebih reliable dari RSI atau candle structure saja.
-    higher_lows        = detect_higher_lows(c1h, lookback=4)
-    price_accel        = detect_price_acceleration(c1h, lookback=6)
-    pre_spike_sc, pre_spike_label = detect_pre_pump_candle(c1h)
-
-    # ── PUMP VELOCITY CLASSIFICATION (BARU v3.0) ─────────────────────────────
-    # Dilakukan SEBELUM scoring agar bisa dipakai sebagai gate dan bonus.
-    # Menggunakan comp_median_vol yang sudah dihitung di atas.
-    velocity, vel_mult_med, vel_body_pct = classify_pump_velocity(c1h, comp_median_vol)
-
-    # ── Gate PUMP VELOCITY — buang pump lambat ────────────────────────────────
-    # Pump LAMBAT = vol spike < 15x median DAN body < 50%
-    # Dari data forensik: PEPE vol=16x med → H+1 hanya +1.8% → tidak layak trade.
-    # Gate ini adalah penyebab utama sinyal "pump 1-7% dalam 24 jam".
-    if velocity == "LAMBAT":
-        log.info(f"  {symbol}: SKIP pump velocity LAMBAT — "
-                 f"vol={vel_mult_med}x median, body={vel_body_pct}% "
-                 f"(butuh ≥15x median+body≥30%, atau body≥50%)")
-        return None
-
-    # ── SCORING ───────────────────────────────────────────────────────────────
-    score = 0
-    score_breakdown = []
-
-    # [30] Compression quality
-    # Skor berdasarkan panjang zona dan ketatnya range
-    comp_score = 0
-    if comp_length >= 36:   comp_score += 10
-    if comp_length >= 72:   comp_score += 8    # 3+ hari
-    if comp_length >= 168:  comp_score += 7    # 7+ hari (seperti VVV)
-    if comp_length >= 336:  comp_score += 5    # 14+ hari (seperti TRUMP)
-    # Bonus range sangat ketat
-    if compression["range_pct"] < 0.04:  comp_score += 5  # range < 4%
-    comp_score = min(comp_score, 30)
-    score += comp_score
-    score_breakdown.append(f"Compression: +{comp_score} (len={comp_length}h, range={compression['range_pct']*100:.1f}%)")
-
-    # [25] Volume awakening
-    vol_score = 0
-    mult = awakening["best_mult"]
-    if mult >= CONFIG["awakening_vol_mult"]:    vol_score += 10  # ≥ 1.8x
-    if mult >= CONFIG["strong_awakening_mult"]: vol_score += 8   # ≥ 3x
-    if mult >= CONFIG["mega_awakening_mult"]:   vol_score += 7   # ≥ 6x (PIXEL-level)
-    if awakening["is_green"]:                   vol_score += 3   # spike candle hijau
-    if awakening["spike_candle"] == 1:          vol_score += 2   # spike di candle TERBARU
-    vol_score = min(vol_score, 25)
-    score += vol_score
-    score_breakdown.append(f"Vol awakening: +{vol_score} ({mult:.1f}x, {'hijau' if awakening['is_green'] else 'merah'})")
-
-    # [20] Support proximity
-    # Seberapa dekat harga ke support (bawah zona compression)
-    prox_score = 0
-    if rise_from_low <= 0.02:   prox_score = 20  # dalam 2% dari low — ideal
-    elif rise_from_low <= 0.04: prox_score = 15  # dalam 4%
-    elif rise_from_low <= 0.06: prox_score = 10  # dalam 6%
-    elif rise_from_low <= 0.09: prox_score = 5   # dalam 9%
-    else:                       prox_score = 2   # 9-12% — masih valid, spike candle
-    score += prox_score
-    score_breakdown.append(f"Proximity: +{prox_score} ({rise_from_low*100:.1f}% dari low)")
-
-    # [15] Candle structure
-    score += candle_score
-    score_breakdown.append(f"Candle: +{candle_score} ({candle_label})")
-
-    # [10] RSI momentum
-    rsi_score = 0
-    if rsi < 30:    rsi_score = 10  # oversold kuat
-    elif rsi < 38:  rsi_score = 7   # oversold sedang
-    elif rsi < 45:  rsi_score = 4   # mendekati netral
-    else:           rsi_score = 2   # netral — tetap dapat poin minimal
-                                    # (RSI tinggi saat compression bukan masalah
-                                    # jika volume spike baru terjadi)
-    score += rsi_score
-    score_breakdown.append(f"RSI: +{rsi_score} (RSI={rsi:.0f})")
-
-    # Bonus: liquidity sweep (pola ORCA/PIXEL)
-    if liq_sweep:
-        score += 8
-        score_breakdown.append("Liq sweep: +8 (false breakdown terdeteksi)")
-
-    # Bonus: volatility compression (coil makin ketat)
-    if vol_compress:
-        score += 5
-        score_breakdown.append("Vol compress: +5 (ATR7/ATR30 < 0.75)")
-
-    # ── Bonus forensik v2.6 — terbukti dari data nyata XAN/CUS/MYX ──────────
-
-    # Higher lows (+8): smart money akumulasi, tidak mau biarkan harga turun
-    # Terbukti di semua 3 coin sebelum pump besar
-    if higher_lows:
-        score += 8
-        score_breakdown.append("Higher lows: +8 (akumulasi terdeteksi)")
-
-    # Price acceleration (+7): momentum membangun, harga naik lebih cepat
-    # CUS: -2.8% → +1.1%, MYX: -1.5% → +4.3% sebelum pump
-    if price_accel:
-        score += 7
-        score_breakdown.append("Price accel: +7 (momentum membangun)")
-
-    # Pre-spike candle bullish (+3 atau +5): candle sebelum spike bull body
-    # XAN: 48%, CUS: 32%, MYX: 57% — semua hijau sebelum meledak
-    if pre_spike_sc > 0:
-        score += pre_spike_sc
-        score_breakdown.append(f"Pre-spike: +{pre_spike_sc} ({pre_spike_label})")
-
-    # ── Bonus Pump Velocity (BARU v3.0) ──────────────────────────────────────
-    # Menggantikan logika urgency lama yang hanya berbasis vol_mult avg.
-    # Dari forensik: CEPAT → +8-23% H+1, SEDANG → +6-13% H+1.
-    # Bonus ini memberi reward nyata pada coin dengan energi pump besar.
-    if velocity == "CEPAT":
-        score += 20
-        score_breakdown.append(
-            f"Velocity CEPAT: +20 (vol={vel_mult_med}x med, body={vel_body_pct}%)"
-        )
-    elif velocity == "SEDANG":
-        score += 10
-        score_breakdown.append(
-            f"Velocity SEDANG: +10 (vol={vel_mult_med}x med, body={vel_body_pct}%)"
-        )
-
-    # Penalti: funding sangat negatif
-    if funding < -0.001:
-        score -= 5
-        score_breakdown.append(f"Funding penalty: -5 ({funding:.5f})")
-
-    # Penalti: zone terlalu tua
-    if comp_age > 48:
-        penalty = min((comp_age - 48) // 12, 10)
-        score -= penalty
-        score_breakdown.append(f"Age penalty: -{penalty} (zone berakhir {comp_age}h lalu)")
-
-    # ── Cap skor ke 100 (v3.0 fix) ────────────────────────────────────────────
-    # Bonus berlapis bisa melampaui 100 → bar Telegram overflow (26+ karakter).
-    # Hard cap di 100 agar format alert tetap konsisten.
-    score = min(score, 100)
-
-    log.info(f"  {symbol}: Score={score} velocity={velocity} "
-             f"vel_mult={vel_mult_med}x breakdown={score_breakdown}")
-
-    # ── Gate skor minimum ─────────────────────────────────────────────────────
-    if score < CONFIG["score_threshold"]:
-        return None
-
-    # ── Hitung entry & target ─────────────────────────────────────────────────
-    entry_data = calc_entry_targets(c1h, compression)
-    if not entry_data:
-        log.info(f"  {symbol}: SKIP entry_data gagal dihitung")
-        return None
-    if entry_data["t1_pct"] < CONFIG["min_target_pct"]:
-        log.info(f"  {symbol}: SKIP T1={entry_data['t1_pct']:.1f}% < min_target={CONFIG['min_target_pct']}%")
-        return None
-
-    # ── Gate: minimum R/R ────────────────────────────────────────────────────
-    # Data nyata IOTX: R/R=0 karena SL terlalu dekat — tidak layak di-trade
-    if entry_data["rr"] < CONFIG["min_rr"]:
-        log.info(f"  {symbol}: SKIP R/R={entry_data['rr']} terlalu kecil (min={CONFIG['min_rr']})")
-        return None
-
-    # ── Urgency label (diperbarui v3.0) ──────────────────────────────────────
-    # Berbasis velocity aktual, bukan hanya vol_mult vs avg.
-    # Dari forensik: CEPAT = pump 8-23% dalam H+1, SEDANG = 6-13% dalam 3-6 jam.
-    if velocity == "CEPAT" and vel_mult_med >= 200:
-        urgency = "🔴 SANGAT TINGGI — explosive pump, entry SEKARANG (H+1 biasanya ≥10%)"
-    elif velocity == "CEPAT":
-        urgency = "🟠 TINGGI — pump aktif & energetik, window entry 1-2 jam"
-    elif velocity == "SEDANG":
-        urgency = "🟡 SEDANG — pump mulai terbentuk, target TP 3-6 jam"
-    else:
-        urgency = "⚪ WATCH — sedang membangun momentum"
+    price_now = float(ticker.get("lastPr", 0)) or c1h[-1]["close"]
 
     return {
         "symbol":           symbol,
-        "score":            score,
-        "composite_score":  score,
-        "compression":      compression,
-        "awakening":        awakening,
-        "entry":            entry_data,
-        "liq_sweep":        liq_sweep,
-        "candle_label":     candle_label,
-        "spike_candle_green": awakening["is_green"],
-        "pre_spike_label":  pre_spike_label,
-        "higher_lows":      higher_lows,
-        "price_accel":      price_accel,
-        "rsi":              rsi,
-        "vol_compress":     vol_compress,
+        "score":            raw_score,
+        "composite_score":  composite,
+        "signals":          sigs,
+        "ws":               ws,
+        "wev":              wev,
+        "entry":            entry,
+        "sr_analysis":      sr_analysis,
+        "sector":           sector,
         "funding":          funding,
-        "rvol":             round(rvol, 1),
+        "bd":               bd,
         "price":            price_now,
         "chg_24h":          chg_24h,
         "vol_24h":          vol_24h,
-        "rise_from_low":    rise_from_low,
-        "sector":           SECTOR_LOOKUP.get(symbol, "OTHER"),
-        "urgency":          urgency,
-        "score_breakdown":  score_breakdown,
-        # ── Velocity fields (BARU v3.0) ──────────────────────────────────────
-        "velocity":         velocity,
-        "vel_mult_med":     vel_mult_med,
-        "vel_body_pct":     vel_body_pct,
-        "comp_median_vol":  round(comp_median_vol, 2),
+        "rvol":             rvol,
+        "ls_ratio":         ls_ratio,
+        "chg_7d":           chg_7d,
+        "avg_vol_6h":       avg_vol_6h,
+        "range_6h":         range_6h,
+        "coiling":          coiling,
+        "bbw_val":          bbw_val,
+        "oi_change_24h":    bd.get("oi_change", 0),
+        "oi_change_1h":     bd.get("oi_change_1h", 0),
+        "prob_score":       prob["probability_score"],
+        "prob_class":       prob["classification"],
+        "prob_metrics":     prob.get("metrics", {}),
+        "rsi_1h":           rsi_1h,
+        "long_liq":         long_liq,
+        "short_liq":        short_liq,
+        "linea_components": linea_components,
+        "oi_accel_score":   oi_accel_sc,
+        "oi_accel_data":    oi_accel_data,
+        "nf_data":          nf_data,
+        "nf_score":         nf_sc,
+        "sup_levels":       len(support_levels),
+        "res_levels":       len(resist_levels),
+        "break_res_recent": sr_analysis.get("break_res_recent", False),
+        "is_at_support":    sr_analysis.get("is_at_support", False),
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 #  📱  TELEGRAM FORMATTER
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+def _entry_type_label(et):
+    return {
+        "retest_break_res": "🚨 Retest Break Res (IDEAL)",
+        "support_retest":   "📌 Support Retest",
+        "momentum":         "⚡ Momentum Entry",
+    }.get(et, et)
+
 def build_alert(r, rank=None):
-    sc   = min(r["score"], 100)               # v3.0: cap display ke 100
-    bar  = "█" * int(sc / 5) + "░" * (20 - int(sc / 5))
+    sc   = r["score"]
+    comp = r.get("composite_score", sc)
+    bar  = "█" * int(comp / 5) + "░" * (20 - int(comp / 5))
     e    = r["entry"]
-    comp = r["compression"]
-    awk  = r["awakening"]
     rk   = f"#{rank} " if rank else ""
     vol  = (f"${r['vol_24h']/1e6:.1f}M" if r["vol_24h"] >= 1e6
             else f"${r['vol_24h']/1e3:.0f}K")
-    rise_warn = (f"⚠️ Sudah naik {r['rise_from_low']*100:.1f}% dari low\n"
-                 if r["rise_from_low"] > CONFIG["max_rise_warn_pct"] else "")
+    ls   = f" | L/S:{r['ls_ratio']:.2f}" if r.get("ls_ratio") else ""
 
-    comp_days = comp["length"] / 24
-    comp_str  = (f"{comp_days:.0f} hari" if comp_days >= 1
-                 else f"{comp['length']} jam")
+    prob_pct = r.get("prob_score", 0) * 100
+    prob_cls = r.get("prob_class", "?")
+    pm       = r.get("prob_metrics", {})
+    bd       = r.get("bd", {})
 
-    # ── Pisahkan label spike candle vs candle terbaru ────────────────────────
-    spike_candle_str = (
-        f"{'Hijau ✅' if awk['is_green'] else 'Merah ⚠️'}"
-        f"{'  🔥 MEGA SPIKE!' if awk['is_mega'] else ''}"
-    )
-    spike_is_current = awk["spike_candle"] == 1
-    current_candle_str = r["candle_label"]
+    linea_str = ""
+    if r.get("linea_components", 0) >= 3:
+        linea_str = f"<b>Linea Sig :</b> ⭐ {r['linea_components']}/5 komponen!\n"
 
-    # ── Forensik bonus summary ────────────────────────────────────────────────
-    forensic_checks = []
-    if r.get("higher_lows"):  forensic_checks.append("Higher lows ✅")
-    if r.get("price_accel"):  forensic_checks.append("Price accel ✅")
-    pre_sc = r.get("pre_spike_label", "")
-    if pre_sc and "bull" in pre_sc: forensic_checks.append("Pre-spike bull ✅")
-    if r.get("liq_sweep"):    forensic_checks.append("Liq sweep ✅")
-    forensic_str = "  " + " · ".join(forensic_checks) if forensic_checks else "  — tidak ada pola akumulasi"
+    accel_str = ""
+    ad = r.get("oi_accel_data", {})
+    if r.get("oi_accel_score", 0) > 0:
+        div_tag   = " 📈DIV" if ad.get("divergence") else ""
+        micro_tag = " [MICRO]" if ad.get("is_micro_cap") else ""
+        accel_str = (
+            f"<b>OI Accel  :</b> +{r['oi_accel_score']}pt{micro_tag}{div_tag} | "
+            f"1h:{ad.get('growth_rate_1h',0):+.1f}% "
+            f"3h:{ad.get('growth_rate_3h',0):+.1f}% "
+            f"6h:{ad.get('growth_rate_6h',0):+.1f}%\n"
+        )
 
-    # ── Velocity display (BARU v3.0) ─────────────────────────────────────────
-    vel       = r.get("velocity", "UNKNOWN")
-    vel_mult  = r.get("vel_mult_med", 0)
-    vel_body  = r.get("vel_body_pct", 0)
-    vel_emoji = {"CEPAT": "🚀", "SEDANG": "⚡", "LAMBAT": "🐌"}.get(vel, "❓")
-    vel_str   = f"{vel_emoji} {vel} ({vel_mult}x median, body {vel_body}%)"
+    liq_str = ""
+    if r.get("long_liq", 0) > 0 or r.get("short_liq", 0) > 0:
+        liq_str = (f"<b>Liquidation:</b> Long ${r.get('long_liq',0)/1e3:.0f}K | "
+                   f"Short ${r.get('short_liq',0)/1e3:.0f}K (30m)\n")
+
+    nf_str = ""
+    nfd = r.get("nf_data", {})
+    if nfd.get("has_data"):
+        def _fi(label):
+            return {"STRONG_BUY": "🟢🟢", "BUY": "🟢", "NEUTRAL": "⚪",
+                    "SELL": "🔴", "STRONG_SELL": "🔴🔴"}.get(label, "⚪")
+        f72 = nfd.get("72h", {}); f24 = nfd.get("24h", {})
+        f6  = nfd.get("6h",  {}); f15 = nfd.get("15m", {})
+        nf_str = (
+            f"<b>Net Flow   :</b> [{r.get('nf_score',0):+d}pt]\n"
+            f"  {_fi(f72.get('label',''))}72h:{f72.get('net_pct',0):+.1f}%  "
+            f"{_fi(f24.get('label',''))}24h:{f24.get('net_pct',0):+.1f}%  "
+            f"{_fi(f6.get('label',''))}6h:{f6.get('net_pct',0):+.1f}%  "
+            f"{_fi(f15.get('label',''))}15m:{f15.get('net_pct',0):+.1f}%\n"
+        )
+
+    # SR status
+    sr  = r.get("sr_analysis", {})
+    sr_status = ""
+    if r.get("break_res_recent"):
+        sr_status = "🚨 BREAK RES — resistance tertembus ke atas!\n"
+    elif r.get("is_at_support"):
+        sr_status = f"📌 AT SUPPORT — zona entry ideal\n"
+    nearest_sup = sr.get("nearest_sup")
+    nearest_res = sr.get("nearest_res")
+    sr_levels_str = ""
+    if nearest_sup:
+        sr_levels_str += f"  🟢 Support: ${nearest_sup['price']:.6g} (vol rank:{nearest_sup['vol_rank']:.0f}%ile, {nearest_sup['touches']}x touch)\n"
+    if nearest_res:
+        sr_levels_str += f"  🔴 Resist : ${nearest_res['price']:.6g} (vol rank:{nearest_res['vol_rank']:.0f}%ile)\n"
 
     msg = (
-        f"🚀 <b>PRE-PUMP SIGNAL {rk}— v3.0</b>\n\n"
-        f"<b>Symbol  :</b> {r['symbol']} [{r['sector']}]\n"
-        f"<b>Skor    :</b> {sc}/100  {bar}\n"
-        f"<b>Urgency :</b> {r['urgency']}\n\n"
+        f"🚨 <b>PRE-PUMP SIGNAL {rk}— SR v1.0</b>\n\n"
+        f"<b>Symbol    :</b> {r['symbol']}\n"
+        f"<b>Composite :</b> {comp}/100  {bar}\n"
+        f"<b>Layer Score:</b> {sc}/100  |  SR Score: {bd.get('sr',0)}pt\n"
+        f"<b>Prob Model :</b> {prob_pct:.1f}% ({prob_cls})\n"
+        f"<b>RSI 1h     :</b> {r.get('rsi_1h',0):.1f}\n"
+        f"{linea_str}"
+        f"{accel_str}"
+        f"<b>Sektor     :</b> {r['sector']}\n"
+        f"<b>Harga      :</b> ${r['price']:.6g}  ({r['chg_24h']:+.1f}% 24h | {r['chg_7d']:+.1f}% 7d)\n"
+        f"<b>Vol 24h    :</b> {vol} | RVOL: {r['rvol']:.1f}x{ls}\n"
+        f"<b>OI 24h/1h  :</b> {r['oi_change_24h']:+.1f}% / {r.get('oi_change_1h',0):+.1f}%\n"
+        f"{nf_str}"
+        f"{liq_str}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 <b>COMPRESSION ZONE</b>\n"
-        f"  Durasi   : {comp_str} ({comp['length']} candle)\n"
-        f"  Range    : {comp['range_pct']*100:.1f}% "
-        f"(${comp['low']:.6g} – ${comp['high']:.6g})\n"
-        f"  Harga kini: ${r['price']:.6g} "
-        f"(+{r['rise_from_low']*100:.1f}% dari low)\n"
-        f"{rise_warn}"
-        f"\n⚡ <b>VOLUME AWAKENING</b>\n"
-        f"  Spike    : {awk['best_mult']:.1f}x rata-rata compression\n"
-        f"  Candle spike : {spike_candle_str}\n"
-        f"  RVOL     : {r['rvol']:.1f}x\n"
-        f"\n🏎️ <b>PUMP VELOCITY (v3.0)</b>\n"
-        f"  {vel_str}\n"
-        f"\n📊 <b>KONDISI TEKNIKAL</b>\n"
-        f"  RSI 1H    : {r['rsi']:.0f} {'(oversold 🟢)' if r['rsi'] < 35 else '(netral)'}\n"
-        f"  Candle kini: {current_candle_str}"
-        f"{' (= spike candle)' if spike_is_current else ''}\n"
-        f"  ATR comp  : {'✅' if r['vol_compress'] else '❌'}\n"
-        f"  Funding   : {r['funding']:.5f}\n"
-        f"  Vol 24H   : {vol}  |  Chg: {r['chg_24h']:+.1f}%\n"
-        f"\n🔬 <b>AKUMULASI (forensik)</b>\n"
-        f"{forensic_str}\n"
+        f"📊 <b>SR ANALYSIS</b>\n"
+        f"{sr_status}"
+        f"{sr_levels_str}"
+        f"  Support total: {r.get('sup_levels',0)} | Resist total: {r.get('res_levels',0)}\n"
+        f"\n"
+        f"🐋 <b>WHALE SCORE: {r['ws']}/100</b>\n"
     )
+    for ev in r["wev"]:
+        msg += f"  {ev}\n"
 
     if e:
-        vwap_line = f"  VWAP  : ${e['vwap']}\n" if e.get("vwap") else ""
-        poc_line  = f"  POC   : ${e['z2']}\n"   if e.get("z2")   else ""
+        entry_type_lbl = _entry_type_label(e.get("entry_type", ""))
         msg += (
             f"\n━━━━━━━━━━━━━━━━━━━━\n"
-            f"📍 <b>ENTRY &amp; TARGET</b>\n"
-            f"{vwap_line}"
-            f"{poc_line}"
-            f"  Entry : ${e['entry']}\n"
-            f"  SL    : ${e['sl']}  (-{e['sl_pct']:.1f}%)\n"
-            f"  T1    : ${e['t1']}  (+{e['t1_pct']:.1f}%)\n"
-            f"  T2    : ${e['t2']}  (+{e['t2_pct']:.1f}%)\n"
-            f"  R/R   : 1:{e['rr']}  |  ATR: ${e['atr']}\n"
+            f"📍 <b>ENTRY SETUP ({entry_type_lbl})</b>\n"
+            f"  🎯 Cur Price : ${e['cur']:.6g}\n"
+            f"  📌 Entry     : ${e['entry']:.6g}\n"
+            f"  🛑 Stop Loss : ${e['sl']:.6g}  (-{e['sl_pct']:.2f}%)\n"
+            f"     ↳ Di bawah support ${e['sup_level']}\n\n"
+            f"🎯 <b>TARGET (SR-BASED)</b>\n"
+            f"  T1 : ${e['tp1']:.6g}  (+{e['tp1_pct']:.1f}%)\n"
+            f"     ↳ Sebelum resistance ${e['res_level']}\n"
+            f"  T2 : ${e['tp2']:.6g}  (+{e['tp2_pct']:.1f}%)\n"
+            f"  R/R: 1:{e['rr']}  |  ATR 14: ${e['atr_14']:.6g}\n\n"
+            f"  💡 <i>Tips:</i>\n"
+            f"  • Entry di zona support — jangan chase breakout\n"
+            f"  • SL di bawah support box (jika support jebol = invalidasi)\n"
+            f"  • Take 50-60% di T1, trail sisa ke T2\n"
+            f"  • Invalidasi jika tutup di bawah SL\n"
         )
 
-    msg += f"\n🕐 {utc_now()}\n<i>⚠️ Bukan financial advice. DYOR.</i>"
-    return msg
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n📊 <b>SINYAL AKTIF</b>\n"
+    for s in r["signals"][:12]:
+        msg += f"  • {s}\n"
 
+    msg += (
+        f"\n📐 <b>BREAKDOWN</b>\n"
+        f"  SR:{bd.get('sr',0)} Vol:{bd.get('vol',0)} StCVD:{bd.get('stcvd',0)} "
+        f"Flat:{bd.get('flat',0)} Struct:{bd.get('struct',0)} Pos:{bd.get('pos',0)} "
+        f"4H:{bd.get('tf4h',0)} Ctx:{bd.get('ctx',0)} Whale:{bd.get('whale',0)} "
+        f"Liq:{bd.get('liq',0)} Linea:{bd.get('linea',0)} "
+        f"Accel:{bd.get('oi_accel',0)} Flow:{bd.get('netflow',0)}\n"
+        f"  OI valid:{bd.get('oi_valid','?')} RSI:{bd.get('rsi_1h','?')} "
+        f"MVS:{pm.get('max_vol_spike','?')}x Irr:{pm.get('vol_irregularity','?')}\n\n"
+        f"📡 Funding:{r['funding']:.5f}  🕐 {utc_now()}\n"
+        f"<i>⚠️ Bukan financial advice. Manage risk ketat.</i>"
+    )
+    return msg
 
 def build_summary(results):
-    msg  = f"📋 <b>PRE-PUMP WATCHLIST v3.0 — {utc_now()}</b>\n{'━'*30}\n"
+    msg = f"📋 <b>TOP CANDIDATES SR v1.0 — {utc_now()}</b>\n{'━'*28}\n"
     for i, r in enumerate(results, 1):
-        comp  = r["compression"]
-        awk   = r["awakening"]
-        vol   = (f"${r['vol_24h']/1e6:.1f}M" if r["vol_24h"] >= 1e6
-                 else f"${r['vol_24h']/1e3:.0f}K")
-        days  = comp["length"] / 24
-        vel   = r.get("velocity", "?")
-        vel_emoji = {"CEPAT": "🚀", "SEDANG": "⚡"}.get(vel, "❓")
-        msg  += (
-            f"{i}. <b>{r['symbol']}</b> [S:{r['score']}] {vel_emoji}{vel}\n"
-            f"   Coil {days:.1f}d · Vol {awk['best_mult']:.1f}x · "
-            f"T1:+{r['entry']['t1_pct']:.0f}% · {vol}\n"
+        comp     = r.get("composite_score", r["score"])
+        bar      = "█" * int(comp / 10) + "░" * (10 - int(comp / 10))
+        vol      = (f"${r['vol_24h']/1e6:.1f}M" if r["vol_24h"] >= 1e6
+                    else f"${r['vol_24h']/1e3:.0f}K")
+        e        = r.get("entry", {})
+        tp1_pct  = e.get("tp1_pct", 0) if e else 0
+        rr       = e.get("rr", 0)    if e else 0
+        prob     = r.get("prob_score", 0) * 100
+        rsi      = r.get("rsi_1h", 0)
+        sr_sc    = r.get("bd", {}).get("sr", 0)
+        linea    = f" ⭐L{r.get('linea_components',0)}" if r.get("linea_components", 0) >= 2 else ""
+        break_tag = " 🚨BR" if r.get("break_res_recent") else ""
+        sup_tag   = " 📌SUP" if r.get("is_at_support") else ""
+        msg += (
+            f"{i}. <b>{r['symbol']}</b> [C:{comp} SR:{sr_sc} {bar}]{linea}{break_tag}{sup_tag}\n"
+            f"   🐋{r['ws']} | RVOL:{r['rvol']:.1f}x | {vol} | "
+            f"T1:+{tp1_pct:.1f}% R/R:1:{rr} | {prob:.0f}% {r.get('prob_class','?')} | RSI:{rsi:.0f}\n"
         )
     return msg
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 #  🔍  BUILD CANDIDATE LIST
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 def build_candidate_list(tickers):
-    candidates    = []
-    not_found     = []
-    stats         = defaultdict(int)
+    all_candidates = []
+    not_found      = []
+    stats = defaultdict(int)
 
     log.info("=" * 70)
-    log.info(f"🔍 SCANNING {len(WHITELIST_SYMBOLS)} coin — PRE-PUMP DETECTION v3.0")
+    log.info("🔍 SR SCANNER v1.0 — FULL WHITELIST")
     log.info("=" * 70)
 
     for sym in WHITELIST_SYMBOLS:
         if sym in MANUAL_EXCLUDE:
-            stats["manual_exclude"] += 1
-            continue
+            stats["manual_exclude"] += 1; continue
         if is_cooldown(sym):
-            stats["cooldown"] += 1
-            continue
+            stats["cooldown"] += 1; continue
         if sym not in tickers:
-            not_found.append(sym)
-            continue
+            not_found.append(sym); continue
 
-        t = tickers[sym]
+        ticker = tickers[sym]
         try:
-            vol   = float(t.get("quoteVolume", 0))
-            chg   = float(t.get("change24h",   0)) * 100
-            price = float(t.get("lastPr",       0))
+            vol   = float(ticker.get("quoteVolume", 0))
+            chg   = float(ticker.get("change24h", 0)) * 100
+            price = float(ticker.get("lastPr", 0))
         except:
-            stats["parse_error"] += 1
-            continue
+            stats["parse_error"] += 1; continue
 
         if vol < CONFIG["pre_filter_vol"]:
-            stats["vol_too_low"] += 1
-            continue
+            stats["vol_too_low"] += 1; continue
         if vol > CONFIG["max_vol_24h"]:
-            stats["vol_too_high"] += 1
-            continue
+            stats["vol_too_high"] += 1; continue
         if abs(chg) > CONFIG["gate_chg_24h_max"]:
-            stats["change_extreme"] += 1
-            continue
+            stats["change_extreme"] += 1; continue
         if price <= 0:
-            stats["invalid_price"] += 1
-            continue
+            stats["invalid_price"] += 1; continue
 
-        candidates.append((sym, t))
+        all_candidates.append((sym, ticker))
 
     total    = len(WHITELIST_SYMBOLS)
-    will_scan = len(candidates)
-
-    log.info(f"\n📊 Pre-filter: {will_scan}/{total} coin akan di-scan")
-    log.info(f"   Cooldown: {stats['cooldown']} | Vol rendah: {stats['vol_too_low']} | "
-             f"Vol tinggi: {stats['vol_too_high']} | Chg ekstrem: {stats['change_extreme']}")
-    if not_found:
-        log.info(f"   Tidak di Bitget: {len(not_found)} coin")
-    log.info(f"   ⏱️  Est. waktu: ~{will_scan * CONFIG['sleep_coins'] / 60:.1f} menit")
+    will_scan = len(all_candidates)
+    log.info(f"✅ Will scan: {will_scan}/{total} coins")
+    log.info(f"⏱️  Est. time: ~{will_scan * CONFIG['sleep_coins'] / 60:.1f} menit")
     log.info("=" * 70)
+    return all_candidates
 
-    return candidates
 
-
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 #  🚀  MAIN SCAN
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 def run_scan():
-    log.info(f"=== PRE-PUMP SCANNER v3.0 — {utc_now()} ===")
+    log.info(f"=== SR PRE-PUMP SCANNER v1.0 — {utc_now()} ===")
+    log.info("SR ENGINE: Replikasi Pine Script ChartPrime SR Boxes")
+    log.info("FITUR BARU: SR scoring + Smart Entry/SL/TP + Anti-Break-Support gate")
 
     tickers = get_all_tickers()
     if not tickers:
-        send_telegram("⚠️ Scanner Error: Gagal ambil data Bitget")
+        send_telegram("⚠️ Scanner SR Error: Gagal ambil data Bitget")
         return
 
-    log.info(f"Total ticker Bitget: {len(tickers)}")
-
+    log.info(f"Total ticker: {len(tickers)}")
     candidates = build_candidate_list(tickers)
-    results    = []
 
+    results = []
     for i, (sym, t) in enumerate(candidates):
         try:
             vol = float(t.get("quoteVolume", 0))
         except:
             vol = 0
 
-        # Final volume check
         if vol < CONFIG["min_vol_24h"]:
             continue
 
         log.info(f"[{i+1}/{len(candidates)}] {sym} (vol ${vol/1e3:.0f}K)...")
-
         try:
-            res = master_score(sym, t)
+            res = master_score(sym, t, tickers)
             if res:
-                log.info(f"  ✅ SIGNAL! Score={res['score']} "
-                         f"Coil={res['compression']['length']}h "
-                         f"VolSpike={res['awakening']['best_mult']:.1f}x "
-                         f"Rise={res['rise_from_low']*100:.1f}%")
-                results.append(res)
+                comp     = res["composite_score"]
+                prob     = res["prob_score"] * 100
+                prob_cls = res["prob_class"]
+                sr_sc    = res["bd"].get("sr", 0)
+                rr       = res["entry"]["rr"] if res.get("entry") else 0
+                br_tag   = " 🚨BREAK_RES" if res.get("break_res_recent") else ""
+                sup_tag  = " 📌AT_SUP"    if res.get("is_at_support") else ""
+                log.info(
+                    f"  Score={res['score']} Comp={comp} W={res['ws']} "
+                    f"RVOL={res['rvol']:.1f}x SR={sr_sc} "
+                    f"Prob={prob:.0f}% ({prob_cls}) "
+                    f"T1=+{res['entry']['tp1_pct']:.1f}% R/R=1:{rr}"
+                    f"{br_tag}{sup_tag}"
+                )
+                if (comp >= CONFIG["min_composite_alert"]
+                        and res["prob_score"] >= CONFIG["min_prob_alert"]):
+                    results.append(res)
         except Exception as ex:
-            log.warning(f"  Error {sym}: {ex}", exc_info=True)
+            log.warning(f"  Error {sym}: {ex}")
 
         time.sleep(CONFIG["sleep_coins"])
 
-    # Sort: utamakan score tinggi, tapi juga pertimbangkan rise_from_low rendah
-    results.sort(key=lambda x: x["score"], reverse=True)
+    # Sort: prioritaskan Break Res > Composite > Whale
+    results.sort(
+        key=lambda x: (
+            int(x.get("break_res_recent", False)) * 100
+            + x["composite_score"]
+            + x.get("linea_components", 0) * 2,
+            x["ws"]
+        ),
+        reverse=True,
+    )
+    log.info(f"Lolos threshold: {len(results)} coin")
 
-    log.info(f"\n{'='*70}")
-    log.info(f"✅ Total sinyal lolos: {len(results)} coin")
-    log.info(f"{'='*70}\n")
+    qualified = [
+        r for r in results
+        if (r["ws"] >= CONFIG["min_whale_score"]
+            or r["composite_score"] >= 62
+            or r["prob_score"] >= 0.75
+            or r.get("linea_components", 0) >= 3
+            or r.get("break_res_recent", False))
+    ]
 
-    if not results:
-        log.info("Tidak ada sinyal pre-pump saat ini")
+    if not qualified:
+        log.info("Tidak ada sinyal yang memenuhi syarat saat ini")
         return
 
-    top = results[:CONFIG["max_alerts_per_run"]]
+    top = qualified[:CONFIG["max_alerts_per_run"]]
 
-    # Kirim summary dulu
     if len(top) >= 2:
         send_telegram(build_summary(top))
         time.sleep(2)
 
-    # Kirim detail per coin
     for rank, r in enumerate(top, 1):
         ok = send_telegram(build_alert(r, rank=rank))
         if ok:
             set_cooldown(r["symbol"])
-            log.info(f"📤 Alert #{rank}: {r['symbol']} Score={r['score']}")
+            log.info(
+                f"✅ Alert #{rank}: {r['symbol']} "
+                f"S={r['score']} C={r['composite_score']} W={r['ws']} "
+                f"SR={r['bd'].get('sr',0)} "
+                f"Prob={r['prob_score']*100:.0f}% "
+                f"T1=+{r['entry']['tp1_pct']:.1f}% R/R=1:{r['entry']['rr']}"
+            )
         time.sleep(2)
 
-    log.info(f"=== SELESAI — {len(top)} alert dikirim — {utc_now()} ===")
+    log.info(f"=== SELESAI — {len(top)} alert terkirim ===")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 #  ▶️  ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info("╔════════════════════════════════════════════════════╗")
-    log.info("║  PRE-PUMP SCANNER v3.2                            ║")
-    log.info("║  Deteksi transisi Fase Tidur → Fase Bangun        ║")
-    log.info("║  Target: pump energetik ≥8% dalam 1-3 jam        ║")
-    log.info("╚════════════════════════════════════════════════════╝")
+    log.info("╔════════════════════════════════════════════════════════╗")
+    log.info("║  SR PRE-PUMP SCANNER v1.0                             ║")
+    log.info("║  Support & Resistance Engine (ChartPrime Pine Script) ║")
+    log.info("║  Smart Entry/SL/TP + Anti-Break-Support Gate          ║")
+    log.info("╚════════════════════════════════════════════════════════╝")
 
     if not BOT_TOKEN or not CHAT_ID:
         log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan di environment!")
