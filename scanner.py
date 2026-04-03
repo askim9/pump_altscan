@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v9.1 (FINAL BUGFIX & BACKTEST EDITION)                 ║
+║  PRE-PUMP SCANNER v11.0-RISET-BASED (QUICK FIX EDITION)                  ║
 ║                                                                          ║
-║  PERBAIKAN:                                                              ║
-║  ✓ ADX smoothing benar (Wilder's RMA)                                   ║
-║  ✓ OI buildup dengan filter arah harga                                  ║
-║  ✓ Momentum ignition handling ZeroDivisionError                         ║
-║  ✓ Market regime menggunakan candle [-2] (no look-ahead)                ║
-║  ✓ Position sizing terintegrasi                                         ║
-║  ✓ Backtesting dengan data historis (simulasi atau CSV)                 ║
+║  RISET-BASED UPGRADES (Quick Fix - 2 hours):                            ║
+║  ✅ Velocity Filter - Block late entries (ONG +42% scenario)            ║
+║  ✅ BBW Expansion - TOP #1 signal (Precision 23.9%, Lift 7.28x!)        ║
+║  ✅ Price Momentum - TOP #2 signal (Precision 22.4%, Lift 6.69x!)       ║
+║  ✅ VWAP Gate - 89.9% pumps above VWAP                                  ║
+║  ✅ BOS Detection - Lift 2.31x with VWAP                                ║
+║  ✅ ATR% Scoring - Lift 4.46x at 1.5%+                                  ║
+║  ✅ Deep Entry Fix - Entry below current, not AT current                ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -36,13 +37,13 @@ try:
 except ImportError:
     pass
 
-VERSION = "9.1"
+VERSION = "11.0-RISET-BASED"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 _root = logging.getLogger(); _root.setLevel(logging.INFO)
 _ch   = logging.StreamHandler(); _ch.setFormatter(_fmt); _root.addHandler(_ch)
-_fh   = _lh.RotatingFileHandler("/tmp/scanner_v9.log", maxBytes=10 * 1024**2, backupCount=2)
+_fh   = _lh.RotatingFileHandler("/tmp/scanner_v11.log", maxBytes=10 * 1024**2, backupCount=2)
 _fh.setFormatter(_fmt); _root.addHandler(_fh)
 log   = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ CONFIG: Dict = {
 
     "max_alerts":                8,
     "alert_cooldown_sec":     3600,
-    "cooldown_file":  "/tmp/v9_cooldown.json",
+    "cooldown_file":  "/tmp/v11_cooldown.json",
     "sleep_between_coins":     0.2,    
 
     "clz_min_interval_sec":    1.6,    
@@ -122,11 +123,11 @@ CONFIG: Dict = {
     "backtest_days":            90,      
     "backtest_winrate_min":     0.45,    
     "backtest_sharpe_min":      0.8,     
-    "backtest_db_path":         "/tmp/scanner_backtest.db",
+    "backtest_db_path":         "/tmp/scanner_v11_backtest.db",
 }
 
 WHITELIST_SYMBOLS = {
-  "4USDT","0GUSDT","1000BONKUSDT","1000PEPEUSDT","1000RATSUSDT",
+ "4USDT","0GUSDT","1000BONKUSDT","1000PEPEUSDT","1000RATSUSDT",
     "1000SHIBUSDT","1000XECUSDT","1INCHUSDT","1MBABYDOGEUSDT","2ZUSDT",
     "AAVEUSDT","ACEUSDT","ACHUSDT","ACTUSDT","ADAUSDT","AEROUSDT",
     "AGLDUSDT","AINUSDT","AIOUSDT","AIXBTUSDT","AKTUSDT","ALCHUSDT",
@@ -191,7 +192,9 @@ WHITELIST_SYMBOLS = {
     "XCUUSDT","XDCUSDT","XLMUSDT","XMRUSDT","XPDUSDT","XPINUSDT",
     "XPLUSDT","XRPUSDT","XTZUSDT","XVGUSDT","YGGUSDT","YZYUSDT","ZAMAUSDT",
     "ZBTUSDT","ZECUSDT","ZENUSDT","ZEREBROUSDT","ZETAUSDT","ZILUSDT",
-    "ZKUSDT","ZKCUSDT","ZKJUSDT","ZKPUSDT","ZORAUSDT","ZROUSDT",
+    "ZKUSDT","ZKCUSDT","ZKJUSDT","ZKPUSDT","ZORAUSDT","ZROUSDT",    "BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "PEPEUSDT", "WIFUSDT", 
+    "LINKUSDT", "AVAXUSDT", "NEARUSDT", "RENDERUSDT", "FETUSDT", "INJUSDT",
+    "SUIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "TIAUSDT", "SEIUSDT", "ENAUSDT"
 }
 MANUAL_EXCLUDE: set = set()
 
@@ -866,104 +869,345 @@ def calc_entry_targets(data: CoinData) -> Optional[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 #  🏆  MASTER SCORER (dengan perbaikan)
 # ══════════════════════════════════════════════════════════════════════════════
-def score_coin(data: CoinData) -> Optional[ScoreResult]:
-    cfg = CONFIG
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🔬 v11.0 RISET-BASED DETECTION FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def calc_vwap(candles: List[dict]) -> float:
+    """Calculate Volume-Weighted Average Price - Riset: 89.9% pumps above VWAP"""
+    if not candles:
+        return 0.0
+    total_vol = sum(c.get("volume_usd", 0) for c in candles if c.get("volume_usd", 0) > 0)
+    if total_vol == 0:
+        return 0.0
+    vwap_sum = sum(
+        ((c["high"] + c["low"] + c["close"]) / 3) * c.get("volume_usd", 0)
+        for c in candles if c.get("volume_usd", 0) > 0
+    )
+    return vwap_sum / total_vol
+
+
+def detect_bbw_expansion(candles: List[dict]) -> Tuple[int, dict]:
+    """BBW Expansion - TOP #1 Riset Signal (Precision 23.9%, Lift 7.28x)"""
+    if len(candles) < 20:
+        return 0, {}
+    closes = [c["close"] for c in candles[-20:]]
+    sma20 = sum(closes) / 20
+    variance = sum((x - sma20) ** 2 for x in closes) / 20
+    std20 = variance ** 0.5
+    bb_w = (std20 * 2) / sma20 if sma20 > 0 else 0
+    
+    score = 0
+    if bb_w >= 0.12:
+        score = 25
+    elif bb_w >= 0.10:
+        score = 20
+    elif bb_w >= 0.08:
+        score = 12
+    return score, {"bb_w": round(bb_w, 3)}
+
+
+def detect_price_momentum(candles: List[dict]) -> Tuple[int, dict]:
+    """Price Momentum - TOP #2 Riset Signal (Precision 22.4%, Lift 6.69x)"""
+    if len(candles) < 1:
+        return 0, {}
+    last = candles[-1]
+    if last.get("open", 0) <= 0:
+        return 0, {}
+    price_chg = (last["close"] - last["open"]) / last["open"] * 100
+    
+    score = 0
+    if price_chg >= 2.0:
+        score = 25
+    elif price_chg >= 1.0:
+        score = 15
+    elif price_chg >= 0.5:
+        score = 8
+    elif price_chg <= -2.0:
+        score = -10
+    return score, {"price_chg": round(price_chg, 2)}
+
+
+def detect_bos_up(candles: List[dict]) -> Tuple[int, dict]:
+    """Break of Structure Up - Riset: Lift 2.31x with VWAP"""
+    if len(candles) < 24:
+        return 0, {}
+    try:
+        highs = [c["high"] for c in candles[-24:-6]]
+        swing_high = max(highs) if highs else 0
+        current_high = candles[-1]["high"]
+        if current_high > swing_high * 1.001:
+            return 15, {"swing_high": swing_high, "current": current_high}
+    except:
+        pass
+    return 0, {}
+
+
+def score_atr_expansion(candles: List[dict]) -> Tuple[int, dict]:
+    """ATR% - Riset: atr_pct >= 1.5% = Lift 4.46x, Precision 16.1%"""
+    if len(candles) < 15:
+        return 0, {}
+    trs = []
+    for i in range(1, min(15, len(candles))):
+        c = candles[-i]
+        pc = candles[-(i+1)]
+        tr = max(c["high"] - c["low"], abs(c["high"] - pc["close"]), abs(c["low"] - pc["close"]))
+        trs.append(tr)
+    if not trs:
+        return 0, {}
+    atr = sum(trs) / len(trs)
+    current_price = candles[-1]["close"]
+    if current_price <= 0:
+        return 0, {}
+    atr_pct = (atr / current_price * 100)
+    
+    score = 0
+    if atr_pct >= 1.5:
+        score = 15
+    elif atr_pct >= 1.0:
+        score = 8
+    return score, {"atr_pct": round(atr_pct, 2)}
+
+
+def check_velocity_gates(candles: List[dict], chg_24h: float, funding: float) -> Tuple[bool, str]:
+    """CRITICAL: Block late entries like ONG +42% scenario"""
+    if len(candles) < 2:
+        return False, ""
+    chg_1h = 0.0
+    if candles[-2].get("close", 0) > 0:
+        chg_1h = (candles[-1]["close"] - candles[-2]["close"]) / candles[-2]["close"] * 100
+    
+    if chg_1h > 5.0 and chg_24h > 30.0:
+        return True, f"LATE ENTRY: +{chg_1h:.1f}% (1h) / +{chg_24h:.1f}% (24h)"
+    if chg_1h > 15.0:
+        return True, f"PUMP IN PROGRESS: +{chg_1h:.1f}% dalam 1 jam"
+    
+    if len(candles) >= 24:
+        vol_now = candles[-1].get("volume_usd", 0)
+        vol_avg = sum(c.get("volume_usd", 0) for c in candles[-24:-1]) / 23 if candles[-24:-1] else 0
+        if vol_avg > 0 and vol_now > vol_avg * 10 and -2 < chg_1h < 2:
+            return True, f"DISTRIBUTION: Volume 10x tapi harga flat"
+    return False, ""
+
+
+def calc_deep_entry(current_price: float, vwap: float, atr_pct: float) -> float:
+    """Calculate optimal entry BELOW current price"""
+    if current_price <= 0:
+        return current_price
+    buffer_pct = max(1.5, min(atr_pct * 0.8, 3.0))
+    if vwap > 0 and current_price > vwap:
+        entry_from_vwap = current_price - (current_price - vwap) * 0.5
+        entry_from_buffer = current_price * (1 - buffer_pct / 100)
+        entry = max(entry_from_vwap, entry_from_buffer)
+    else:
+        entry = current_price * (1 - buffer_pct / 100)
+    return entry
+
+
+def score_coin(data: CoinData) -> Optional[ScoreResult]:
+    """v11.0: UPGRADED with riset signals + velocity gates"""
+    cfg = CONFIG
+    
+    # Original gates
     if data.vol_24h < cfg["min_vol_24h"]: return None
     if data.chg_24h > cfg["gate_chg_24h_max"]: return None
     if data.price <= 0: return None
 
+    # 🆕 VELOCITY FILTER (Block ONG-like late entries)
+    blocked, block_reason = check_velocity_gates(data.candles, data.chg_24h, data.funding)
+    if blocked:
+        log.info(f"  {data.symbol}: ⛔ VELOCITY GATE — {block_reason}")
+        return None
+
+    # 🆕 VWAP GATE (89.9% pumps above VWAP)
+    vwap = 0.0
+    if len(data.candles) >= 24:
+        vwap = calc_vwap(data.candles[-24:])
+    elif len(data.candles) >= 12:
+        vwap = calc_vwap(data.candles[-12:])
+    
+    if vwap > 0 and data.price < vwap and data.funding > -0.0003:
+        log.info(f"  {data.symbol}: ⛔ VWAP GATE — Below VWAP ${vwap:.6f}")
+        return None
+
+    # Original scoring
     a_sc, a_z, a_d = score_buy_tx_ratio(data)
     b_sc, b_z, b_d = score_avg_buy_size(data)
     c_sc, c_z, c_d = score_volume(data)
     d_sc, d_z, d_d = score_short_liquidations(data)
     e_sc, e_z, e_d = score_oi_buildup(data)
-
     mi_sc, mi_d = score_momentum_ignition(data)
     fs_sc, fs_d = score_funding_squeeze(data)
 
-    total = a_sc + b_sc + c_sc + d_sc + e_sc 
+    # 🆕 RISET SCORING
+    bbw_sc, bbw_d = detect_bbw_expansion(data.candles)
+    pc_sc, pc_d = detect_price_momentum(data.candles)
+    bos_sc, bos_d = detect_bos_up(data.candles)
+    atr_sc, atr_d = score_atr_expansion(data.candles)
 
+    # Calculate totals
+    base_score = a_sc + b_sc + c_sc + d_sc + e_sc
+    riset_score = bbw_sc + pc_sc + bos_sc + atr_sc
+    bonus_score = mi_sc + fs_sc
+    
+    total = base_score
     is_momentum = mi_sc >= 10
     is_squeeze = fs_sc >= 15
+    is_riset_strong = riset_score >= 30
 
     if is_momentum or is_squeeze:
-        total += mi_sc + fs_sc
-    else:
+        total += bonus_score
+    total += riset_score
+
+    if not (is_momentum or is_squeeze or is_riset_strong):
         if cfg.get("short_liq_requires_vol_confirm", True) and d_sc >= 14 and c_sc < 4:
-            d_sc = min(d_sc, 10) 
+            d_sc = min(d_sc, 10)
         if -20.0 <= data.chg_24h < -10.0 and d_sc < 16:
-            return None 
-        act = sum([a_sc > cfg["active_thresh_a"], b_sc > cfg["active_thresh_b"], 
-                   c_sc > cfg["active_thresh_c"], d_sc > cfg["active_thresh_d"], 
+            return None
+        act = sum([a_sc > cfg["active_thresh_a"], b_sc > cfg["active_thresh_b"],
+                   c_sc > cfg["active_thresh_c"], d_sc > cfg["active_thresh_d"],
                    e_sc > cfg["active_thresh_e"]])
-        if act < cfg["min_active_components"]: 
+        if act < cfg["min_active_components"]:
             return None
 
     regime = detect_market_regime(data.candles)
     dynamic_thresh = cfg["regime_thresholds"].get(regime, 65)
-
-    if total < dynamic_thresh: 
+    if riset_score >= 40:
+        dynamic_thresh = max(55, dynamic_thresh - 10)
+    if total < dynamic_thresh:
         return None
 
-    if is_momentum:
-        urg = f"🚀 MOMENTUM IGNITION — RVOL Meledak {mi_d.get('rvol')}x!"
+    # Urgency message
+    if bbw_sc >= 20:
+        urg = f"🔥 RISET BREAKOUT — BBW {bbw_d.get('bb_w')} + Price {pc_d.get('price_chg', 0):+.1f}%"
+    elif is_momentum:
+        urg = f"🚀 MOMENTUM IGNITION — RVOL {mi_d.get('rvol')}x!"
     elif is_squeeze:
-        urg = f"💣 SQUEEZE ALERT — Funding Ekstrem {fs_d.get('funding')}%"
+        urg = f"💣 SQUEEZE ALERT — Funding {fs_d.get('funding')}%"
     else:
         urg = "⚪ WATCH — Akumulasi Organik"
-        if d_sc >= 14 and (a_sc >= 12 or b_sc >= 12): urg = f"🔴 TINGGI — Short squeeze + Akumulasi"
-        elif d_sc >= 14: urg = f"🔴 TINGGI — Short squeeze signal"
-        elif a_z >= 2.0 and b_z >= 1.5: urg = "🟠 SEDANG — Buy count & size anomali"
-    
+        if d_sc >= 14 and (a_sc >= 12 or b_sc >= 12):
+            urg = "🔴 TINGGI — Short squeeze + Akumulasi"
+        elif d_sc >= 14:
+            urg = "🔴 TINGGI — Short squeeze"
+        elif a_z >= 2.0 and b_z >= 1.5:
+            urg = "🟠 SEDANG — Buy anomali"
     urg = f"{urg} | [{regime}]"
 
-    conf = "very_strong" if total >= cfg["score_very_strong"] else "strong" if total >= cfg["score_strong"] else "watch"
-    dq = {"has_btx": data.has_btx, "has_liq": data.has_liq, "has_oi": data.has_oi, "candles": len(data.candles)}
-    
+    # 🆕 DEEP ENTRY CALCULATION
     entry_data = calc_entry_targets(data)
+    if entry_data:
+        atr_pct_val = atr_d.get("atr_pct", entry_data.get("atr_pct", 2.0))
+        deep_entry = calc_deep_entry(data.price, vwap, atr_pct_val)
+        entry_data["entry"] = round(deep_entry, 8)
+        atr_decimal = entry_data.get("atr_decimal", 0.02)
+        mult = cfg["atr_sl_mult"]
+        if atr_decimal > 0.04: mult = 1.2
+        elif atr_decimal < 0.015: mult = 2.0
+        sl = deep_entry * (1 - atr_decimal * mult)
+        t1 = max(deep_entry * (1 + cfg["min_target_pct"] / 100), deep_entry * (1 + atr_decimal * 3))
+        t2 = max(deep_entry * 1.20, deep_entry * (1 + atr_decimal * 6))
+        entry_data.update({
+            "sl": round(sl, 8), "t1": round(t1, 8), "t2": round(t2, 8),
+            "sl_pct": round((deep_entry - sl) / deep_entry * 100, 1),
+            "t1_pct": round((t1 - deep_entry) / deep_entry * 100, 1),
+            "t2_pct": round((t2 - deep_entry) / deep_entry * 100, 1),
+            "rr": round((t1 - deep_entry) / (deep_entry - sl), 2) if (deep_entry - sl) > 0 else 0.0
+        })
+
     position_info = None
     if entry_data:
         position_info = calculate_position_size(
-            entry=entry_data["entry"], 
+            entry=entry_data["entry"],
             stop_loss=entry_data["sl"],
-            atr_pct_decimal=entry_data["atr_decimal"]
+            atr_pct_decimal=entry_data.get("atr_decimal", 0.02)
         )
+
+    conf = "very_strong" if total >= cfg["score_very_strong"] else "strong" if total >= cfg["score_strong"] else "watch"
+    if riset_score >= 50 and total >= 70:
+        conf = "very_strong"
+    
+    dq = {
+        "has_btx": data.has_btx, "has_liq": data.has_liq, "has_oi": data.has_oi,
+        "candles": len(data.candles),
+        "vwap": round(vwap, 6) if vwap > 0 else None,
+        "above_vwap": data.price > vwap if vwap > 0 else None,
+    }
     
     set_cooldown(data.symbol)
 
     return ScoreResult(
-        symbol=data.symbol, score=min(100, total), confidence=conf, 
-        components={"A": {"score": a_sc, "z": a_z, "details": a_d}, "B": {"score": b_sc, "z": b_z, "details": b_d},
-                    "C": {"score": c_sc, "z": c_z, "details": c_d}, "D": {"score": d_sc, "z": d_z, "details": d_d},
-                    "E": {"score": e_sc, "z": e_z, "details": e_d}},
+        symbol=data.symbol, score=min(100, total), confidence=conf,
+        components={
+            "A": {"score": a_sc, "z": a_z, "details": a_d},
+            "B": {"score": b_sc, "z": b_z, "details": b_d},
+            "C": {"score": c_sc, "z": c_z, "details": c_d},
+            "D": {"score": d_sc, "z": d_z, "details": d_d},
+            "E": {"score": e_sc, "z": e_z, "details": e_d},
+            "BBW": {"score": bbw_sc, "details": bbw_d},
+            "PC": {"score": pc_sc, "details": pc_d},
+            "BOS": {"score": bos_sc, "details": bos_d},
+            "ATR": {"score": atr_sc, "details": atr_d},
+        },
         entry=entry_data, price=data.price, vol_24h=data.vol_24h, chg_24h=data.chg_24h, funding=data.funding,
         urgency=urg, data_quality=dq, position=position_info,
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  📱  TELEGRAM FORMATTER
-# ══════════════════════════════════════════════════════════════════════════════
 def build_alert(r: ScoreResult, rank: int) -> str:
-    e = r.entry; vol = f"${r.vol_24h/1e6:.1f}M" if r.vol_24h >= 1e6 else f"${r.vol_24h/1e3:.0f}K"
+    """v11.0: Enhanced with riset signals display"""
+    e = r.entry
+    vol = f"${r.vol_24h/1e6:.1f}M" if r.vol_24h >= 1e6 else f"${r.vol_24h/1e3:.0f}K"
     bar = "█" * min(20, r.score // 5) + "░" * max(0, 20 - r.score // 5)
     dq = " ".join([k.replace("has_", "")+"✓" for k, v in r.data_quality.items() if "has_" in k and v]) or "basic"
     c = r.components
     em = {"very_strong": "🟢", "strong": "🟡", "watch": "⚪"}.get(r.confidence, "⚪")
 
-    entry_block = f"\n   📍 Entry: <b>${e['entry']:.8f}</b> | SL: ${e['sl']:.8f} (-{e['sl_pct']}%)\n   🎯 T1: +{e['t1_pct']}% | T2: +{e['t2_pct']}% | R/R: {e['rr']}" if e else ""
+    entry_block = ""
+    if e:
+        entry_block = (
+            f"\n   📍 Entry: <b>${e['entry']:.8f}</b> | SL: ${e['sl']:.8f} (-{e['sl_pct']}%)"
+            f"\n   🎯 T1: +{e['t1_pct']}% | T2: +{e['t2_pct']}% | R/R: {e['rr']}"
+        )
+    
     pos_block = ""
     if r.position and r.position.get("position_size", 0) > 0:
         pos_block = f"\n   💰 Size: {r.position['position_size']:.4f} units | Lev: {r.position['leverage']:.1f}x | Risk: ${r.position['risk_usd']:.0f}"
     
+    # 🆕 RISET SIGNALS DISPLAY
+    riset_block = ""
+    bbw_sc = c.get('BBW', {}).get('score', 0)
+    pc_sc = c.get('PC', {}).get('score', 0)
+    bos_sc = c.get('BOS', {}).get('score', 0)
+    atr_sc = c.get('ATR', {}).get('score', 0)
+    
+    if bbw_sc > 0 or pc_sc > 0 or bos_sc > 0 or atr_sc > 0:
+        bbw_val = c.get('BBW', {}).get('details', {}).get('bb_w', 0)
+        pc_val = c.get('PC', {}).get('details', {}).get('price_chg', 0)
+        atr_val = c.get('ATR', {}).get('details', {}).get('atr_pct', 0)
+        
+        riset_parts = []
+        if bbw_sc > 0:
+            riset_parts.append(f"BBW:{bbw_val:.3f}")
+        if pc_sc > 0:
+            riset_parts.append(f"PC:{pc_val:+.1f}%")
+        if bos_sc > 0:
+            riset_parts.append(f"BOS✓")
+        if atr_sc > 0:
+            riset_parts.append(f"ATR:{atr_val:.1f}%")
+        
+        riset_block = f"\n   🔬 RISET: {' | '.join(riset_parts)}"
+    
     return (
         f"#{rank} {em} <b>{r.symbol}</b>  Score: <b>{r.score}/100</b>  [{dq}]\n   {bar}\n   {r.urgency}\n"
-        f"   Vol: {vol} | Δ24h: {r.chg_24h:+.1f}% | F: {r.funding:.5f}\n"
+        f"   Vol: {vol} | Δ24h: {r.chg_24h:+.1f}% | F: {r.funding:.5f}{riset_block}\n"
         f"   [A] BuyRatio: {c['A']['score']}pt ({c['A']['z']:+.1f}σ)  [B] AvgSize: {c['B']['score']}pt ({c['B']['z']:+.1f}σ)\n"
         f"   [C] Volume: {c['C']['score']}pt ({c['C']['z']:+.1f}σ)  [D] ShortLiq: {c['D']['score']}pt ({c['D']['z']:+.1f}σ)\n"
         f"   [E] OI: {c['E']['score']}pt ({c['E']['z']:+.1f}σ){entry_block}{pos_block}\n"
     )
+
 
 def build_summary(results: List[ScoreResult]) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
