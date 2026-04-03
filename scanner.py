@@ -111,72 +111,9 @@ CONFIG: Dict = {
 
 # Whitelist Statis (Di-expand otomatis oleh Dynamic Whitelist)
 WHITELIST_SYMBOLS = {
- "4USDT","0GUSDT","1000BONKUSDT","1000PEPEUSDT","1000RATSUSDT",
-    "1000SHIBUSDT","1000XECUSDT","1INCHUSDT","1MBABYDOGEUSDT","2ZUSDT",
-    "AAVEUSDT","ACEUSDT","ACHUSDT","ACTUSDT","ADAUSDT","AEROUSDT",
-    "AGLDUSDT","AINUSDT","AIOUSDT","AIXBTUSDT","AKTUSDT","ALCHUSDT",
-    "ALGOUSDT","ALICEUSDT","ALLOUSDT","ALTUSDT","ANIMEUSDT",
-    "ANKRUSDT","APEUSDT","APEXUSDT","API3USDT","APRUSDT","APTUSDT",
-    "ARUSDT","ARBUSDT","ARCUSDT","ARIAUSDT","ARKUSDT","ARKMUSDT",
-    "ARPAUSDT","ASTERUSDT","ATUSDT","ATHUSDT","ATOMUSDT","AUCTIONUSDT",
-    "AVAXUSDT","AVNTUSDT","AWEUSDT","AXLUSDT","AXSUSDT","AZTECUSDT",
-    "BUSDT","B2USDT","BABYUSDT","BANUSDT","BANANAUSDT",
-    "BANANAS31USDT","BANKUSDT","BARDUSDT","BATUSDT","BCHUSDT","BEATUSDT",
-    "BERAUSDT","BGBUSDT","BIGTIMEUSDT","BIOUSDT","BIRBUSDT","BLASTUSDT",
-    "BLESSUSDT","BLURUSDT","BNBUSDT","BOMEUSDT","BRETTUSDT","BREVUSDT",
-    "BROCCOLIUSDT","BSVUSDT","BTCUSDT","BULLAUSDT","C98USDT","CAKEUSDT",
-    "CCUSDT","CELOUSDT","CFXUSDT","CHILLGUYUSDT","CHZUSDT","CLUSDT",
-    "CLANKERUSDT","CLOUSDT","COAIUSDT","COMPUSDT","COOKIEUSDT",
-    "COWUSDT","CRCLUSDT","CROUSDT","CROSSUSDT","CRVUSDT","CTKUSDT",
-    "CVCUSDT","CVXUSDT","CYBERUSDT","CYSUSDT","DASHUSDT","DEEPUSDT",
-    "DENTUSDT","DEXEUSDT","DOGEUSDT","DOLOUSDT","DOODUSDT","DOTUSDT",
-    "DRIFTUSDT","DYDXUSDT","DYMUSDT","EGLDUSDT","EIGENUSDT","ENAUSDT",
-    "ENJUSDT","ENSUSDT","ENSOUSDT","EPICUSDT","ESPUSDT","ETCUSDT",
-    "ETHUSDT","ETHFIUSDT","FUSDT","FARTCOINUSDT","FETUSDT",
-    "FFUSDT","FIDAUSDT","FILUSDT","FLOKIUSDT","FLUIDUSDT","FOGOUSDT",
-    "FOLKSUSDT","FORMUSDT","GALAUSDT","GASUSDT","GIGGLEUSDT",
-    "GLMUSDT","GMTUSDT","GMXUSDT","GOATUSDT","GPSUSDT","GRASSUSDT","GUSDT",
-    "GRIFFAINUSDT","GRTUSDT","GUNUSDT","GWEIUSDT","HUSDT","HBARUSDT",
-    "HEIUSDT","HEMIUSDT","HMSTRUSDT","HOLOUSDT","HOMEUSDT","HYPEUSDT","HYPERUSDT",
-    "ICNTUSDT","ICPUSDT","IDOLUSDT","ILVUSDT",
-    "IMXUSDT","INITUSDT","INJUSDT","INXUSDT","IOUSDT",
-    "IOTAUSDT","IOTXUSDT","IPUSDT","JASMYUSDT","JCTUSDT","JSTUSDT",
-    "JTOUSDT","JUPUSDT","KAIAUSDT","KAITOUSDT","KASUSDT","KAVAUSDT",
-    "kBONKUSDT","KERNELUSDT","KGENUSDT","KITEUSDT","kPEPEUSDT","kSHIBUSDT",
-    "LAUSDT","LABUSDT","LAYERUSDT","LDOUSDT","LIGHTUSDT","LINEAUSDT",
-    "LINKUSDT","LITUSDT","LPTUSDT","LSKUSDT","LTCUSDT","LUNAUSDT",
-    "LUNCUSDT","LYNUSDT","MUSDT","MAGICUSDT","MAGMAUSDT","MANAUSDT",
-    "MANTAUSDT","MANTRAUSDT","MASKUSDT","MAVUSDT","MAVIAUSDT","MBOXUSDT",
-    "MEUSDT","MEGAUSDT","MELANIAUSDT","MEMEUSDT","MERLUSDT","METUSDT",
-    "METAUSDT","MEWUSDT","MINAUSDT","MMTUSDT","MNTUSDT","MONUSDT",
-    "MOODENGUSDT","MORPHOUSDT","MOVEUSDT","MOVRUSDT","MUUSDT","MUBARAKUSDT",
-    "MYXUSDT","NAORISUSDT","NEARUSDT","NEIROCTOUSDT",
-    "NEOUSDT","NEWTUSDT","NILUSDT","NMRUSDT","NOMUSDT","NOTUSDT",
-    "NXPCUSDT","ONDOUSDT","ONGUSDT","ONTUSDT","OPUSDT","OPENUSDT",
-    "OPNUSDT","ORCAUSDT","ORDIUSDT","OXTUSDT","PARTIUSDT",
-    "PENDLEUSDT","PENGUUSDT","PEOPLEUSDT","PEPEUSDT","PHAUSDT","PIEVERSEUSDT",
-    "PIPPINUSDT","PLUMEUSDT","PNUTUSDT","POLUSDT","POLYXUSDT",
-    "POPCATUSDT","POWERUSDT","PROMPTUSDT","PROVEUSDT","PUMPUSDT","PURRUSDT",
-    "PYTHUSDT","QUSDT","QNTUSDT","RAVEUSDT","RAYUSDT",
-    "RECALLUSDT","RENDERUSDT","RESOLVUSDT","REZUSDT","RIVERUSDT","ROBOUSDT",
-    "ROSEUSDT","RPLUSDT","RSRUSDT","RUNEUSDT","SUSDT","SAGAUSDT","SAHARAUSDT",
-    "SANDUSDT","SAPIENUSDT","SEIUSDT","SENTUSDT","SHIBUSDT","SIGNUSDT",
-    "SIRENUSDT","SKHYNIXUSDT","SKRUSDT","SKYUSDT","SKYAIUSDT","SLPUSDT",
-    "SNXUSDT","SOLUSDT","SOMIUSDT","SONICUSDT","SOONUSDT","SOPHUSDT",
-    "SPACEUSDT","SPKUSDT","SPXUSDT","SQDUSDT","SSVUSDT",
-    "STBLUSDT","STEEMUSDT","STOUSDT","STRKUSDT","STXUSDT",
-    "SUIUSDT","SUNUSDT","SUPERUSDT","SUSHIUSDT","SYRUPUSDT","TUSDT",
-    "TACUSDT","TAGUSDT","TAIKOUSDT","TAOUSDT","THEUSDT","THETAUSDT",
-    "TIAUSDT","TNSRUSDT","TONUSDT","TOSHIUSDT","TOWNSUSDT","TRBUSDT",
-    "TRIAUSDT","TRUMPUSDT","TRXUSDT","TURBOUSDT","UAIUSDT","UBUSDT",
-    "UMAUSDT","UNIUSDT","USUSDT","USDKRWUSDT","USELESSUSDT",
-    "USUALUSDT","VANAUSDT","VANRYUSDT","VETUSDT","VINEUSDT","VIRTUALUSDT",
-    "VTHOUSDT","VVVUSDT","WUSDT","WALUSDT","WAXPUSDT","WCTUSDT","WETUSDT",
-    "WIFUSDT","WLDUSDT","WLFIUSDT","WOOUSDT","WTIUSDT","XAIUSDT",
-    "XCUUSDT","XDCUSDT","XLMUSDT","XMRUSDT","XPDUSDT","XPINUSDT",
-    "XPLUSDT","XRPUSDT","XTZUSDT","XVGUSDT","YGGUSDT","YZYUSDT","ZAMAUSDT",
-    "ZBTUSDT","ZECUSDT","ZENUSDT","ZEREBROUSDT","ZETAUSDT","ZILUSDT",
-    "ZKUSDT","ZKCUSDT","ZKJUSDT","ZKPUSDT","ZORAUSDT","ZROUSDT",
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "PEPEUSDT", "WIFUSDT", 
+    "LINKUSDT", "AVAXUSDT", "NEARUSDT", "RENDERUSDT", "FETUSDT", "INJUSDT",
+    "SUIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "TIAUSDT", "SEIUSDT", "ENAUSDT"
 }
 MANUAL_EXCLUDE: set = set()
 
@@ -680,7 +617,7 @@ def score_oi_buildup(data: CoinData) -> Tuple[int, float, dict]:
 #  🔬  SCORING COMPONENTS (FAST: GAME CHANGERS / BYPASS)
 # ══════════════════════════════════════════════════════════════════════════════
 def score_momentum_ignition(data: CoinData) -> Tuple[int, dict]:
-    """[GAME CHANGER 1] Mendeteksi ledakan volume > 300% (HFT Liquidity Void)."""
+    """[GAME CHANGER 1] Mendeteksi ledakan volume > 250% (HFT Liquidity Void)."""
     candles = data.candles
     if len(candles) < 25: return 0, {}
     
@@ -691,19 +628,26 @@ def score_momentum_ignition(data: CoinData) -> Tuple[int, dict]:
     
     rvol = cur_vol / avg_24_vol
     
-    if rvol >= 3.0 and candles[-2]["close"] > candles[-2]["open"]:
-        score = min(30, int((rvol - 2) * 10))
+    # PERBAIKAN: Turunkan syarat dari 3.0x menjadi 2.5x (Realistis untuk awal pump)
+    if rvol >= 2.5 and candles[-2]["close"] > candles[-2]["open"]:
+        # RVOL 2.5 = 10 poin | RVOL 3.5 = 20 poin | Maksimal 30
+        score = min(30, int((rvol - 1.5) * 10))
         return score, {"rvol": round(rvol, 1), "avg_vol": round(avg_24_vol)}
         
     return 0, {}
 
 def score_funding_squeeze(data: CoinData) -> Tuple[int, dict]:
     """[GAME CHANGER 2] Mendeteksi Funding Rate sangat negatif (Coiled Spring)."""
-    funding = data.funding
-    if funding > -0.05: return 0, {} 
+    # PERBAIKAN BUG DESIMAL: Kalikan 100 untuk menjadikannya persentase nyata
+    funding_pct = data.funding * 100 
     
-    score = min(30, int(abs(funding) * 200))
-    return score, {"funding": round(funding * 100, 3)}
+    # Syarat: Harus lebih negatif dari -0.075% (Short Squeeze Ekstrem)
+    if funding_pct > -0.075: 
+        return 0, {} 
+    
+    # Jika -0.1%, abs(-0.1) * 200 = 20 poin
+    score = min(30, int(abs(funding_pct) * 200))
+    return score, {"funding": round(funding_pct, 3)}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -764,9 +708,9 @@ def score_coin(data: CoinData) -> Optional[ScoreResult]:
 
     total = a_sc + b_sc + c_sc + d_sc + e_sc 
 
-    # --- FAST TRACK BYPASS ---
-    is_momentum = mi_sc >= 20
-    is_squeeze = fs_sc >= 15
+    # --- FAST TRACK BYPASS (PERBAIKAN SYARAT) ---
+    is_momentum = mi_sc >= 10      # RVOL >= 2.5x lipat
+    is_squeeze = fs_sc >= 15       # Funding <= -0.075%
 
     if is_momentum or is_squeeze:
         total += mi_sc + fs_sc
