@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v12.0-ADAPTIVE (FULL EDITION)                             ║
+║  PRE-PUMP SCANNER v13.0-ADAPTIVE (FULL EDITION)                             ║
 ║                                                                              ║
 ║  🎯 TARGET: Detect 1-3 HOURS BEFORE PUMP (Not mid-pump!)                    ║
 ║                                                                              ║
-║  KEY CHANGES FROM v11.0:                                                    ║
+║  KEY CHANGES FROM v12.0:                                                    ║
+║  ✅ TIERED phase_score — EARLY no longer gets 60 pts for free               ║
+║  ✅ min_prepump_signals gate — ≥2 independent signals required              ║
+║  ✅ Raised alert thresholds — EARLY 70→105, MOMENTUM 90→110                ║
+║  ✅ chg_1h downside gate — blocks rapid 1h dumps in non-downtrend           ║
+║  ✅ Confidence tightened — strong now requires ≥100 (was 90)               ║
+║                                                                              ║
+║  INHERITED FROM v12.0:                                                      ║
 ║  ✅ INVERTED LOGIC - Squeeze not expansion, flat not momentum               ║
-║  ✅ Multi-TF Velocity Gates (1h/4h/8h/24h) - Block late entries             ║
+║  ✅ Multi-TF Velocity Gates (1h/4h/8h/24h)                                 ║
 ║  ✅ Phase Classification - EARLY/MOMENTUM/PARABOLIC/DOWNTREND               ║
 ║  ✅ Multi-Wave Tracking - Detect continuations 6-48h window                 ║
-║  ✅ Continuation Detection - 66% of pumps are multi-wave                    ║
 ║  ✅ Reversal Detection - Support bounce + capitulation                      ║
 ║  ✅ Catalyst Detection - Listings, funding, accumulation (FREE)             ║
 ║  ✅ Adaptive Scoring - Context-aware 150-point scale                        ║
@@ -47,7 +53,7 @@ try:
 except ImportError:
     pass
 
-VERSION = "12.0-PRE-PUMP-FULL"
+VERSION = "13.0-PRE-PUMP-FULL"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -77,10 +83,11 @@ CONFIG: Dict = {
 
     # 🆕 MULTI-TIMEFRAME VELOCITY GATES (stricter!)
     "velocity_gates": {
-        "chg_1h_max": 3.0,    # Block if >3% in 1h (down from 5%)
-        "chg_4h_max": 6.0,    # NEW: Block if >6% in 4h
-        "chg_8h_max": 10.0,   # NEW: Block if >10% in 8h
-        "chg_24h_max": 15.0,  # Block if >15% in 24h (down from 40%)
+        "chg_1h_max": 3.0,    # Block if >3% in 1h
+        "chg_1h_min": -1.5,   # Block if <-1.5% in 1h (rapid dump)
+        "chg_4h_max": 6.0,    # Block if >6% in 4h
+        "chg_8h_max": 10.0,   # Block if >10% in 8h
+        "chg_24h_max": 15.0,  # Block if >15% in 24h
         "chg_24h_min": -5.0,  # Block downtrends <-5% (unless reversal)
     },
 
@@ -124,11 +131,14 @@ CONFIG: Dict = {
     "sector_momentum": 20,           # Sector up 15%+
     "multiwave_history": 30,         # Previous pumps
 
-    # Alert thresholds (adaptive by phase)
-    "alert_threshold_early": 70,      # Early phase (clean setup)
-    "alert_threshold_momentum": 90,   # Momentum phase (need confirmation)
-    "alert_threshold_parabolic": 110, # Parabolic (very strict)
-    "alert_threshold_reversal": 80,   # Reversal (moderate)
+    # Alert thresholds (adaptive by phase) — v13.0: tightened significantly
+    "alert_threshold_early": 105,      # v13.0: raised from 70 → 105 (prevent free-60 exploit)
+    "alert_threshold_momentum": 110,   # v13.0: raised from 90 → 110
+    "alert_threshold_parabolic": 120,  # v13.0: raised from 110 → 120
+    "alert_threshold_reversal": 85,    # v13.0: raised from 80 → 85
+
+    # v13.0: Minimum distinct pre-pump signals required (EARLY phase)
+    "min_prepump_signals": 2,          # Must have ≥2 independent signals to pass
 
     # Score display
     "score_display_max": 150,  # NEW: Real scale (not capped at 100)
@@ -334,42 +344,51 @@ def score_from_z(z: float, strong_thresh: float, medium_thresh: float, weight: i
 # ══════════════════════════════════════════════════════════════════════════════
 def classify_phase(chg_24h: float) -> PhaseInfo:
     """
-    Classify market phase for adaptive scoring
-    
-    CRITICAL: Different phases need different detection logic!
+    Classify market phase for adaptive scoring.
+
+    v13.0 CHANGES:
+    - base_score for EARLY reduced from 60 → 20 (must be EARNED via signals)
+    - Added QUIET sub-tier inside EARLY: flat near 0% gets bonus 10 pts
+    - MOMENTUM base_score unchanged at 40 (still requires continuation proof)
+    - PARABOLIC/DOWNTREND unchanged
     """
     if chg_24h < -5.0:
-        # DOWNTREND PHASE - look for reversal setups only
         return PhaseInfo(
             phase="DOWNTREND",
             base_score=10,
             description="Falling - Reversal setup only",
             risk_level="HIGH"
         )
-    
+
     elif chg_24h > 30.0:
-        # PARABOLIC PHASE - very late, need strong continuation signals
         return PhaseInfo(
             phase="PARABOLIC",
             base_score=20,
             description="Parabolic - Extreme risk",
             risk_level="EXTREME"
         )
-    
+
     elif 15.0 < chg_24h <= 30.0:
-        # MOMENTUM PHASE - can be continuation or topping
         return PhaseInfo(
             phase="MOMENTUM",
             base_score=40,
             description="Momentum - Check continuation",
             risk_level="MEDIUM"
         )
-    
+
     else:
-        # EARLY PHASE - ideal for pre-pump detection!
+        # EARLY PHASE: -5% ≤ chg_24h ≤ 15%
+        # v13.0: base_score now 20 (down from 60).
+        # Coin that are truly flat (|chg_24h| < 1%) get +10 bonus (quiet = ideal pre-pump).
+        if abs(chg_24h) < 1.0:
+            early_base = 30   # Flat / barely moved — strongest pre-pump candidate
+        elif abs(chg_24h) < 3.0:
+            early_base = 20   # Mild drift — still good
+        else:
+            early_base = 10   # 3-15% already moved — possible pre-pump but weaker setup
         return PhaseInfo(
             phase="EARLY",
-            base_score=60,
+            base_score=early_base,
             description="Early - Best zone",
             risk_level="LOW"
         )
@@ -800,39 +819,43 @@ def check_reversal_pattern(data: CoinData, phase: PhaseInfo) -> Tuple[int, dict]
 # ══════════════════════════════════════════════════════════════════════════════
 #  🎯  VELOCITY GATES (Enhanced multi-timeframe)
 # ══════════════════════════════════════════════════════════════════════════════
-def check_velocity_gates_v12(candles: List[dict], chg_24h: float) -> Tuple[bool, str]:
+def check_velocity_gates_v13(candles: List[dict], chg_24h: float) -> Tuple[bool, str]:
     """
-    CRITICAL: Block late entries with multi-timeframe gates
-    
-    Much stricter than v11.0!
+    CRITICAL: Block late/bad entries with multi-timeframe gates.
+
+    v13.0 CHANGES vs v12.0:
+    - Added chg_1h_min: block rapid dumps (avoid falling knives in non-downtrend)
+    - Renamed to v13 to make call-site explicit
     """
     cfg = CONFIG["velocity_gates"]
-    
-    # 24h check
+
+    # 24h upside gate
     if chg_24h > cfg["chg_24h_max"]:
         return True, f"⛔ LATE: Δ24h {chg_24h:+.1f}% > {cfg['chg_24h_max']}%"
-    
+
     if len(candles) < 2:
         return False, ""
-    
-    # 1h check
+
+    # 1h upside + downside gates
     if candles[-2].get("close", 0) > 0:
         chg_1h = (candles[-1]["close"] - candles[-2]["close"]) / candles[-2]["close"] * 100
         if chg_1h > cfg["chg_1h_max"]:
             return True, f"⛔ PUMP NOW: Δ1h {chg_1h:+.1f}% > {cfg['chg_1h_max']}%"
-    
-    # 4h check (NEW)
+        if chg_1h < cfg["chg_1h_min"]:
+            return True, f"⛔ DUMP: Δ1h {chg_1h:+.1f}% < {cfg['chg_1h_min']}%"
+
+    # 4h upside gate
     if len(candles) >= 4 and candles[-4].get("close", 0) > 0:
         chg_4h = (candles[-1]["close"] - candles[-4]["close"]) / candles[-4]["close"] * 100
         if chg_4h > cfg["chg_4h_max"]:
             return True, f"⛔ LATE: Δ4h {chg_4h:+.1f}% > {cfg['chg_4h_max']}%"
-    
-    # 8h check (NEW)
+
+    # 8h upside gate
     if len(candles) >= 8 and candles[-8].get("close", 0) > 0:
         chg_8h = (candles[-1]["close"] - candles[-8]["close"]) / candles[-8]["close"] * 100
         if chg_8h > cfg["chg_8h_max"]:
             return True, f"⛔ LATE: Δ8h {chg_8h:+.1f}% > {cfg['chg_8h_max']}%"
-    
+
     return False, ""
 
 
@@ -969,69 +992,86 @@ def score_oi_buildup(data: CoinData) -> Tuple[int, float, dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🎯  MASTER SCORING FUNCTION v12.0 (Adaptive!)
+#  🎯  MASTER SCORING FUNCTION v13.0 (Tightened Adaptive)
 # ══════════════════════════════════════════════════════════════════════════════
 def score_coin_v12(data: CoinData) -> Optional[ScoreResult]:
     """
-    v12.0 ADAPTIVE SCORING with phase-based logic
-    
-    Key changes from v11.0:
-    1. Phase classification first
-    2. Inverted pre-pump logic (squeeze not expansion)
-    3. Multi-wave continuation detection
-    4. Reversal pattern validation
-    5. Catalyst detection (free sources)
-    6. Adaptive thresholds by phase
+    v13.0 ADAPTIVE SCORING — backward-compatible function name kept for main().
+
+    Key changes from v12.0:
+    1. classify_phase() returns tiered base_score (10/20/30) not flat 60 — must be EARNED
+    2. Velocity gate → check_velocity_gates_v13() with added 1h downside gate
+    3. EARLY phase: hard gate ≥2 distinct signals required before scoring
+    4. Thresholds raised: EARLY 70→105, MOMENTUM 90→110, PARABOLIC 110→120, REVERSAL 80→85
+    5. Urgency threshold for PRE-PUMP SETUP lowered to 35 (calibrated to new scoring floor)
+    6. Confidence levels updated: very_strong ≥120, strong ≥100 (was 90)
     """
     cfg = CONFIG
-    
-    # Basic filters
+
+    # ── Basic filters ────────────────────────────────────────────────────────
     if data.vol_24h < cfg["min_vol_24h"]:
         return None
     if data.price <= 0:
         return None
-    
-    # === PHASE CLASSIFICATION ===
+
+    # ── Phase classification ─────────────────────────────────────────────────
+    # v13: base_score is now tiered (10/20/30 for EARLY vs old flat 60)
     phase = classify_phase(data.chg_24h)
-    
-    # === VELOCITY GATES (Multi-TF) ===
-    if phase.phase not in ["DOWNTREND"]:  # Don't block downtrends (need for reversals)
-        blocked, block_reason = check_velocity_gates_v12(data.candles, data.chg_24h)
+
+    # ── Velocity gates ───────────────────────────────────────────────────────
+    # Skip for DOWNTREND — reversal candidates need to pass through
+    if phase.phase != "DOWNTREND":
+        blocked, block_reason = check_velocity_gates_v13(data.candles, data.chg_24h)
         if blocked:
             log.info(f"  {data.symbol}: {block_reason}")
             return None
-    
-    # === BASE SCORING (from v11.0) ===
+
+    # ── Base scoring (Coinalyze z-score components, unchanged from v12) ──────
     a_sc, a_z, a_d = score_buy_tx_ratio(data)
     b_sc, b_z, b_d = score_avg_buy_size(data)
     c_sc, c_z, c_d = score_volume(data)
     d_sc, d_z, d_d = score_short_liquidations(data)
     e_sc, e_z, e_d = score_oi_buildup(data)
-    
+
     base_score = a_sc + b_sc + c_sc + d_sc + e_sc
-    
-    # === PHASE-SPECIFIC SCORING ===
-    phase_score = phase.base_score
-    pre_pump_score = 0
+
+    # ── Phase score (tiered, earned from classify_phase) ─────────────────────
+    phase_score = phase.base_score   # 10/20/30 for EARLY, 10/20/40 other phases
+
+    # ── Phase-specific scoring ───────────────────────────────────────────────
+    pre_pump_score     = 0
     continuation_score = 0
-    reversal_score = 0
-    catalyst_score = 0
-    catalysts = []
-    risk_warnings = []
-    
+    reversal_score     = 0
+    catalyst_score     = 0
+    catalysts: List[str]     = []
+    risk_warnings: List[str] = []
+
     if phase.phase == "EARLY":
-        # 🎯 EARLY PHASE: Focus on pre-pump patterns
-        
-        # PRE-PUMP patterns (inverted logic)
-        squeeze_sc, squeeze_d = detect_bbw_squeeze(data.candles)
+        # ── Compute all pre-pump sub-signals ─────────────────────────────────
+        squeeze_sc,   squeeze_d   = detect_bbw_squeeze(data.candles)
         stability_sc, stability_d = detect_price_stability(data.candles)
-        dryup_sc, dryup_d = detect_volume_dryup(data.candles)
-        funding_sc, funding_d = detect_funding_building(data)
-        accum_sc, accum_d = detect_accumulation_volume(data.candles)
-        
+        dryup_sc,     dryup_d     = detect_volume_dryup(data.candles)
+        funding_sc,   funding_d   = detect_funding_building(data)
+        accum_sc,     accum_d     = detect_accumulation_volume(data.candles)
+
+        # v13 GATE: reject coins with fewer than min_prepump_signals active signals
+        # This prevents a single weak squeeze from carrying a coin to 72+ score
+        active_signals = sum([
+            squeeze_sc   > 0,
+            stability_sc > 0,
+            funding_sc   > 0,
+            accum_sc     > 0,
+            dryup_sc     > 0,
+        ])
+        if active_signals < cfg["min_prepump_signals"]:
+            log.debug(
+                f"  {data.symbol}: {active_signals} signal(s) < "
+                f"required {cfg['min_prepump_signals']} — skipped"
+            )
+            return None
+
         pre_pump_score = squeeze_sc + stability_sc + dryup_sc + funding_sc + accum_sc
-        
-        # Log pre-pump signals
+
         if squeeze_sc > 0:
             catalysts.append(f"BBW Squeeze {squeeze_d['bb_w']}")
         if stability_sc > 0:
@@ -1040,88 +1080,91 @@ def score_coin_v12(data: CoinData) -> Optional[ScoreResult]:
             catalysts.append(f"Accumulation {accum_d.get('pattern', '')}")
         if funding_sc > 0:
             catalysts.append(f"Funding {funding_d.get('pattern', '')}")
-        
-        # Multi-wave check
+        if dryup_sc > 0:
+            catalysts.append(f"Vol Dryup {dryup_d.get('pattern', '')}")
+
+        # Multi-wave bonus (kept in catalyst_score — separate bucket, no inflation)
         mw_sc, mw_d = check_multiwave_history(data.symbol)
         if mw_sc > 0:
             catalyst_score += mw_sc
-            catalysts.append(f"Multi-wave: {mw_d.get('num_pumps', 0)} pumps, gap {mw_d.get('avg_gap_hours', 0):.0f}h")
-    
+            catalysts.append(
+                f"Multi-wave: {mw_d.get('num_pumps', 0)} pumps, "
+                f"gap {mw_d.get('avg_gap_hours', 0):.0f}h"
+            )
+
     elif phase.phase == "MOMENTUM":
-        # 🔄 MOMENTUM PHASE: Check for continuation
-        
         mw_sc, mw_d = check_multiwave_history(data.symbol)
         if mw_sc > 0:
-            # Has multi-wave history, check continuation signals
             cont_sc, cont_d = check_continuation_pattern(data, mw_sc)
             continuation_score = mw_sc + cont_sc
-            
+
             if mw_d.get("in_window"):
                 catalysts.append(f"⚡ CONTINUATION WINDOW: {mw_d.get('num_pumps')} pumps")
-                catalysts.append(f"Gap: {mw_d.get('hours_since_last', 0):.0f}h / {mw_d.get('avg_gap_hours', 0):.0f}h avg")
-            
+                catalysts.append(
+                    f"Gap: {mw_d.get('hours_since_last', 0):.0f}h "
+                    f"/ {mw_d.get('avg_gap_hours', 0):.0f}h avg"
+                )
             if cont_d.get("signals"):
                 catalysts.append(f"Signals: {', '.join(cont_d['signals'])}")
         else:
-            # No multi-wave history = likely topping
             risk_warnings.append("⚠️ No multi-wave history (topping risk)")
-    
+
     elif phase.phase == "PARABOLIC":
-        # 💥 PARABOLIC PHASE: Very strict continuation only
-        
         mw_sc, mw_d = check_multiwave_history(data.symbol)
         if mw_sc > 0 and mw_d.get("in_window"):
             cont_sc, cont_d = check_continuation_pattern(data, mw_sc)
-            
-            # Need STRONG continuation signals
-            if cont_sc >= 20:  # At least 20 points from signals
+            if cont_sc >= 20:
                 continuation_score = mw_sc + cont_sc
-                catalysts.append(f"⚡ PARABOLIC CONTINUATION: {len(cont_d.get('signals', []))} signals")
+                catalysts.append(
+                    f"⚡ PARABOLIC CONTINUATION: {len(cont_d.get('signals', []))} signals"
+                )
             else:
                 risk_warnings.append("⚠️ EXTREME: Parabolic phase, weak continuation")
         else:
             risk_warnings.append("⚠️ EXTREME: Parabolic phase, no multi-wave pattern")
-    
+
     elif phase.phase == "DOWNTREND":
-        # 📉 DOWNTREND PHASE: Check for reversal
-        
         rev_sc, rev_d = check_reversal_pattern(data, phase)
         reversal_score = rev_sc
-        
-        if rev_sc >= 40:  # Strong reversal setup
+
+        if rev_sc >= 40:
             catalysts.append(f"🔄 REVERSAL: {', '.join(rev_d.get('signals', []))}")
             if rev_d.get("support_level"):
-                catalysts.append(f"Support: ${rev_d['support_level']:.6f} ({rev_d.get('distance_from_support_pct', 0):+.1f}%)")
+                catalysts.append(
+                    f"Support: ${rev_d['support_level']:.6f} "
+                    f"({rev_d.get('distance_from_support_pct', 0):+.1f}%)"
+                )
         elif rev_sc > 0:
             risk_warnings.append(f"⚠️ Weak reversal ({rev_sc} pts)")
         else:
             risk_warnings.append("⚠️ No reversal signals (falling knife risk)")
-    
-    # === CALCULATE TOTAL ===
+
+    # ── Total score ──────────────────────────────────────────────────────────
     total = (
-        phase_score +
-        base_score +
-        pre_pump_score +
-        continuation_score +
-        reversal_score +
-        catalyst_score
+        phase_score        +   # tiered: 10/20/30 (EARLY) — no longer 60 for free
+        base_score         +   # Coinalyze z-score components (max ~100)
+        pre_pump_score     +   # pre-pump patterns (EARLY only, max ~80)
+        continuation_score +   # multi-wave (MOMENTUM/PARABOLIC)
+        reversal_score     +   # reversal setup (DOWNTREND)
+        catalyst_score         # multi-wave bonus catalyst (EARLY)
     )
-    
-    # === ADAPTIVE THRESHOLD ===
+
+    # ── Adaptive threshold (v13 tightened) ──────────────────────────────────
     if phase.phase == "EARLY":
-        threshold = cfg["alert_threshold_early"]
+        threshold = cfg["alert_threshold_early"]       # 105
     elif phase.phase == "MOMENTUM":
-        threshold = cfg["alert_threshold_momentum"]
+        threshold = cfg["alert_threshold_momentum"]    # 110
     elif phase.phase == "PARABOLIC":
-        threshold = cfg["alert_threshold_parabolic"]
+        threshold = cfg["alert_threshold_parabolic"]   # 120
     else:  # DOWNTREND
-        threshold = cfg["alert_threshold_reversal"]
-    
+        threshold = cfg["alert_threshold_reversal"]    # 85
+
     if total < threshold:
         return None
-    
-    # === BUILD URGENCY MESSAGE ===
-    if phase.phase == "EARLY" and pre_pump_score >= 40:
+
+    # ── Urgency message ──────────────────────────────────────────────────────
+    # Threshold 35 calibrated to new scoring floor (old 40 was based on 60-pt free phase)
+    if phase.phase == "EARLY" and pre_pump_score >= 35:
         urg = f"🎯 PRE-PUMP SETUP — {len(catalysts)} signals"
     elif phase.phase == "MOMENTUM" and continuation_score >= 40:
         urg = f"⚡ CONTINUATION LIKELY — Multi-wave pattern"
@@ -1131,34 +1174,30 @@ def score_coin_v12(data: CoinData) -> Optional[ScoreResult]:
         urg = f"🔄 REVERSAL SETUP — At support"
     else:
         urg = f"⚪ WATCH — Score {total}/{cfg['score_display_max']}"
-    
-    # === ENTRY CALCULATION ===
-    entry_data = None
-    # TODO: Implement deep entry calculation
-    
-    # === CONFIDENCE ===
+
+    # ── Confidence ───────────────────────────────────────────────────────────
     if total >= 120:
         confidence = "very_strong"
-    elif total >= 90:
+    elif total >= 100:   # v13: raised from 90 → 100 to match tighter scoring
         confidence = "strong"
     else:
         confidence = "watch"
-    
+
     return ScoreResult(
         symbol=data.symbol,
         score=min(total, cfg["score_display_max"]),
         phase=phase.phase,
         confidence=confidence,
         components={
-            "Phase": {"score": phase_score, "details": {"phase": phase.phase, "risk": phase.risk_level}},
-            "Base": {"score": base_score, "details": {"A": a_sc, "B": b_sc, "C": c_sc, "D": d_sc, "E": e_sc}},
-            "PrePump": {"score": pre_pump_score, "details": {}},
-            "Continuation": {"score": continuation_score, "details": {}},
-            "Reversal": {"score": reversal_score, "details": {}},
-            "Catalysts": {"score": catalyst_score, "details": {}},
+            "Phase":        {"score": phase_score,         "details": {"phase": phase.phase, "risk": phase.risk_level}},
+            "Base":         {"score": base_score,          "details": {"A": a_sc, "B": b_sc, "C": c_sc, "D": d_sc, "E": e_sc}},
+            "PrePump":      {"score": pre_pump_score,      "details": {}},
+            "Continuation": {"score": continuation_score,  "details": {}},
+            "Reversal":     {"score": reversal_score,      "details": {}},
+            "Catalysts":    {"score": catalyst_score,      "details": {}},
         },
         catalysts=catalysts,
-        entry=entry_data,
+        entry=None,
         price=data.price,
         vol_24h=data.vol_24h,
         chg_24h=data.chg_24h,
@@ -1173,7 +1212,7 @@ def score_coin_v12(data: CoinData) -> Optional[ScoreResult]:
 #  📤  ALERT BUILDER
 # ══════════════════════════════════════════════════════════════════════════════
 def build_alert_v12(r: ScoreResult, rank: int) -> str:
-    """Build alert message for v12.0"""
+    """Build alert message for v13.0 (function name kept for call-site compatibility)"""
     vol = f"${r.vol_24h/1e6:.1f}M" if r.vol_24h >= 1e6 else f"${r.vol_24h/1e3:.0f}K"
     
     # Score bar (out of 150)
