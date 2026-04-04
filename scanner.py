@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v13.0-ADAPTIVE (FULL EDITION)                             ║
+║  PRE-PUMP SCANNER v14.0 — DUAL TIMEFRAME EDITION                            ║
 ║                                                                              ║
-║  🎯 TARGET: Detect 1-3 HOURS BEFORE PUMP (Not mid-pump!)                    ║
+║  🎯 TARGET: Detect 15-45 MINUTES BEFORE PUMP (Manual-entry friendly!)       ║
 ║                                                                              ║
-║  KEY CHANGES FROM v12.0:                                                    ║
-║  ✅ TIERED phase_score — EARLY no longer gets 60 pts for free               ║
-║  ✅ min_prepump_signals gate — ≥2 independent signals required              ║
-║  ✅ Raised alert thresholds — EARLY 70→105, MOMENTUM 90→110                ║
-║  ✅ chg_1h downside gate — blocks rapid 1h dumps in non-downtrend           ║
-║  ✅ Confidence tightened — strong now requires ≥100 (was 90)               ║
+║  KEY CHANGES FROM v13.0:                                                    ║
+║  ✅ DUAL TIMEFRAME ENGINE                                                   ║
+║     • Phase 1 (1H): Setup detection — BBW squeeze, funding, accumulation   ║
+║     • Phase 2 (15M): Watchlist monitoring — breakout trigger detection      ║
+║  ✅ WATCHLIST SYSTEM — coins pass 1H scoring → enter 15M watch queue       ║
+║  ✅ 15M BREAKOUT DETECTOR — 4 independent breakout signals                 ║
+║     • Volume surge (>2x 15M avg)                                           ║
+║     • Price range expansion (BB expanding on 15M)                          ║
+║     • Candle momentum (strong bullish body)                                 ║
+║     • Range breakout (price exits 2H consolidation range)                  ║
+║  ✅ TWO-STAGE ALERT — [SETUP] then [BREAKOUT] with entry window            ║
+║  ✅ LEAD TIME TARGET: 15-45 min before full pump (was 4 min)               ║
 ║                                                                              ║
-║  INHERITED FROM v12.0:                                                      ║
-║  ✅ INVERTED LOGIC - Squeeze not expansion, flat not momentum               ║
-║  ✅ Multi-TF Velocity Gates (1h/4h/8h/24h)                                 ║
-║  ✅ Phase Classification - EARLY/MOMENTUM/PARABOLIC/DOWNTREND               ║
-║  ✅ Multi-Wave Tracking - Detect continuations 6-48h window                 ║
-║  ✅ Reversal Detection - Support bounce + capitulation                      ║
-║  ✅ Catalyst Detection - Listings, funding, accumulation (FREE)             ║
-║  ✅ Adaptive Scoring - Context-aware 150-point scale                        ║
-║                                                                              ║
-║  RESEARCH-BACKED:                                                           ║
-║  - 40+ academic papers (2020-2026)                                          ║
-║  - SIREN, POWER, PIXEL case studies                                         ║
-║  - 37 real pump events analyzed                                             ║
-║  - Expected precision: 85-90%                                               ║
+║  INHERITED FROM v13.0:                                                      ║
+║  ✅ Tiered phase_score (no free 60 pts)                                    ║
+║  ✅ min_prepump_signals gate (≥2 signals)                                  ║
+║  ✅ Raised alert thresholds (EARLY=105)                                    ║
+║  ✅ Multi-TF velocity gates with downside 1H check                         ║
+║  ✅ Phase Classification EARLY/MOMENTUM/PARABOLIC/DOWNTREND                ║
+║  ✅ Multi-Wave Tracking & Reversal Detection                                ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -53,7 +52,7 @@ try:
 except ImportError:
     pass
 
-VERSION = "13.0-PRE-PUMP-FULL"
+VERSION = "14.0-DUAL-TF"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -62,14 +61,14 @@ _root.setLevel(logging.INFO)
 _ch = logging.StreamHandler()
 _ch.setFormatter(_fmt)
 _root.addHandler(_ch)
-_fh = _lh.RotatingFileHandler("/tmp/scanner_v12.log", maxBytes=10 * 1024**2, backupCount=3)
+_fh = _lh.RotatingFileHandler("/tmp/scanner_v14.log", maxBytes=10 * 1024**2, backupCount=3)
 _fh.setFormatter(_fmt)
 _root.addHandler(_fh)
 log = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ⚙️  CONFIG v12.0 - Enhanced with adaptive settings
+#  ⚙️  CONFIG v14.0 — Dual Timeframe Edition
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG: Dict = {
     "coinalyze_api_key": os.getenv("COINALYZE_API_KEY", "ab447e9a-3a26-4253-a68e-1cd0603d22d2"),
@@ -81,9 +80,9 @@ CONFIG: Dict = {
     "min_vol_24h": 500_000,
     "max_vol_24h": 800_000_000,
 
-    # 🆕 MULTI-TIMEFRAME VELOCITY GATES (stricter!)
+    # ── MULTI-TIMEFRAME VELOCITY GATES ────────────────────────────────────────
     "velocity_gates": {
-        "chg_1h_max": 3.0,    # Block if >3% in 1h
+        "chg_1h_max": 3.0,    # Block if >3% in 1h (already pumping)
         "chg_1h_min": -1.5,   # Block if <-1.5% in 1h (rapid dump)
         "chg_4h_max": 6.0,    # Block if >6% in 4h
         "chg_8h_max": 10.0,   # Block if >10% in 8h
@@ -91,65 +90,75 @@ CONFIG: Dict = {
         "chg_24h_min": -5.0,  # Block downtrends <-5% (unless reversal)
     },
 
-    # API limits
-    "candle_limit_bitget": 200,
+    # ── 1H CANDLE CONFIG (Setup detection) ───────────────────────────────────
+    "candle_limit_bitget": 200,          # 1H candles for setup scoring
     "coinalyze_lookback_h": 168,
     "coinalyze_interval": "1hour",
 
-    # Baseline scoring
+    # ── 15M CANDLE CONFIG (Breakout detection) ────────────────────────────────
+    "candle_15m_limit": 96,              # 96 × 15min = 24h of 15M data
+    "watchlist_ttl_minutes": 180,        # Coin stays on watchlist 3h max
+    "breakout_min_signals": 2,           # Need ≥2 of 4 breakout signals
+    "breakout_vol_mult": 2.0,            # 15M volume must be >2x avg to trigger
+    "breakout_body_ratio": 0.55,         # Bullish body must be ≥55% of candle range
+    "breakout_range_pct": 0.8,           # Price must break 2H range by >0.8%
+    "breakout_bb_expand_ratio": 1.15,    # 15M BBW must expand ≥15% vs prev period
+    "breakout_cooldown_min": 30,         # Min minutes between breakout alerts same coin
+
+    # ── BASELINE SCORING ─────────────────────────────────────────────────────
     "baseline_recent_exclude": 3,
     "baseline_lookback_n": 96,
     "baseline_min_samples": 10,
 
-    # Component weights (keep from v11.0)
+    # ── COINALYZE Z-SCORE WEIGHTS (Base components) ───────────────────────────
     "buy_tx_ratio_weight": 25, "buy_tx_ratio_z_strong": 2.0, "buy_tx_ratio_z_medium": 1.0,
     "avg_buy_size_weight": 25, "avg_buy_size_z_strong": 2.0, "avg_buy_size_z_medium": 0.9,
     "volume_weight": 20, "volume_z_strong": 2.5, "volume_z_medium": 1.5,
     "short_liq_weight": 20, "short_liq_z_strong": 2.0, "short_liq_z_medium": 1.0,
     "oi_buildup_weight": 10, "oi_buildup_z_strong": 1.5, "oi_buildup_z_medium": 0.5,
 
-    # 🆕 PRE-PUMP PATTERN WEIGHTS
-    "bbw_squeeze_weight": 20,      # BBW < 0.06 (tight, will expand)
-    "price_stability_weight": 15,  # Price flat (-1% to +1%)
-    "volume_dryup_weight": 10,     # Volume below average (quiet)
-    "funding_building_weight": 25, # Funding consistently negative
-    "accumulation_weight": 25,     # Stealth buying pattern
+    # ── PRE-PUMP PATTERN WEIGHTS (1H) ────────────────────────────────────────
+    "bbw_squeeze_weight": 20,
+    "price_stability_weight": 15,
+    "volume_dryup_weight": 10,
+    "funding_building_weight": 25,
+    "accumulation_weight": 25,
 
-    # 🆕 CONTINUATION PATTERN WEIGHTS
-    "multiwave_bonus": 30,         # Has 2+ pumps in 30 days
-    "gap_timing_bonus": 20,        # In continuation window
-    "momentum_intact_bonus": 15,   # Funding + volume + structure
+    # ── CONTINUATION PATTERN WEIGHTS ─────────────────────────────────────────
+    "multiwave_bonus": 30,
+    "gap_timing_bonus": 20,
+    "momentum_intact_bonus": 15,
 
-    # 🆕 REVERSAL PATTERN WEIGHTS
-    "support_level_bonus": 20,     # At support ±2%
-    "capitulation_bonus": 15,      # Volume spike + wick
-    "reversal_funding_bonus": 10,  # Funding extreme
+    # ── REVERSAL PATTERN WEIGHTS ─────────────────────────────────────────────
+    "support_level_bonus": 20,
+    "capitulation_bonus": 15,
+    "reversal_funding_bonus": 10,
 
-    # 🆕 CATALYST WEIGHTS (FREE sources only)
-    "funding_squeeze_building": 30,  # Funding getting more negative
-    "accumulation_volume": 25,       # Volume spike, price flat
-    "sector_momentum": 20,           # Sector up 15%+
-    "multiwave_history": 30,         # Previous pumps
+    # ── CATALYST WEIGHTS ─────────────────────────────────────────────────────
+    "funding_squeeze_building": 30,
+    "accumulation_volume": 25,
+    "sector_momentum": 20,
+    "multiwave_history": 30,
 
-    # Alert thresholds (adaptive by phase) — v13.0: tightened significantly
-    "alert_threshold_early": 105,      # v13.0: raised from 70 → 105 (prevent free-60 exploit)
-    "alert_threshold_momentum": 110,   # v13.0: raised from 90 → 110
-    "alert_threshold_parabolic": 120,  # v13.0: raised from 110 → 120
-    "alert_threshold_reversal": 85,    # v13.0: raised from 80 → 85
+    # ── ALERT THRESHOLDS (v13 tightened, carried forward) ────────────────────
+    "alert_threshold_early": 105,
+    "alert_threshold_momentum": 110,
+    "alert_threshold_parabolic": 120,
+    "alert_threshold_reversal": 85,
 
-    # v13.0: Minimum distinct pre-pump signals required (EARLY phase)
-    "min_prepump_signals": 2,          # Must have ≥2 independent signals to pass
+    # ── SIGNAL QUALITY GATES ─────────────────────────────────────────────────
+    "min_prepump_signals": 2,            # ≥2 independent 1H signals required
 
-    # Score display
-    "score_display_max": 150,  # NEW: Real scale (not capped at 100)
+    # ── DISPLAY ──────────────────────────────────────────────────────────────
+    "score_display_max": 150,
 
-    # Multi-wave tracking
-    "pump_history_db": "/tmp/scanner_v12_pump_history.db",
-    "pump_threshold_pct": 50,  # 50%+ move in <48h = pump
+    # ── MULTI-WAVE HISTORY DB ─────────────────────────────────────────────────
+    "pump_history_db": "/tmp/scanner_v14_pump_history.db",
+    "pump_threshold_pct": 50,
     "pump_max_duration_h": 48,
     "multiwave_lookback_days": 30,
 
-    # Risk management
+    # ── RISK MANAGEMENT ──────────────────────────────────────────────────────
     "atr_candles": 14,
     "atr_sl_mult": 1.5,
     "min_target_pct": 10.0,
@@ -166,34 +175,64 @@ class CoinData:
     vol_24h: float
     chg_24h: float
     funding: float
-    candles: List[dict]
+    candles: List[dict]           # 1H candles — used for setup scoring
+    candles_15m: List[dict] = field(default_factory=list)  # 15M candles — breakout detection
     clz_btx: List[dict] = field(default_factory=list)
     clz_liq: List[dict] = field(default_factory=list)
     clz_oi: List[dict] = field(default_factory=list)
-    
+
     @property
     def has_btx(self) -> bool:
         if len(self.clz_btx) < 2:
             return False
         c = self.clz_btx[-2]
         return bool(c.get("btx", 0)) and bool(c.get("tx", 0))
-    
+
     @property
     def has_liq(self) -> bool:
         return bool(self.clz_liq)
-    
+
     @property
     def has_oi(self) -> bool:
         return bool(self.clz_oi)
 
 
 @dataclass
+class WatchlistEntry:
+    """
+    Coin that passed 1H setup scoring — now being monitored on 15M
+    for breakout confirmation before firing the manual-entry alert.
+    """
+    symbol: str
+    score_1h: int
+    phase: str
+    catalysts_1h: List[str]
+    added_at: float                    # time.time() when added
+    setup_price: float                 # price at time of 1H detection
+    last_breakout_alert: float = 0.0   # time.time() of last breakout alert
+
+
+@dataclass
+class BreakoutResult:
+    """Result of 15M breakout detection"""
+    symbol: str
+    triggered: bool
+    signals: List[str]                 # which of the 4 breakout signals fired
+    signal_count: int
+    breakout_price: float
+    vol_ratio_15m: float               # current 15M vol / avg 15M vol
+    body_ratio: float                  # bullish body % of candle range
+    range_break_pct: float             # how far price broke above 2H range
+    bb_expand_ratio: float             # 15M BBW expansion ratio
+
+
+@dataclass
 class PhaseInfo:
     """Phase classification for adaptive scoring"""
-    phase: str  # EARLY, MOMENTUM, PARABOLIC, DOWNTREND
+    phase: str        # EARLY, MOMENTUM, PARABOLIC, DOWNTREND
     base_score: int
     description: str
-    risk_level: str  # LOW, MEDIUM, HIGH, EXTREME
+    risk_level: str   # LOW, MEDIUM, HIGH, EXTREME
 
 
 @dataclass
@@ -203,7 +242,7 @@ class PumpEvent:
     timestamp: datetime
     magnitude_pct: float
     duration_hours: float
-    type: str  # PUMP, DUMP, RANGING
+    type: str          # PUMP, DUMP, RANGING
 
 
 @dataclass
@@ -309,6 +348,195 @@ def get_pump_history(symbol: str, days: int = 30) -> List[PumpEvent]:
     except Exception as e:
         log.warning(f"Failed to get pump history: {e}")
         return []
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  👁️  WATCHLIST SYSTEM — Phase 1 → Phase 2 bridge
+# ══════════════════════════════════════════════════════════════════════════════
+# Global watchlist: symbol → WatchlistEntry
+# Populated after 1H scoring, consumed by 15M breakout loop
+_watchlist: Dict[str, WatchlistEntry] = {}
+
+
+def watchlist_add(result: ScoreResult, price: float) -> None:
+    """Add coin to 15M watchlist after passing 1H setup scoring."""
+    entry = WatchlistEntry(
+        symbol=result.symbol,
+        score_1h=result.score,
+        phase=result.phase,
+        catalysts_1h=result.catalysts[:],
+        added_at=time.time(),
+        setup_price=price,
+    )
+    _watchlist[result.symbol] = entry
+    log.info(
+        f"  👁️  [{result.symbol}] added to watchlist "
+        f"(score={result.score}, phase={result.phase})"
+    )
+
+
+def watchlist_purge() -> None:
+    """Remove stale watchlist entries beyond TTL."""
+    ttl = CONFIG["watchlist_ttl_minutes"] * 60
+    now = time.time()
+    expired = [s for s, e in _watchlist.items() if now - e.added_at > ttl]
+    for sym in expired:
+        del _watchlist[sym]
+        log.info(f"  🗑️  [{sym}] removed from watchlist (TTL expired)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  📡  15M BREAKOUT DETECTOR — 4 independent signals
+# ══════════════════════════════════════════════════════════════════════════════
+def _calc_bbw_15m(candles_15m: List[dict], window: int = 20) -> float:
+    """Bollinger Band Width on 15M candles."""
+    if len(candles_15m) < window:
+        return 0.0
+    closes = [c["close"] for c in candles_15m[-window:]]
+    sma = sum(closes) / window
+    variance = sum((x - sma) ** 2 for x in closes) / window
+    std = variance ** 0.5
+    return (std * 2) / sma if sma > 0 else 0.0
+
+
+def detect_15m_volume_surge(candles_15m: List[dict]) -> Tuple[bool, float]:
+    """
+    Signal 1: 15M volume surge.
+    Latest 15M candle volume > breakout_vol_mult × avg of prior 20 candles.
+    Returns (triggered, vol_ratio).
+    """
+    if len(candles_15m) < 22:
+        return False, 0.0
+    cur_vol = candles_15m[-1].get("volume_usd", 0)
+    avg_vol = _mean([c.get("volume_usd", 0) for c in candles_15m[-21:-1]])
+    if avg_vol <= 0:
+        return False, 0.0
+    ratio = cur_vol / avg_vol
+    return ratio >= CONFIG["breakout_vol_mult"], round(ratio, 2)
+
+
+def detect_15m_bullish_body(candles_15m: List[dict]) -> Tuple[bool, float]:
+    """
+    Signal 2: Strong bullish body on latest 15M candle.
+    Body (close-open) must be ≥ breakout_body_ratio of the full high-low range.
+    Returns (triggered, body_ratio).
+    """
+    if not candles_15m:
+        return False, 0.0
+    c = candles_15m[-1]
+    rng = c["high"] - c["low"]
+    if rng <= 0:
+        return False, 0.0
+    body = c["close"] - c["open"]
+    ratio = body / rng
+    return ratio >= CONFIG["breakout_body_ratio"], round(ratio, 3)
+
+
+def detect_15m_range_breakout(candles_15m: List[dict]) -> Tuple[bool, float]:
+    """
+    Signal 3: Price breaks above 2-hour (8 × 15M) consolidation high.
+    Returns (triggered, break_pct above range high).
+    """
+    lookback = 8  # 8 × 15min = 2h
+    if len(candles_15m) < lookback + 2:
+        return False, 0.0
+    # Range = max high of the 8 candles BEFORE the current one
+    range_high = max(c["high"] for c in candles_15m[-(lookback + 1):-1])
+    cur_close = candles_15m[-1]["close"]
+    if range_high <= 0:
+        return False, 0.0
+    break_pct = (cur_close - range_high) / range_high * 100
+    return break_pct >= CONFIG["breakout_range_pct"], round(break_pct, 3)
+
+
+def detect_15m_bb_expansion(candles_15m: List[dict]) -> Tuple[bool, float]:
+    """
+    Signal 4: 15M Bollinger Band Width expanding (squeeze releasing).
+    Current BBW must be ≥ breakout_bb_expand_ratio × BBW from 4 candles ago.
+    Returns (triggered, expand_ratio).
+    """
+    if len(candles_15m) < 25:
+        return False, 0.0
+    bbw_now  = _calc_bbw_15m(candles_15m,        window=20)
+    bbw_prev = _calc_bbw_15m(candles_15m[:-4],   window=20)
+    if bbw_prev <= 0:
+        return False, 0.0
+    ratio = bbw_now / bbw_prev
+    return ratio >= CONFIG["breakout_bb_expand_ratio"], round(ratio, 3)
+
+
+def check_15m_breakout(symbol: str, candles_15m: List[dict]) -> BreakoutResult:
+    """
+    Run all 4 breakout signal checks on 15M candles.
+    Returns BreakoutResult — triggered=True if ≥ breakout_min_signals fired.
+    """
+    if len(candles_15m) < 25:
+        return BreakoutResult(
+            symbol=symbol, triggered=False, signals=[], signal_count=0,
+            breakout_price=0.0, vol_ratio_15m=0.0, body_ratio=0.0,
+            range_break_pct=0.0, bb_expand_ratio=0.0
+        )
+
+    vol_ok,   vol_ratio   = detect_15m_volume_surge(candles_15m)
+    body_ok,  body_ratio  = detect_15m_bullish_body(candles_15m)
+    range_ok, range_pct   = detect_15m_range_breakout(candles_15m)
+    bb_ok,    bb_ratio    = detect_15m_bb_expansion(candles_15m)
+
+    signals = []
+    if vol_ok:   signals.append(f"VolSurge×{vol_ratio}")
+    if body_ok:  signals.append(f"BullBody{body_ratio:.0%}")
+    if range_ok: signals.append(f"RangeBreak+{range_pct:.2f}%")
+    if bb_ok:    signals.append(f"BBExpand×{bb_ratio:.2f}")
+
+    triggered = len(signals) >= CONFIG["breakout_min_signals"]
+
+    return BreakoutResult(
+        symbol=symbol,
+        triggered=triggered,
+        signals=signals,
+        signal_count=len(signals),
+        breakout_price=candles_15m[-1]["close"] if candles_15m else 0.0,
+        vol_ratio_15m=vol_ratio,
+        body_ratio=body_ratio,
+        range_break_pct=range_pct,
+        bb_expand_ratio=bb_ratio,
+    )
+
+
+def build_breakout_alert(entry: WatchlistEntry, bk: BreakoutResult) -> str:
+    """
+    Build the manual-entry Telegram alert for 15M breakout confirmation.
+    Two-stage format:
+      [BREAKOUT ✅] symbol — entry window open
+    """
+    drift_pct = (bk.breakout_price - entry.setup_price) / entry.setup_price * 100 if entry.setup_price > 0 else 0.0
+    age_min   = int((time.time() - entry.added_at) / 60)
+
+    lines = [
+        f"🚨 BREAKOUT CONFIRMED — {entry.symbol}",
+        f"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"   💰 Entry Now: ${bk.breakout_price:.6g}",
+        f"   📐 Setup Price (1H): ${entry.setup_price:.6g}  ({drift_pct:+.2f}% drift)",
+        f"   ⏱️  Time on Watchlist: {age_min} min",
+        f"   🏆 1H Setup Score: {entry.score_1h}/150  [{entry.phase}]",
+        f"",
+        f"   🔔 15M Breakout Signals ({bk.signal_count}/4):",
+    ]
+    for sig in bk.signals:
+        lines.append(f"      ✅ {sig}")
+    lines += [
+        f"",
+        f"   📋 1H Catalysts:",
+    ]
+    for cat in entry.catalysts_1h[:4]:
+        lines.append(f"      • {cat}")
+    lines += [
+        f"",
+        f"   ⚡ ACTION: Enter LONG now — pump may start within 5-15 min",
+        f"   ⚠️  Set SL below last 15M swing low",
+    ]
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1305,34 +1533,62 @@ class BitgetClient:
 
     @classmethod
     def get_candles(cls, symbol: str, limit: int = 200) -> List[dict]:
-        cache_key = f"{symbol}:{limit}"
+        """Fetch 1H candles — used for setup scoring (Phase 1)."""
+        cache_key = f"{symbol}:1H:{limit}"
         if cache_key in cls._candle_cache:
             return cls._candle_cache[cache_key]
-        
+
         data = cls._get(
             f"{cls.BASE}/api/v2/mix/market/candles",
             params={"symbol": symbol, "productType": "USDT-FUTURES", "granularity": "1H", "limit": limit}
         )
         if not data or data.get("code") != "00000":
             return []
-        
+
+        candles = cls._parse_candle_rows(data.get("data", []))
+        cls._candle_cache[cache_key] = candles
+        return candles
+
+    @classmethod
+    def get_candles_15m(cls, symbol: str, limit: int = 96) -> List[dict]:
+        """
+        Fetch 15M candles — used for breakout detection (Phase 2).
+        96 candles = 24 hours of 15M data.
+        Cache key is separate from 1H so they never collide.
+        """
+        cache_key = f"{symbol}:15m:{limit}"
+        if cache_key in cls._candle_cache:
+            return cls._candle_cache[cache_key]
+
+        data = cls._get(
+            f"{cls.BASE}/api/v2/mix/market/candles",
+            params={"symbol": symbol, "productType": "USDT-FUTURES", "granularity": "15m", "limit": limit}
+        )
+        if not data or data.get("code") != "00000":
+            return []
+
+        candles = cls._parse_candle_rows(data.get("data", []))
+        cls._candle_cache[cache_key] = candles
+        return candles
+
+    @staticmethod
+    def _parse_candle_rows(rows: list) -> List[dict]:
+        """Parse raw Bitget OHLCV rows into candle dicts (shared by 1H and 15M)."""
         candles = []
-        for row in data.get("data", []):
+        for row in rows:
             try:
                 vol_usd = float(row[6]) if len(row) > 6 else float(row[5]) * float(row[4])
                 candles.append({
-                    "ts": int(row[0]),
-                    "open": float(row[1]),
-                    "high": float(row[2]),
-                    "low": float(row[3]),
-                    "close": float(row[4]),
+                    "ts":         int(row[0]),
+                    "open":       float(row[1]),
+                    "high":       float(row[2]),
+                    "low":        float(row[3]),
+                    "close":      float(row[4]),
                     "volume_usd": vol_usd,
                 })
             except Exception:
                 continue
-        
         candles.sort(key=lambda x: x["ts"])
-        cls._candle_cache[cache_key] = candles
         return candles
 
     @classmethod
@@ -1505,149 +1761,197 @@ def set_cooldown(symbol: str) -> None:
 
 def main():
     """
-    Main scanner loop - v12.0 PRE-PUMP DETECTION
+    v14.0 DUAL TIMEFRAME SCANNER
+    ─────────────────────────────
+    Phase 1 (1H scan, runs every ~8-10 min per full sweep):
+      • Fetches 1H candles + Coinalyze for all active coins
+      • Scores with score_coin_v12() — same v13 logic
+      • Coins that PASS → added to _watchlist (not alerted yet)
+
+    Phase 2 (15M scan, runs every 2 min for watchlist coins only):
+      • Fetches fresh 15M candles for each watchlisted coin
+      • Runs check_15m_breakout() — 4 independent signals
+      • If ≥2 signals fire → send BREAKOUT alert (manual-entry window)
+
+    Lead time target: 15-45 min before full pump
     """
     log.info(f"{'═'*80}")
     log.info(f"  PRE-PUMP SCANNER v{VERSION}")
-    log.info(f"  Target: Detect 1-3h BEFORE pump")
-    log.info(f"  Expected Precision: 85-90%")
+    log.info(f"  Phase 1: 1H setup detection → watchlist")
+    log.info(f"  Phase 2: 15M breakout confirmation → alert")
+    log.info(f"  Lead time target: 15-45 min before pump")
     log.info(f"{'═'*80}")
-    
-    # Initialize pump history database
+
     init_pump_history_db()
-    
-    # Initialize API clients
+
     clz_client = CoinalyzeClient(CONFIG["coinalyze_api_key"])
-    mapper = SymbolMapper(clz_client)
-    
-    log.info("✅ Scanner v12.0 initialized")
-    log.info("🔄 Starting scan...")
-    
+    mapper     = SymbolMapper(clz_client)
+
+    log.info(f"✅ Scanner v{VERSION} initialized")
+
+    # Timing state
+    last_phase1_ts: float = 0.0          # when Phase 1 last ran
+    phase1_interval: float = 60 * 8      # Phase 1 every 8 min (adjust to API rate)
+    phase2_interval: float = 60 * 2      # Phase 2 every 2 min
+
     try:
-        # === STEP 1: Fetch tickers ===
-        log.info("📊 Fetching tickers from Bitget...")
-        tickers = BitgetClient.get_tickers()
-        if not tickers:
-            log.error("❌ No tickers from Bitget")
-            return 1
-        
-        log.info(f"✅ Got {len(tickers)} tickers")
-        
-        # === STEP 2: Filter active symbols ===
-        active = set()
-        for sym, t in tickers.items():
-            try:
-                vol = float(t.get("quoteVolume", 0))
-                if vol >= CONFIG["pre_filter_vol"]:
-                    active.add(sym)
-            except:
-                pass
-        
-        log.info(f"✅ {len(active)} symbols passed volume filter (>{CONFIG['pre_filter_vol']/1e6:.1f}M)")
-        
-        # === STEP 3: Load symbol mapping ===
-        log.info("🗺️  Loading Coinalyze symbol mapping...")
-        mapper.load(active)
-        
-        # === STEP 4: Fetch Coinalyze data ===
-        log.info("📈 Fetching Coinalyze data...")
-        now_ts = int(time.time())
-        from_ts = now_ts - CONFIG["coinalyze_lookback_h"] * 3600
-        
-        clz_syms = mapper.clz_symbols_for(list(active))
-        
-        btx_data = clz_client.fetch_buy_sell_batch(clz_syms, from_ts, now_ts)
-        liq_data = clz_client.fetch_liquidations_batch(clz_syms, from_ts, now_ts)
-        oi_data = clz_client.fetch_oi_batch(clz_syms, from_ts, now_ts)
-        
-        log.info(f"✅ Coinalyze data: BTX={len(btx_data)}, LIQ={len(liq_data)}, OI={len(oi_data)}")
-        
-        # === STEP 5: Score each coin ===
-        log.info("🎯 Scoring coins...")
-        results = []
-        
-        for sym in active:
-            if is_on_cooldown(sym):
-                continue
-            
-            try:
-                # Get ticker data
-                ticker = tickers.get(sym, {})
-                price = float(ticker.get("lastPr", 0))
-                vol_24h = float(ticker.get("quoteVolume", 0))
-                chg_24h = float(ticker.get("chgUTC", 0))
-                
-                # Basic filters
-                if vol_24h < CONFIG["min_vol_24h"]:
-                    continue
-                if vol_24h > CONFIG["max_vol_24h"]:
-                    continue
-                if price <= 0:
-                    continue
-                
-                # Fetch candles
-                candles = BitgetClient.get_candles(sym, CONFIG["candle_limit_bitget"])
-                if len(candles) < 50:
-                    continue
-                
-                # Fetch funding
-                funding = BitgetClient.get_funding(sym)
-                
-                # Get Coinalyze data
-                clz_sym = mapper.to_clz(sym)
-                clz_btx = btx_data.get(clz_sym, []) if clz_sym else []
-                clz_liq = liq_data.get(clz_sym, []) if clz_sym else []
-                clz_oi = oi_data.get(clz_sym, []) if clz_sym else []
-                
-                # Build CoinData
-                coin_data = CoinData(
-                    symbol=sym,
-                    price=price,
-                    vol_24h=vol_24h,
-                    chg_24h=chg_24h,
-                    funding=funding,
-                    candles=candles,
-                    clz_btx=clz_btx,
-                    clz_liq=clz_liq,
-                    clz_oi=clz_oi
-                )
-                
-                # Score with v12.0
-                result = score_coin_v12(coin_data)
-                if result:
-                    results.append(result)
-                    log.info(f"  ✅ {sym}: Score {result.score}/{CONFIG['score_display_max']} [{result.phase}]")
-            
-            except Exception as e:
-                log.warning(f"  ⚠️ {sym}: Error - {e}")
-                continue
-        
-        # === STEP 6: Sort and alert ===
-        results.sort(key=lambda x: x.score, reverse=True)
-        
-        log.info(f"\n{'═'*80}")
-        log.info(f"  📊 SCAN COMPLETE: {len(results)} signals")
-        log.info(f"{'═'*80}\n")
-        
-        if results:
-            for rank, r in enumerate(results[:10], 1):  # Top 10
-                alert_msg = build_alert_v12(r, rank)
-                print(alert_msg)
-                
-                # Send to Telegram
-                if rank <= 5:  # Only top 5
-                    send_telegram_alert(alert_msg)
-                
-                # Set cooldown
-                set_cooldown(r.symbol)
-        else:
-            log.info("  No signals above threshold")
-        
-        # Clear cache
-        BitgetClient.clear_cache()
-        
+        while True:
+            now = time.time()
+
+            # ════════════════════════════════════════════════════════════════
+            # PHASE 1 — 1H Setup Scan (full market sweep)
+            # ════════════════════════════════════════════════════════════════
+            if now - last_phase1_ts >= phase1_interval:
+                log.info(f"\n{'─'*60}")
+                log.info(f"🔍 PHASE 1 — 1H Setup Scan")
+                log.info(f"{'─'*60}")
+
+                # ── Step 1: Tickers ───────────────────────────────────────
+                log.info("📊 Fetching tickers from Bitget...")
+                tickers = BitgetClient.get_tickers()
+                if not tickers:
+                    log.error("❌ No tickers — skipping Phase 1")
+                else:
+                    # ── Step 2: Volume filter ─────────────────────────────
+                    active = set()
+                    for sym, t in tickers.items():
+                        try:
+                            vol = float(t.get("quoteVolume", 0))
+                            if vol >= CONFIG["pre_filter_vol"]:
+                                active.add(sym)
+                        except Exception:
+                            pass
+                    log.info(f"✅ {len(active)} symbols passed volume pre-filter")
+
+                    # ── Step 3: Coinalyze symbol map ──────────────────────
+                    log.info("🗺️  Loading Coinalyze symbol mapping...")
+                    mapper.load(active)
+
+                    # ── Step 4: Coinalyze batch fetch ─────────────────────
+                    log.info("📈 Fetching Coinalyze data...")
+                    now_ts  = int(time.time())
+                    from_ts = now_ts - CONFIG["coinalyze_lookback_h"] * 3600
+                    clz_syms = mapper.clz_symbols_for(list(active))
+
+                    btx_data = clz_client.fetch_buy_sell_batch(clz_syms, from_ts, now_ts)
+                    liq_data = clz_client.fetch_liquidations_batch(clz_syms, from_ts, now_ts)
+                    oi_data  = clz_client.fetch_oi_batch(clz_syms, from_ts, now_ts)
+                    log.info(f"✅ Coinalyze: BTX={len(btx_data)}, LIQ={len(liq_data)}, OI={len(oi_data)}")
+
+                    # ── Step 5: Score each coin (1H) ──────────────────────
+                    log.info("🎯 Scoring coins (1H setup)...")
+                    new_watchlist_count = 0
+
+                    for sym in active:
+                        if is_on_cooldown(sym):
+                            continue
+                        try:
+                            ticker  = tickers.get(sym, {})
+                            price   = float(ticker.get("lastPr", 0))
+                            vol_24h = float(ticker.get("quoteVolume", 0))
+                            chg_24h = float(ticker.get("chgUTC", 0))
+
+                            if vol_24h < CONFIG["min_vol_24h"]: continue
+                            if vol_24h > CONFIG["max_vol_24h"]: continue
+                            if price <= 0: continue
+
+                            candles_1h = BitgetClient.get_candles(sym, CONFIG["candle_limit_bitget"])
+                            if len(candles_1h) < 50: continue
+
+                            funding = BitgetClient.get_funding(sym)
+
+                            clz_sym = mapper.to_clz(sym)
+                            clz_btx = btx_data.get(clz_sym, []) if clz_sym else []
+                            clz_liq = liq_data.get(clz_sym, []) if clz_sym else []
+                            clz_oi  = oi_data.get(clz_sym, []) if clz_sym else []
+
+                            coin_data = CoinData(
+                                symbol=sym, price=price, vol_24h=vol_24h,
+                                chg_24h=chg_24h, funding=funding,
+                                candles=candles_1h,
+                                candles_15m=[],   # not fetched yet — Phase 2 handles this
+                                clz_btx=clz_btx, clz_liq=clz_liq, clz_oi=clz_oi,
+                            )
+
+                            result = score_coin_v12(coin_data)
+                            if result:
+                                log.info(
+                                    f"  ✅ {sym}: Score {result.score}/150 "
+                                    f"[{result.phase}] → WATCHLIST"
+                                )
+                                watchlist_add(result, price)
+                                new_watchlist_count += 1
+
+                                # Send [SETUP] alert so trader knows it's being watched
+                                setup_msg = build_alert_v12(result, new_watchlist_count)
+                                setup_msg = f"👁️ SETUP DETECTED — watching 15M...\n\n" + setup_msg
+                                send_telegram_alert(setup_msg)
+
+                        except Exception as e:
+                            log.warning(f"  ⚠️ {sym}: {e}")
+                            continue
+
+                    log.info(f"✅ Phase 1 done — {new_watchlist_count} new watchlist entries")
+                    log.info(f"   Watchlist size: {len(_watchlist)} coins")
+                    BitgetClient.clear_cache()
+                    last_phase1_ts = time.time()
+
+            # ════════════════════════════════════════════════════════════════
+            # PHASE 2 — 15M Breakout Scan (watchlist only)
+            # ════════════════════════════════════════════════════════════════
+            if _watchlist:
+                log.info(f"\n{'─'*60}")
+                log.info(f"⚡ PHASE 2 — 15M Breakout Scan ({len(_watchlist)} coins)")
+                log.info(f"{'─'*60}")
+
+                watchlist_purge()   # remove expired entries first
+
+                breakout_count = 0
+                for sym, entry in list(_watchlist.items()):
+
+                    # Skip if breakout alert sent too recently for this coin
+                    cooldown_sec = CONFIG["breakout_cooldown_min"] * 60
+                    if time.time() - entry.last_breakout_alert < cooldown_sec:
+                        continue
+
+                    try:
+                        candles_15m = BitgetClient.get_candles_15m(
+                            sym, CONFIG["candle_15m_limit"]
+                        )
+                        if len(candles_15m) < 25:
+                            log.debug(f"  [{sym}] insufficient 15M candles")
+                            continue
+
+                        bk = check_15m_breakout(sym, candles_15m)
+
+                        log.info(
+                            f"  [{sym}] 15M signals: {bk.signal_count}/4 "
+                            f"{'→ BREAKOUT ✅' if bk.triggered else '→ waiting'}"
+                        )
+
+                        if bk.triggered:
+                            alert_msg = build_breakout_alert(entry, bk)
+                            print(alert_msg)
+                            send_telegram_alert(alert_msg)
+
+                            # Update last breakout alert time
+                            entry.last_breakout_alert = time.time()
+                            set_cooldown(sym)     # 6h cooldown on full alert
+                            breakout_count += 1
+
+                    except Exception as e:
+                        log.warning(f"  ⚠️ [{sym}] Phase 2 error: {e}")
+                        continue
+
+                log.info(f"✅ Phase 2 done — {breakout_count} breakout alert(s) sent")
+
+            # ── Sleep until next Phase 2 tick ─────────────────────────────
+            log.info(f"💤 Sleeping {phase2_interval:.0f}s until next 15M check...")
+            time.sleep(phase2_interval)
+
+    except KeyboardInterrupt:
+        log.info("\n⚠️  Scanner stopped by user")
         return 0
-    
     except Exception as e:
         log.error(f"❌ Scanner error: {e}", exc_info=True)
         return 1
