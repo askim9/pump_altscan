@@ -87,9 +87,10 @@ CONFIG: Dict = {
     "vol_len":                2,   # Pine: vol_len
     "box_width_multiplier": 1.0,   # Pine: box_withd
     "candle_limit_1h":      200,   # 1H candles (~8 hari)
-    "candle_limit_1d":      300,   # FIX: 300 bukan 210 — EMA200 butuh margin warmup
-                                   # 300 candles 1D = ~10 bulan data, EMA200 stabil
-                                   # di candle ke-201 dst (99 candles margin)
+    "candle_limit_1d":      100,   # FIX: Bitget 1D candles max ~90 dalam praktik
+                                   # 100 cukup untuk SMA50 (50 candles needed)
+                                   # Regime check pakai SMA50 bukan EMA200
+                                   # (EMA200 butuh 200 candles, tapi Bitget max ~90 1D)
 
     # ── ZONE GATE ──────────────────────────────────────────────────────────
     "atr_period":           200,   # Pine: ta.atr(200)
@@ -107,9 +108,12 @@ CONFIG: Dict = {
     "pump_reject_bear_min":   1,    # bear_streak harus >= ini jika vol tinggi
 
     # ── MINIMUM COMPONENT SCORE ────────────────────────────────────────────
-    # Volume harus mengkonfirmasi sinyal — tidak cukup hanya volatility
-    # Dari audit: 龙虾USDT lolos dengan B=8, tidak ada konfirmasi volume
-    "min_score_B":           10,    # require B ≥ 10 (dari 30 max)
+    # FIX: Turunkan dari 10 ke 5 berdasarkan hasil run nyata.
+    # min_score_B=10 memblok 5/5 kandidat karena crash market membuat volume flat.
+    # Prioritas perbaikan dari backtest: naikkan threshold ke 70 (score 60-64 EV negatif),
+    # bukan block semua sinyal via min B.
+    # Score 5 = B1+B2 minimal ada sedikit konfirmasi, bukan zero sama sekali.
+    "min_score_B":            5,   # require B ≥ 5 (dari 30 max)
 
     # ── VOLATILITY GATE (G4 + G5) — dari data empiris ──────────────────────
     # BBW threshold: top quintile dari large dataset = 0.078
@@ -160,15 +164,18 @@ CONFIG: Dict = {
     "bear_weight":         0.40,   # C1 lebih lemah dari C2
     "vol_ratio_weight":    0.60,
 
-    # ── THRESHOLD ─────────────────────────────────────────────────────────
-    "score_threshold_normal":  60,
-    "score_threshold_caution": 75,  # aktif jika BTC+ETH < EMA200 daily
-    "score_strong":            80,  # → kirim Telegram
+    # ── THRESHOLD — dari backtest: score 60-64 adalah EV negatif ─────────
+    # Backtest 262 signals: score 60-64 WR=20.7% < breakeven 31.5%
+    # Naikkan dari 60 ke 70 menghapus 40% sinyal EV negatif
+    "score_threshold_normal":  70,  # FIX: dari 60 → 70 (backtest: score<70 = -EV)
+    "score_threshold_caution": 80,  # saat BTC+ETH < SMA50 daily
+    "score_strong":            85,  # → kirim Telegram
 
-    # ── REGIME CHECK (FIX dari bug sebelumnya) ─────────────────────────────
-    # Bug lama: EMA50 weekly dengan 60 candles → warmup bias → selalu NORMAL
-    # Fix: EMA200 daily dengan 210 candles → cukup warmup untuk akurasi
-    "ema_regime_period":      200,  # EMA200 daily
+    # ── REGIME CHECK ───────────────────────────────────────────────────────
+    # FIX: Bitget 1D max ~90 candles (terbukti dari run nyata n=90)
+    # SMA50 dari n=90 sudah valid dan cukup untuk deteksi trend
+    # Dual method: EMA200 jika ada (>200 candles), SMA50 jika tidak
+    "ema_regime_period":       50,  # SMA50 sebagai primary (90 candles cukup)
 
     # ── OUTPUT ────────────────────────────────────────────────────────────
     "top_n":                   10,
@@ -1089,17 +1096,20 @@ def get_zone_state(zone: dict, c_low: float, c_high: float) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🌍  REGIME CHECK  (fix: EMA200 daily, bukan EMA50 weekly)
+#  🌍  REGIME CHECK  (SMA50 daily — Bitget max ~90 candles 1D dari probe)
 # ══════════════════════════════════════════════════════════════════════════════
 def is_caution_mode(btc_1d: List[dict], eth_1d: List[dict]) -> Tuple[bool, dict]:
     """
-    CAUTION MODE: BTC dan ETH KEDUANYA di bawah EMA200 daily.
+    CAUTION MODE: BTC dan ETH KEDUANYA di bawah SMA50 daily.
 
-    Dual method untuk robustness:
-    - Method 1: EMA200 jika data >= 200 bars
-    - Method 2: SMA50 fallback jika data < 200 tapi >= 50
-    Returns (is_caution, debug_dict) agar caller bisa log detail.
+    Dari probe lapangan: Bitget 1D candles max ~90 dalam praktik.
+    SMA50 dari 90 candles = 3 bulan data = valid untuk trend detection.
+    Dual method:
+    - Primary  : SMA50 jika n >= 50
+    - Fallback : EMA200 jika n >= 200 (belum pernah terjadi di Bitget 1D)
     """
+    period = CONFIG["ema_regime_period"]   # 50
+
     def _check(candles: List[dict], name: str) -> Tuple[bool, str]:
         if not candles:
             return False, f"{name}: no data"
@@ -1107,14 +1117,16 @@ def is_caution_mode(btc_1d: List[dict], eth_1d: List[dict]) -> Tuple[bool, dict]
         price  = closes[-1]
         n      = len(closes)
         if n >= 200:
-            ema = _std_ema(closes, 200)
+            ema   = _std_ema(closes, 200)
             below = price < ema[-1]
-            return below, f"{name} ${price:,.0f} vs EMA200 ${ema[-1]:,.0f} ({'BELOW' if below else 'ABOVE'})"
-        elif n >= 50:
-            sma = sum(closes[-50:]) / 50
+            return below, (f"{name} ${price:,.0f} vs EMA200 ${ema[-1]:,.0f} "
+                           f"n={n} ({'BELOW' if below else 'ABOVE'})")
+        elif n >= period:
+            sma   = sum(closes[-period:]) / period
             below = price < sma
-            return below, f"{name} ${price:,.0f} vs SMA50 ${sma:,.0f} fallback n={n} ({'BELOW' if below else 'ABOVE'})"
-        return False, f"{name}: n={n} insufficient"
+            return below, (f"{name} ${price:,.0f} vs SMA{period} ${sma:,.0f} "
+                           f"n={n} ({'BELOW' if below else 'ABOVE'})")
+        return False, f"{name}: n={n} < {period}, insufficient"
 
     btc_below, btc_msg = _check(btc_1d, "BTC")
     eth_below, eth_msg = _check(eth_1d, "ETH")
@@ -1244,7 +1256,7 @@ def send_telegram(msg: str) -> bool:
 
 
 def build_table(results: list, caution: bool) -> str:
-    mode = "⚠️ CAUTION (thr=75)" if caution else "✅ NORMAL (thr=60)"
+    mode = "⚠️ CAUTION (thr=80)" if caution else "✅ NORMAL (thr=70)"
     now  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         "",
@@ -1592,11 +1604,11 @@ def run_scan() -> None:
 
             # ── Minimum B score gate ──────────────────────────────────────
             # Volume harus mengkonfirmasi sinyal — volatility saja tidak cukup
-            # Referensi audit: 龙虾USDT lolos dengan B=8, hanya dari volatility
             if sb < cfg["min_score_B"]:
                 log.info(
                     f"  {sym}: B={sb} < min {cfg['min_score_B']} — "
-                    f"no volume confirmation, skip"
+                    f"no volume confirmation, skip "
+                    f"(A={sa} B={sb} C={sc} total={sa+sb+sc})"
                 )
                 continue
 
