@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v14.4 — PREDICTED FUNDING + FUZZY MAPPING + FIXED INTERVAL ║
+║  PRE-PUMP SCANNER v14.5 — SHORT SQUEEZE FIX + RATE LIMIT OPTIMIZATION       ║
 ║                                                                              ║
-║  PERBAIKAN:                                                                  ║
-║  • Funding interval: "daily" (dari "8hour" yang tidak valid)                ║
-║  • Endpoint predicted-funding-rate-history untuk early warning              ║
-║  • Fuzzy symbol mapping (1000PEPEUSDT → PEPEUSDT, dll.)                      ║
-║  • Pre-filter funding & rate limit jitter                                   ║
-║  • Threshold Type E/B diturunkan agar lebih sensitif                        ║
+║  PERBAIKAN BERDASARKAN AUDIT CLAUDE:                                         ║
+║  • Jalur alternatif Type E (short squeeze) tanpa L/S ratio                   ║
+║  • Blacklist diperbaiki (HOOD, PI, BGB, AMZN, MCD) + case-insensitive       ║
+║  • Rate limit: batch_size 10, wait 1.2 detik → scan ~4 menit                 ║
+║  • Threshold Type B diturunkan (bv_min=8, accum_min=5)                       ║
+║  • Bobot disesuaikan: bbw 20→15, pred_fund 15→20                             ║
+║  • Pre-filter Bitget opsional (60 simbol terkuat)                            ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -32,7 +33,7 @@ try:
 except ImportError:
     pass
 
-VERSION = "14.4-PREDICTED"
+VERSION = "14.5-SHORT-SQUEEZE-FIX"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -48,7 +49,7 @@ log = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ⚙️  CONFIG v14.4
+#  ⚙️  CONFIG v14.5 (dengan perubahan bobot & threshold)
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG: Dict = {
     "coinalyze_api_key": os.getenv("COINALYZE_API_KEY", "ab447e9a-3a26-4253-a68e-1cd0603d22d2"),
@@ -68,19 +69,19 @@ CONFIG: Dict = {
     "coinalyze_lookback_h": 72,
     "coinalyze_funding_lookback_h": 168,
     "coinalyze_interval": "1hour",
-    "coinalyze_funding_interval": "daily",           # ← FIXED (dari "8hour")
-    "coinalyze_funding_interval_alt": "1hour",       # fallback
-    "coinalyze_batch_size": 20,
-    "coinalyze_rate_limit_wait": 0.5,
+    "coinalyze_funding_interval": "daily",
+    "coinalyze_funding_interval_alt": "1hour",
+    "coinalyze_batch_size": 10,                    # ← OPTIMASI: dari 20 ke 10
+    "coinalyze_rate_limit_wait": 1.2,              # ← OPTIMASI: dari 0.5 ke 1.2
     "ls_ratio_weight": 35,
     "buy_vol_ratio_weight": 30,
     "funding_trend_weight": 25,
     "funding_snapshot_weight": 15,
-    "predicted_funding_weight": 15,                  # ← NEW
+    "predicted_funding_weight": 20,                # ← DITINGKATKAN: dari 15 ke 20
     "oi_buildup_weight": 20,
     "short_liq_weight": 20,
     "liq_cascade_weight": 15,
-    "bbw_squeeze_weight": 20,                        # dikurangi sedikit
+    "bbw_squeeze_weight": 15,                      # ← DITURUNKAN: dari 20 ke 15
     "accumulation_weight": 15,
     "price_stability_weight": 10,
     "volume_dryup_weight": 10,
@@ -114,21 +115,29 @@ CONFIG: Dict = {
     "ls_long_high": 0.58,
     "bv_ratio_strong": 0.62,
     "bv_ratio_moderate": 0.55,
-    # Threshold untuk short squeeze (diturunkan agar lebih sensitif)
+    # Threshold untuk short squeeze (jalur utama)
     "short_squeeze_ls_min": 10,
     "short_squeeze_liq_min": 6,
     "short_squeeze_fund_min": 7,
-    "whale_accum_bv_min": 10,
-    "whale_accum_accum_min": 8,
+    # Threshold untuk whale accumulation (DITURUNKAN)
+    "whale_accum_bv_min": 8,          # ← dari 10
+    "whale_accum_accum_min": 5,       # ← dari 8
+    # BLACKLIST stock tokens (DITAMBAH HOOD, PI, BGB, AMZN, MCD)
     "stock_token_blacklist": [
-      "TSLAUSDT","CRCLUSDT", "SPYUSDT","GOOGLUSDT","COINUSDT","NVDAUSDT","METAUSDT","QQQUSDT","GLDUSDT",
-"MSFTUSDT","AAPLUSDT","MSTRUSDT","PLTRUSDT","INTCUSDT","XAUSDT", "USDCUSDT", "TRXUSDT", "COINUSDT"
+        "HOODUSDT", "COINUSDT", "MSTRUSDT", "NVDAUSDT", "AAPLUSDT",
+        "GOOGLUSDT", "AMZNUSDT", "METAUSDT", "QQQUSDT", "BZUSDT",
+        "MCDUSDT", "NIGHTUSDT", "JCTUSDT", "NOMUSDT", "ASTERUSDT",
+        "POLYXUSDT", "PIUSDT", "WMTUSDT", "BGBUSDT", "MEUSDT",
+        "TSLAUSDT", "CRCLUSDT", "SPYUSDT", "GLDUSDT", "MSFTUSDT",
+        "PLTRUSDT", "INTCUSDT", "XAUSDT", "USDCUSDT", "TRXUSDT",
     ],
+    # Pre-filter Bitget (opsional, set ke 0 untuk nonaktif)
+    "prefilter_bitget_top_n": 0,      # 0 = nonaktif, >0 = aktif (contoh: 60)
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  📊  DATA CLASSES (ditambah predicted_funding_hist)
+#  📊  DATA CLASSES
 # ══════════════════════════════════════════════════════════════════════════════
 @dataclass
 class ClzData:
@@ -136,7 +145,7 @@ class ClzData:
     oi: List[dict] = field(default_factory=list)
     liq: List[dict] = field(default_factory=list)
     funding_hist: List[dict] = field(default_factory=list)
-    predicted_funding_hist: List[dict] = field(default_factory=list)  # ← NEW
+    predicted_funding_hist: List[dict] = field(default_factory=list)
     ls_ratio: List[dict] = field(default_factory=list)
 
     @property
@@ -354,8 +363,9 @@ def volume_tod_mult(hour: int) -> float:
     return 1.0
 
 def is_stock_token(symbol: str) -> bool:
-    blacklist = CONFIG.get("stock_token_blacklist", [])
-    return symbol in blacklist
+    """Cek blacklist dengan case-insensitive dan strip whitespace."""
+    blacklist = {s.strip().upper() for s in CONFIG.get("stock_token_blacklist", [])}
+    return symbol.strip().upper() in blacklist
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -917,7 +927,7 @@ def check_velocity_gates(chg_24h: float, chg_1h: float, chg_4h: float,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🏆  MASTER SCORING v14.4
+#  🏆  MASTER SCORING v14.5 (DENGAN JALUR ALTERNATIF SHORT SQUEEZE)
 # ══════════════════════════════════════════════════════════════════════════════
 def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     if data.vol_24h < CONFIG["pre_filter_vol_min"] or data.price <= 0:
@@ -937,7 +947,7 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     ls_sc, ls_d = score_long_short_ratio(clz)
     bv_sc, bv_d = score_buy_volume_ratio(clz)
     fund_sc, fund_d = score_funding_trend(clz, data.funding)
-    pred_sc, pred_d = score_predicted_funding(clz)          # ← NEW
+    pred_sc, pred_d = score_predicted_funding(clz)
     tier1_score = ls_sc + bv_sc + fund_sc + pred_sc
     if ls_sc > 0:
         catalysts.append(f"📊 L/S={ls_d.get('long_ratio',0):.1%}longs {' | '.join(ls_d.get('signals',[])[:2])}")
@@ -971,13 +981,19 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
         catalysts.append(f"⚡ {vret_d.get('pattern','')} atr_ratio={vret_d.get('atr_ratio',0):.2f}")
     if rs_sc > 0:
         catalysts.append(f"📊 RS={rs_d.get('rs',0):+.1f}% vs BTC")
-    # Pump types dengan threshold yang sudah diturunkan
+    # Pump types dengan JALUR ALTERNATIF untuk short squeeze
     cfg = CONFIG
-    # Short squeeze (Type E)
-    if ls_sc >= cfg["short_squeeze_ls_min"] and (liq_sc >= cfg["short_squeeze_liq_min"] or fund_sc >= cfg["short_squeeze_fund_min"]):
-        pump_types.append(PumpType("E", "Short Squeeze", min((ls_sc+liq_sc+fund_sc+pred_sc)*2, 100), ls_d.get("signals",[])+liq_d.get("signals",[])+pred_d.get("signals",[])))
-        log.debug(f"  {data.symbol}: Short squeeze candidate (ls={ls_sc}, liq={liq_sc}, fund={fund_sc}, pred={pred_sc})")
-    # Whale accumulation (Type B)
+    # Jalur utama: L/S ratio ekstrem + liq/funding
+    squeeze_via_ls = (ls_sc >= cfg["short_squeeze_ls_min"] and
+                      (liq_sc >= cfg["short_squeeze_liq_min"] or fund_sc >= cfg["short_squeeze_fund_min"]))
+    # Jalur alternatif: funding+liq ekstrem (tanpa L/S data)
+    squeeze_alt = ((fund_sc >= 20 and liq_sc >= 15) or
+                   (fund_sc >= 15 and pred_sc >= 10 and liq_sc >= 6))
+    if squeeze_via_ls or squeeze_alt:
+        pump_types.append(PumpType("E", "Short Squeeze", min((ls_sc+liq_sc+fund_sc+pred_sc)*2, 100),
+                                   ls_d.get("signals",[])+liq_d.get("signals",[])+pred_d.get("signals",[])))
+        log.debug(f"  {data.symbol}: Short squeeze (ls={ls_sc}, liq={liq_sc}, fund={fund_sc}, pred={pred_sc}, alt={squeeze_alt})")
+    # Whale accumulation (Type B) dengan threshold diturunkan
     if bv_sc >= cfg["whale_accum_bv_min"] and accum_sc >= cfg["whale_accum_accum_min"]:
         pump_types.append(PumpType("B", "Whale Accumulation", min((bv_sc+accum_sc)*3, 100), bv_d.get("signals",[])+[accum_d.get("pattern","")]))
     # Technical breakout (Type D)
@@ -1098,7 +1114,7 @@ def build_alert_v14(r: ScoreResult, rank: int) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🌐  API CLIENTS — DIPERBAIKI DENGAN FUZZY MAPPING & PREDICTED FUNDING
+#  🌐  API CLIENTS
 # ══════════════════════════════════════════════════════════════════════════════
 class BitgetClient:
     BASE = "https://api.bitget.com"
@@ -1248,7 +1264,6 @@ class CoinalyzeClient:
 
         # Fuzzy matching helpers
         def _normalize(s: str) -> str:
-            # Hapus awalan 1000, 10000, dll. lalu uppercase
             if s.startswith("1000"):
                 s = s[4:]
             return s.upper()
@@ -1263,19 +1278,21 @@ class CoinalyzeClient:
         mapped_bn, mapped_by = 0, 0
         for sym in bitget_symbols:
             norm_sym = _normalize(sym)
-            # Binance mapping
             for cand in _candidates(norm_sym):
                 if cand in bn_lookup:
                     self._bn_map[sym] = bn_lookup[cand]
                     mapped_bn += 1
                     break
-            # Bybit mapping
             for cand in _candidates(norm_sym):
                 if cand in by_ls_lookup:
                     self._by_map[sym] = by_ls_lookup[cand]
                     mapped_by += 1
                     break
         log.info(f"  Fuzzy mapping: {mapped_bn}/{len(bitget_symbols)} Binance, {mapped_by}/{len(bitget_symbols)} Bybit")
+        # Debug: tampilkan simbol yang tidak ter-mapping (opsional)
+        unmapped = [s for s in bitget_symbols if s not in self._bn_map and s not in self._by_map]
+        if unmapped:
+            log.debug(f"  Unmapped symbols (Bitget-only): {unmapped[:10]}{'...' if len(unmapped)>10 else ''}")
 
     def _batch_fetch(self, endpoint: str, symbols: List[str], params: dict) -> Dict[str, list]:
         batch_size = CONFIG["coinalyze_batch_size"]
@@ -1357,7 +1374,6 @@ class CoinalyzeClient:
                 else:
                     log.warning(f"    Funding interval '{interval_try}' empty, trying next...")
 
-        # Predicted funding (NEW)
         if bn_syms:
             log.info(f"  Fetching Predicted funding history...")
             pred_data = self._batch_fetch("predicted-funding-rate-history", bn_syms,
@@ -1405,6 +1421,31 @@ def send_telegram(message: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 #  🚀  MAIN SCANNER LOOP
 # ══════════════════════════════════════════════════════════════════════════════
+def prefilter_by_bitget(symbols: List[str], tickers: Dict, top_n: int = 60) -> List[str]:
+    """Pre-filter symbols via Bitget candles: BBW squeeze + volume dry-up."""
+    scored = []
+    for sym in symbols:
+        try:
+            candles = BitgetClient.get_candles(sym, 50)
+            if len(candles) < 26:
+                continue
+            bbw_sc, _ = detect_bbw_squeeze(candles)
+            dry_sc, _ = detect_volume_dryup(candles)
+            # Minimal threshold agar tidak terlalu agresif
+            if bbw_sc >= 8 or dry_sc >= 4:
+                scored.append((sym, bbw_sc + dry_sc))
+        except Exception:
+            pass
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = [s for s, _ in scored[:top_n]]
+    rest_count = top_n - len(top)
+    if rest_count > 0:
+        rest = [s for s in symbols if s not in set(top)]
+        random.shuffle(rest)
+        top += rest[:rest_count]
+    log.info(f"  Pre-filter Bitget: {len(top)}/{len(symbols)} symbols selected")
+    return top
+
 def select_universe(tickers: Dict) -> List[str]:
     vol_min = CONFIG["pre_filter_vol_min"]
     vol_max = CONFIG["pre_filter_vol_max"]
@@ -1467,6 +1508,12 @@ def main():
     if not active:
         log.error("❌ No symbols passed universe filter")
         return 1
+
+    # Optional pre-filter Bitget (aktif jika prefilter_bitget_top_n > 0)
+    prefilter_n = CONFIG.get("prefilter_bitget_top_n", 0)
+    if prefilter_n > 0 and len(active) > prefilter_n:
+        log.info(f"⚡ Step 3b: Pre-filtering with Bitget data (top {prefilter_n})...")
+        active = prefilter_by_bitget(active, tickers, top_n=prefilter_n)
 
     log.info("🗺️  Step 4: Building Coinalyze symbol maps...")
     clz.build_symbol_maps(active)
