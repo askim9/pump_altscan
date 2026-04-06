@@ -99,7 +99,7 @@ CFG = {
     "atr_period":        200,
 
     # ── EVENT LABELING ────────────────────────────────────────────────────
-    "target_pct":        10.0,         # bounce target (%)
+    "target_pct":        8.0,         # bounce target (%)
     "outcome_window_h":  12,           # jam untuk mengukur outcome
     "min_bars_after":    2,           # minimal candle setelah entry untuk valid event
 
