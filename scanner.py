@@ -1405,7 +1405,7 @@ def run_scan() -> None:
     threshold = cfg["score_threshold_caution"] if caution else cfg["score_threshold_normal"]
     log.info(f"  {regime_debug['btc']}")
     log.info(f"  {regime_debug['eth']}")
-    log.info(f"Market regime: {'⚠️ CAUTION (thr=75)' if caution else '✅ NORMAL (thr=60)'}")
+    log.info(f"Market regime: {'⚠️ CAUTION (thr=80)' if caution else '✅ NORMAL (thr=70)'}")
 
     # ── 2. Fetch tickers ────────────────────────────────────────────────
     log.info("Fetching Bitget USDT-Futures tickers …")
