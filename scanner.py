@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v14.3 — FINAL WITH STOCK TOKEN BLOCK                       ║
+║  PRE-PUMP SCANNER v14.4 — PREDICTED FUNDING + FUZZY MAPPING + FIXED INTERVAL ║
 ║                                                                              ║
-║  NEW: Blacklist for stock tokens (HOOD, COIN, MSTR, NVDA, AAPL, etc.)       ║
-║  FIXES: Retry-After parsing, optimized rate limits, adjusted thresholds     ║
+║  PERBAIKAN:                                                                  ║
+║  • Funding interval: "daily" (dari "8hour" yang tidak valid)                ║
+║  • Endpoint predicted-funding-rate-history untuk early warning              ║
+║  • Fuzzy symbol mapping (1000PEPEUSDT → PEPEUSDT, dll.)                      ║
+║  • Pre-filter funding & rate limit jitter                                   ║
+║  • Threshold Type E/B diturunkan agar lebih sensitif                        ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -28,7 +32,7 @@ try:
 except ImportError:
     pass
 
-VERSION = "14.3-STOCK-BLOCK"
+VERSION = "14.4-PREDICTED"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -42,19 +46,14 @@ _fh.setFormatter(_fmt)
 _root.addHandler(_fh)
 log = logging.getLogger(__name__)
 
-# Set to DEBUG for more details (including short squeeze threshold checks)
-# log.setLevel(logging.DEBUG)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ⚙️  CONFIG v14.3
+#  ⚙️  CONFIG v14.4
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG: Dict = {
     "coinalyze_api_key": os.getenv("COINALYZE_API_KEY", "ab447e9a-3a26-4253-a68e-1cd0603d22d2"),
     "bot_token":         os.getenv("BOT_TOKEN"),
     "chat_id":           os.getenv("CHAT_ID"),
-    "clz_binance_suffix": "_PERP.A",
-    "clz_bybit_suffix":   ".6",
     "pre_filter_vol_min": 1_000_000,
     "pre_filter_vol_max": 100_000_000,
     "max_symbols_per_scan": 150,
@@ -69,23 +68,22 @@ CONFIG: Dict = {
     "coinalyze_lookback_h": 72,
     "coinalyze_funding_lookback_h": 168,
     "coinalyze_interval": "1hour",
-    "coinalyze_funding_interval": "8hour",
-    "coinalyze_batch_size": 10,               # Reduced from 20 to avoid rate limits
-    "coinalyze_rate_limit_wait": 0.6,         # Increased from 0.5 for safety
-    "baseline_recent_exclude": 3,
-    "baseline_lookback_n": 72,
-    "baseline_min_samples": 10,
+    "coinalyze_funding_interval": "daily",           # ← FIXED (dari "8hour")
+    "coinalyze_funding_interval_alt": "1hour",       # fallback
+    "coinalyze_batch_size": 20,
+    "coinalyze_rate_limit_wait": 0.5,
     "ls_ratio_weight": 35,
     "buy_vol_ratio_weight": 30,
     "funding_trend_weight": 25,
     "funding_snapshot_weight": 15,
+    "predicted_funding_weight": 15,                  # ← NEW
     "oi_buildup_weight": 20,
     "short_liq_weight": 20,
     "liq_cascade_weight": 15,
-    "bbw_squeeze_weight": 25,
-    "price_stability_weight": 12,
+    "bbw_squeeze_weight": 20,                        # dikurangi sedikit
+    "accumulation_weight": 15,
+    "price_stability_weight": 10,
     "volume_dryup_weight": 10,
-    "accumulation_weight": 20,
     "volatility_return_weight": 15,
     "rs_btc_weight": 12,
     "multiwave_bonus": 30,
@@ -116,23 +114,21 @@ CONFIG: Dict = {
     "ls_long_high": 0.58,
     "bv_ratio_strong": 0.62,
     "bv_ratio_moderate": 0.55,
-    # Adjusted thresholds for short squeeze detection (more sensitive)
-    "short_squeeze_ls_min": 15,
-    "short_squeeze_liq_min": 8,
-    "short_squeeze_fund_min": 10,
-    "whale_accum_bv_min": 15,
-    "whale_accum_accum_min": 10,
-    # BLACKLIST: stock tokens to exclude (mencegah false signal dari saham)
+    # Threshold untuk short squeeze (diturunkan agar lebih sensitif)
+    "short_squeeze_ls_min": 10,
+    "short_squeeze_liq_min": 6,
+    "short_squeeze_fund_min": 7,
+    "whale_accum_bv_min": 10,
+    "whale_accum_accum_min": 8,
     "stock_token_blacklist": [
-        "TSLAUSDT","CRCLUSDT", "SPYUSDT","GOOGLUSDT","COINUSDT","NVDAUSDT","METAUSDT","QQQUSDT","GLDUSDT",
-"MSFTUSDT","AAPLUSDT","MSTRUSDT","PLTRUSDT","INTCUSDT","XAUSDT", "BZUSDT", "TONUSDT", "BGBUSDT",  "BNBUSDT", "TRXUSDT", 
-         "MCDUSDT", "XRPUSDT" # tambahan jika perlu
+      "TSLAUSDT","CRCLUSDT", "SPYUSDT","GOOGLUSDT","COINUSDT","NVDAUSDT","METAUSDT","QQQUSDT","GLDUSDT",
+"MSFTUSDT","AAPLUSDT","MSTRUSDT","PLTRUSDT","INTCUSDT","XAUSDT", "USDCUSDT", "TRXUSDT", "COINUSDT"
     ],
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  📊  DATA CLASSES
+#  📊  DATA CLASSES (ditambah predicted_funding_hist)
 # ══════════════════════════════════════════════════════════════════════════════
 @dataclass
 class ClzData:
@@ -140,6 +136,7 @@ class ClzData:
     oi: List[dict] = field(default_factory=list)
     liq: List[dict] = field(default_factory=list)
     funding_hist: List[dict] = field(default_factory=list)
+    predicted_funding_hist: List[dict] = field(default_factory=list)  # ← NEW
     ls_ratio: List[dict] = field(default_factory=list)
 
     @property
@@ -155,8 +152,12 @@ class ClzData:
     def has_funding_hist(self) -> bool:
         return len(self.funding_hist) >= 3
     @property
+    def has_predicted_funding(self) -> bool:
+        return len(self.predicted_funding_hist) >= 3
+    @property
     def has_ls(self) -> bool:
         return len(self.ls_ratio) >= 4
+
     @property
     def last_buy_ratio(self) -> float:
         if not self.has_ohlcv:
@@ -167,11 +168,13 @@ class ClzData:
             if v > 0:
                 return bv / v
         return 0.0
+
     @property
     def last_ls_long(self) -> float:
         if not self.has_ls:
             return 0.5
         return float(self.ls_ratio[-2].get("l", 0.5) or 0.5)
+
     @property
     def last_ls_ratio(self) -> float:
         if not self.has_ls:
@@ -351,7 +354,6 @@ def volume_tod_mult(hour: int) -> float:
     return 1.0
 
 def is_stock_token(symbol: str) -> bool:
-    """Cek apakah simbol termasuk dalam blacklist stock token"""
     blacklist = CONFIG.get("stock_token_blacklist", [])
     return symbol in blacklist
 
@@ -591,6 +593,29 @@ def score_funding_trend(clz: ClzData, current_funding: float) -> Tuple[int, dict
         "drift": round(funding_drift * 100, 5),
         "signals": signals,
     }
+
+def score_predicted_funding(clz: ClzData) -> Tuple[int, dict]:
+    """Predicted funding rate trend — early warning short squeeze."""
+    if not clz.has_predicted_funding:
+        return 0, {"source": "no_predicted_funding"}
+    hist = clz.predicted_funding_hist
+    rates = [float(c.get("c", 0) or 0) for c in hist if c.get("c") is not None]
+    if len(rates) < 3:
+        return 0, {"source": "insufficient"}
+    recent = rates[-3:]
+    prev = rates[-6:-3] if len(rates) >= 6 else rates[:3]
+    avg_recent = _mean(recent)
+    avg_prev = _mean(prev)
+    drift = avg_recent - avg_prev
+    score = 0
+    signals = []
+    if drift < -0.0002:
+        score = CONFIG["predicted_funding_weight"]
+        signals.append(f"PRED_FUNDING_BEARISH Δ={drift*100:.4f}%")
+    elif drift < -0.0001:
+        score = int(CONFIG["predicted_funding_weight"] * 0.6)
+        signals.append(f"PRED_FUNDING_NEG Δ={drift*100:.4f}%")
+    return score, {"drift": round(drift*100, 5), "signals": signals}
 
 def score_oi_buildup(clz: ClzData) -> Tuple[int, dict]:
     if not clz.has_oi:
@@ -892,7 +917,7 @@ def check_velocity_gates(chg_24h: float, chg_1h: float, chg_4h: float,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🏆  MASTER SCORING v14.3
+#  🏆  MASTER SCORING v14.4
 # ══════════════════════════════════════════════════════════════════════════════
 def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     if data.vol_24h < CONFIG["pre_filter_vol_min"] or data.price <= 0:
@@ -912,13 +937,16 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     ls_sc, ls_d = score_long_short_ratio(clz)
     bv_sc, bv_d = score_buy_volume_ratio(clz)
     fund_sc, fund_d = score_funding_trend(clz, data.funding)
-    tier1_score = ls_sc + bv_sc + fund_sc
+    pred_sc, pred_d = score_predicted_funding(clz)          # ← NEW
+    tier1_score = ls_sc + bv_sc + fund_sc + pred_sc
     if ls_sc > 0:
         catalysts.append(f"📊 L/S={ls_d.get('long_ratio',0):.1%}longs {' | '.join(ls_d.get('signals',[])[:2])}")
     if bv_sc > 0:
         catalysts.append(f"💚 BuyVol={bv_d.get('avg_bv_ratio',0):.1%} {' | '.join(bv_d.get('signals',[])[:2])}")
     if fund_sc > 0:
         catalysts.append(f"💰 Fund={fund_d.get('current',0):.4f}% {' | '.join(fund_d.get('signals',[])[:2])}")
+    if pred_sc > 0:
+        catalysts.append(f"🔮 PredFund Δ={pred_d.get('drift',0):.4f}% {' | '.join(pred_d.get('signals',[]))}")
     # Tier 2
     oi_sc, oi_d = score_oi_buildup(clz)
     liq_sc, liq_d = score_liquidations(clz)
@@ -943,12 +971,12 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
         catalysts.append(f"⚡ {vret_d.get('pattern','')} atr_ratio={vret_d.get('atr_ratio',0):.2f}")
     if rs_sc > 0:
         catalysts.append(f"📊 RS={rs_d.get('rs',0):+.1f}% vs BTC")
-    # Pump types with adjusted thresholds
+    # Pump types dengan threshold yang sudah diturunkan
     cfg = CONFIG
     # Short squeeze (Type E)
     if ls_sc >= cfg["short_squeeze_ls_min"] and (liq_sc >= cfg["short_squeeze_liq_min"] or fund_sc >= cfg["short_squeeze_fund_min"]):
-        pump_types.append(PumpType("E", "Short Squeeze", min((ls_sc+liq_sc+fund_sc)*2, 100), ls_d.get("signals",[])+liq_d.get("signals",[])))
-        log.debug(f"  {data.symbol}: Short squeeze candidate (ls={ls_sc}, liq={liq_sc}, fund={fund_sc})")
+        pump_types.append(PumpType("E", "Short Squeeze", min((ls_sc+liq_sc+fund_sc+pred_sc)*2, 100), ls_d.get("signals",[])+liq_d.get("signals",[])+pred_d.get("signals",[])))
+        log.debug(f"  {data.symbol}: Short squeeze candidate (ls={ls_sc}, liq={liq_sc}, fund={fund_sc}, pred={pred_sc})")
     # Whale accumulation (Type B)
     if bv_sc >= cfg["whale_accum_bv_min"] and accum_sc >= cfg["whale_accum_accum_min"]:
         pump_types.append(PumpType("B", "Whale Accumulation", min((bv_sc+accum_sc)*3, 100), bv_d.get("signals",[])+[accum_d.get("pattern","")]))
@@ -1006,13 +1034,14 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     if clz.has_ls: data_sources.append("L/S✅")
     if clz.has_ohlcv: data_sources.append("BV✅")
     if clz.has_funding_hist: data_sources.append("Fund✅")
+    if clz.has_predicted_funding: data_sources.append("Pred✅")
     if clz.has_oi: data_sources.append("OI✅")
     if clz.has_liq: data_sources.append("Liq✅")
     return ScoreResult(
         symbol=data.symbol, score=min(total,250), phase=phase.phase, pump_types=pump_types, confidence=confidence,
         components={"phase":phase_score, "tier1_clz":tier1_score, "tier2_clz":tier2_score, "tier3_technical":tier3_score,
                     "multiwave":mw_bonus, "reversal":reversal_score,
-                    "detail":{"ls":ls_sc, "bv":bv_sc, "fund":fund_sc, "oi":oi_sc, "liq":liq_sc,
+                    "detail":{"ls":ls_sc, "bv":bv_sc, "fund":fund_sc, "pred":pred_sc, "oi":oi_sc, "liq":liq_sc,
                               "bbw":bbw_sc, "stab":stab_sc, "dry":dry_sc, "accum":accum_sc, "vret":vret_sc, "rs":rs_sc},
                     "data_sources": " ".join(data_sources) if data_sources else "Bitget-only"},
         catalysts=catalysts, entry=entry_data, price=data.price, vol_24h=data.vol_24h,
@@ -1047,7 +1076,7 @@ def build_alert_v14(r: ScoreResult, rank: int) -> str:
         lines.append("")
     lines.append(f"   Vol: {vol} | Δ1h: {r.chg_1h:+.1f}% | Δ24h: {r.chg_24h:+.1f}% | F: {r.funding*100:.4f}%")
     lines.append(f"   Phase:{comp['phase']} T1:{comp['tier1_clz']} T2:{comp['tier2_clz']} T3:{comp['tier3_technical']}")
-    lines.append(f"   L/S:{d.get('ls',0)} BV:{d.get('bv',0)} Fund:{d.get('fund',0)} OI:{d.get('oi',0)} Liq:{d.get('liq',0)}")
+    lines.append(f"   L/S:{d.get('ls',0)} BV:{d.get('bv',0)} Fund:{d.get('fund',0)} Pred:{d.get('pred',0)} OI:{d.get('oi',0)} Liq:{d.get('liq',0)}")
     lines.append(f"   BBW:{d.get('bbw',0)} Accum:{d.get('accum',0)} VRet:{d.get('vret',0)} RS:{d.get('rs',0)}")
     if r.entry:
         e = r.entry
@@ -1069,7 +1098,7 @@ def build_alert_v14(r: ScoreResult, rank: int) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🌐  API CLIENTS — FINAL FIXED
+#  🌐  API CLIENTS — DIPERBAIKI DENGAN FUZZY MAPPING & PREDICTED FUNDING
 # ══════════════════════════════════════════════════════════════════════════════
 class BitgetClient:
     BASE = "https://api.bitget.com"
@@ -1174,15 +1203,16 @@ class CoinalyzeClient:
                             wait = 11
                     else:
                         wait = 11
-                    log.warning(f"  Coinalyze rate limit — wait {wait}s")
-                    time.sleep(wait)
+                    jitter = random.uniform(0.5, 2.0)
+                    log.warning(f"  Coinalyze rate limit — wait {wait}s + {jitter:.1f}s jitter")
+                    time.sleep(wait + jitter)
                     continue
                 if r.status_code != 200:
-                    log.debug(f"  Coinalyze {endpoint} HTTP {r.status_code}")
+                    log.warning(f"  Coinalyze {endpoint} HTTP {r.status_code}: {r.text[:150]}")
                     return None
                 data = r.json()
                 if isinstance(data, dict) and "error" in data:
-                    log.debug(f"  Coinalyze error: {data['error']}")
+                    log.warning(f"  Coinalyze error: {data['error']}")
                     return None
                 return data
             except requests.exceptions.Timeout:
@@ -1215,16 +1245,37 @@ class CoinalyzeClient:
                 bn_lookup[sym_on_exc] = clz_sym
             elif exc == "6" and m.get("has_long_short_ratio_data"):
                 by_ls_lookup[sym_on_exc] = clz_sym
+
+        # Fuzzy matching helpers
+        def _normalize(s: str) -> str:
+            # Hapus awalan 1000, 10000, dll. lalu uppercase
+            if s.startswith("1000"):
+                s = s[4:]
+            return s.upper()
+
+        def _candidates(sym: str) -> List[str]:
+            base = sym.replace("USDT", "")
+            cand = [sym, f"{base}/USDT", f"{base}-USDT", f"1000{base}USDT", f"10000{base}USDT"]
+            if base.startswith("1000"):
+                cand.append(base[4:] + "USDT")
+            return list(set(cand))
+
         mapped_bn, mapped_by = 0, 0
         for sym in bitget_symbols:
-            if sym in bn_lookup:
-                self._bn_map[sym] = bn_lookup[sym]
-                mapped_bn += 1
-            if sym in by_ls_lookup:
-                self._by_map[sym] = by_ls_lookup[sym]
-                mapped_by += 1
-        log.info(f"  Symbol mapping: {mapped_bn}/{len(bitget_symbols)} Binance, "
-                 f"{mapped_by}/{len(bitget_symbols)} Bybit L/S")
+            norm_sym = _normalize(sym)
+            # Binance mapping
+            for cand in _candidates(norm_sym):
+                if cand in bn_lookup:
+                    self._bn_map[sym] = bn_lookup[cand]
+                    mapped_bn += 1
+                    break
+            # Bybit mapping
+            for cand in _candidates(norm_sym):
+                if cand in by_ls_lookup:
+                    self._by_map[sym] = by_ls_lookup[cand]
+                    mapped_by += 1
+                    break
+        log.info(f"  Fuzzy mapping: {mapped_bn}/{len(bitget_symbols)} Binance, {mapped_by}/{len(bitget_symbols)} Bybit")
 
     def _batch_fetch(self, endpoint: str, symbols: List[str], params: dict) -> Dict[str, list]:
         batch_size = CONFIG["coinalyze_batch_size"]
@@ -1256,6 +1307,7 @@ class CoinalyzeClient:
         by_rev = {v: k for k, v in self._by_map.items()}
         interval = CONFIG["coinalyze_interval"]
         fund_interval = CONFIG["coinalyze_funding_interval"]
+        fund_interval_alt = CONFIG["coinalyze_funding_interval_alt"]
         fund_from = to_ts - CONFIG["coinalyze_funding_lookback_h"] * 3600
 
         if bn_syms:
@@ -1267,6 +1319,7 @@ class CoinalyzeClient:
                 if bitget_sym:
                     result[bitget_sym].ohlcv = hist
             log.info(f"    Got {len(ohlcv_data)} OHLCV")
+
         if bn_syms:
             log.info(f"  Fetching OI history...")
             oi_data = self._batch_fetch("open-interest-history", bn_syms,
@@ -1277,6 +1330,7 @@ class CoinalyzeClient:
                 if bitget_sym:
                     result[bitget_sym].oi = hist
             log.info(f"    Got {len(oi_data)} OI series")
+
         if bn_syms:
             log.info(f"  Fetching Liquidations...")
             liq_data = self._batch_fetch("liquidation-history", bn_syms,
@@ -1287,22 +1341,33 @@ class CoinalyzeClient:
                 if bitget_sym:
                     result[bitget_sym].liq = hist
             log.info(f"    Got {len(liq_data)} Liq series")
+
         if bn_syms:
             log.info(f"  Fetching Funding rate history (7d)...")
-            # Try alternative interval if 8hour fails
-            fund_data = self._batch_fetch("funding-rate-history", bn_syms,
-                                          {"interval": fund_interval,
-                                           "from": fund_from, "to": to_ts})
-            if not fund_data:
-                log.warning("  Funding rate history empty, trying '1day' interval...")
+            for interval_try in [fund_interval, fund_interval_alt]:
                 fund_data = self._batch_fetch("funding-rate-history", bn_syms,
-                                              {"interval": "1day",
-                                               "from": fund_from, "to": to_ts})
-            for clz_sym, hist in fund_data.items():
+                                              {"interval": interval_try, "from": fund_from, "to": to_ts})
+                if fund_data:
+                    log.info(f"    Funding OK using interval '{interval_try}'")
+                    for clz_sym, hist in fund_data.items():
+                        bitget_sym = bn_rev.get(clz_sym)
+                        if bitget_sym:
+                            result[bitget_sym].funding_hist = hist
+                    break
+                else:
+                    log.warning(f"    Funding interval '{interval_try}' empty, trying next...")
+
+        # Predicted funding (NEW)
+        if bn_syms:
+            log.info(f"  Fetching Predicted funding history...")
+            pred_data = self._batch_fetch("predicted-funding-rate-history", bn_syms,
+                                          {"interval": "daily", "from": fund_from, "to": to_ts})
+            for clz_sym, hist in pred_data.items():
                 bitget_sym = bn_rev.get(clz_sym)
                 if bitget_sym:
-                    result[bitget_sym].funding_hist = hist
-            log.info(f"    Got {len(fund_data)} funding histories")
+                    result[bitget_sym].predicted_funding_hist = hist
+            log.info(f"    Got {len(pred_data)} predicted funding series")
+
         if by_syms:
             log.info(f"  Fetching Bybit L/S ratio ({len(by_syms)} syms)...")
             ls_data = self._batch_fetch("long-short-ratio-history", by_syms,
@@ -1345,7 +1410,6 @@ def select_universe(tickers: Dict) -> List[str]:
     vol_max = CONFIG["pre_filter_vol_max"]
     candidates = []
     for sym, t in tickers.items():
-        # Skip stock tokens
         if is_stock_token(sym):
             continue
         try:
@@ -1416,8 +1480,9 @@ def main():
     has_oi    = sum(1 for d in clz_data.values() if d.has_oi)
     has_liq   = sum(1 for d in clz_data.values() if d.has_liq)
     has_fund  = sum(1 for d in clz_data.values() if d.has_funding_hist)
+    has_pred  = sum(1 for d in clz_data.values() if d.has_predicted_funding)
     has_ls    = sum(1 for d in clz_data.values() if d.has_ls)
-    log.info(f"  Coverage: OHLCV={has_ohlcv} OI={has_oi} Liq={has_liq} Fund={has_fund} L/S={has_ls}")
+    log.info(f"  Coverage: OHLCV={has_ohlcv} OI={has_oi} Liq={has_liq} Fund={has_fund} Pred={has_pred} L/S={has_ls}")
 
     log.info("🎯 Step 6: Scoring...")
     results = []
