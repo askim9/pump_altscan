@@ -1,51 +1,60 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  NEXUS-SR v3.2 — Empirically Validated + Coinalyze Derivatives Data         ║
+║  PRE-PUMP SCANNER v14.0 — MULTI-EXCHANGE INTELLIGENCE EDITION              ║
 ║                                                                              ║
-║  PERUBAHAN v3.2:                                                             ║
-║  Integrasi data Coinalyze berdasarkan hasil probe lapangan (Apr 2026):       ║
-║  · Bitget TIDAK ada di Coinalyze → pakai Binance (code A) + Bybit (code 6)  ║
-║    sebagai proxy. Coin yang sama bergerak hampir identik karena arbitrase.   ║
+║  🎯 TARGET: Pump ≥15% dalam <24 jam, deteksi 1-3 JAM SEBELUMNYA           ║
+║  ⏱️  INTERVAL: 1 jam sekali                                                  ║
 ║                                                                              ║
-║  DATA BARU dari Coinalyze (semua divalidasi dari probe):                     ║
-║  · OI Change     : /open-interest-history  → Binance, field 'c' (USD)       ║
-║  · Funding Rate  : /funding-rate (current) → Binance, field 'value'         ║
-║  · Funding Hist  : /funding-rate-history   → interval 1hour (bukan 8hour!)  ║
-║  · L/S Ratio     : /long-short-ratio-history → Bybit 542 markets            ║
-║                    field l=long%, s=short%, r=ratio                          ║
-║  · Liquidations  : /liquidation-history    → Binance, l=long, s=short (USD) ║
-║  · Taker Buy     : /ohlcv-history          → Binance, btx/tx/bv 0% null     ║
+║  ARSITEKTUR v14.0:                                                          ║
+║  ┌─────────────────────────────────────────────────────────────┐            ║
+║  │  BITGET (Price Source)     COINALYZE (Derivatives Intel)   │            ║
+║  │  ─────────────────────     ──────────────────────────────  │            ║
+║  │  • Candles 1H (OHLCV)      • Binance (.A): OI, Funding,   │            ║
+║  │  • Funding rate              Liquidations, OHLCV+BTX       │            ║
+║  │  • Universe screening       • Bybit (.6): Long/Short Ratio │            ║
+║  │                               (564 markets dengan L/S data) │            ║
+║  └─────────────────────────────────────────────────────────────┘            ║
 ║                                                                              ║
-║  SYMBOL FORMAT (dari probe):                                                 ║
-║  · Binance: {BASE}USDT_PERP.A  → BTCUSDT_PERP.A                            ║
-║  · Bybit  : {BASE}USDT.6       → BTCUSDT.6                                  ║
+║  KENAPA MULTI-EXCHANGE:                                                     ║
+║  Coinalyze tidak punya data Bitget. Tapi Binance & Bybit adalah exchanges  ║
+║  terbesar — jika ada whale accumulation / short squeeze di Binance/Bybit,  ║
+║  coin yang sama di Bitget akan ikut pump karena arbitrase cross-exchange.  ║
 ║                                                                              ║
-║  ARSITEKTUR SCORING (berbasis data empiris 5.214 events):                   ║
-║  LAYER 1 — ZONE GATE   : TESTING state, break<3, vol not outlier            ║
-║  LAYER 2 — VOLATILITY  : BBW ≥ 0.050, ATR% ≥ 1.20%                         ║
-║  LAYER 3 — SCORE 0-100 :                                                    ║
-║    A. Volatility   0-50 pts → BBW + ATR_pct                                 ║
-║    B. Volume       0-30 pts → VolCompression + VolZ_4H                      ║
-║    C. Momentum     0-20 pts → bear_streak + VolRatio                        ║
-║  LAYER 4 — DERIVATIVES : Coinalyze data sebagai CONTEXT INFO                ║
-║    · Ditampilkan di output dan Telegram                                      ║
-║    · Tidak masuk scoring (data cross-exchange, bukan Bitget langsung)        ║
-║    · Berfungsi sebagai filter manual / konfirmasi tambahan                   ║
+║  DATA BARU DARI COINALYZE (dari probe hasil):                              ║
+║  ✅ OHLCV Binance: field bv (buy volume), btx (buy tx count), tx (total)  ║
+║  ✅ Funding rate history (8h interval) — trend 7 hari                      ║
+║  ✅ OI history — buildup detection                                          ║
+║  ✅ Liquidation history — short squeeze cascade detection                   ║
+║  ✅ Long/Short Ratio Bybit — 564 markets, hourly (signal paling kuat!)     ║
+║                                                                              ║
+║  SIGNAL SCORING v14.0:                                                      ║
+║  Tier 1 (Paling Kuat):                                                      ║
+║    • Long/Short Ratio (Bybit) — longs < 40% + OI naik = squeeze imminent  ║
+║    • Buy Volume Ratio Binance — bv/v > 0.65 = strong buying               ║
+║    • Funding Rate Trend — semakin negatif selama 24h = shorts trapped      ║
+║  Tier 2 (Konfirmasi):                                                       ║
+║    • OI Buildup — OI naik tapi harga flat = accumulation                   ║
+║    • Short Liquidation Cascade — liq naik = squeeze mulai                  ║
+║    • BBW Squeeze (Bitget candles)                                           ║
+║  Tier 3 (Konteks):                                                          ║
+║    • Relative strength vs BTC                                               ║
+║    • Volume dry-up (Bitget candles)                                         ║
+║    • Volatility return detector                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import logging.handlers as _lh
-import math
 import os
 import time
-from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+import sqlite3
+import random
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Tuple, Any
 
 import requests
 
@@ -55,566 +64,1348 @@ try:
 except ImportError:
     pass
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-_fmt  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+VERSION = "14.0-MULTI-EXCHANGE"
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
-_ch   = logging.StreamHandler()
+_ch = logging.StreamHandler()
 _ch.setFormatter(_fmt)
 _root.addHandler(_ch)
-_fh   = _lh.RotatingFileHandler("/tmp/nexus_sr_v32.log", maxBytes=10 * 1024**2, backupCount=2)
+_fh = _lh.RotatingFileHandler("/tmp/scanner_v14.log", maxBytes=10 * 1024**2, backupCount=3)
 _fh.setFormatter(_fmt)
 _root.addHandler(_fh)
 log = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ⚙️  CONFIG — semua threshold dari data empiris
+#  ⚙️  CONFIG v14.0
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG: Dict = {
-    # ── CREDENTIALS ────────────────────────────────────────────────────────
-    "bot_token": os.getenv("BOT_TOKEN"),
-    "chat_id":   os.getenv("CHAT_ID"),
+    # === API KEYS ===
+    "coinalyze_api_key": os.getenv("COINALYZE_API_KEY"),   # wajib
+    "bot_token":         os.getenv("BOT_TOKEN"),
+    "chat_id":           os.getenv("CHAT_ID"),
 
-    # ── UNIVERSE ───────────────────────────────────────────────────────────
-    "min_vol_24h":       50_000,    # $50K floor — singkirkan ghost coins saja
-    "min_vol_signal":   500_000,    # $500K minimum untuk sinyal yang dikirim ke Telegram
-    "max_vol_24h":  2_000_000_000,
-    "gate_chg_24h_max":    60.0,   # skip jika sudah pump >60%
+    # === COINALYZE EXCHANGE CODES (dari probe) ===
+    # Binance perps: suffix .A  (ex: BTCUSDT_PERP.A)
+    # Bybit perps  : suffix .6  (ex: BTCUSDT.6) — punya L/S ratio data
+    "clz_binance_suffix": "_PERP.A",
+    "clz_bybit_suffix":   ".6",
 
-    # ── PINE SCRIPT PARAMS ─────────────────────────────────────────────────
-    "lookback_period":       20,   # Pine: lookbackPeriod
-    "vol_len":                2,   # Pine: vol_len
-    "box_width_multiplier": 1.0,   # Pine: box_withd
-    "candle_limit_1h":      200,   # 1H candles (~8 hari)
-    "candle_limit_1d":      100,   # FIX: Bitget 1D candles max ~90 dalam praktik
-                                   # 100 cukup untuk SMA50 (50 candles needed)
-                                   # Regime check pakai SMA50 bukan EMA200
-                                   # (EMA200 butuh 200 candles, tapi Bitget max ~90 1D)
+    # === UNIVERSE FILTER (sweet spot pump) ===
+    "pre_filter_vol_min": 1_000_000,      # $1M
+    "pre_filter_vol_max": 100_000_000,    # $100M
+    "max_symbols_per_scan": 150,
 
-    # ── ZONE GATE ──────────────────────────────────────────────────────────
-    "atr_period":           200,   # Pine: ta.atr(200)
-    "max_break_count":        3,
-    "vol_outlier_mult":     5.0,   # vol > 5× avg = outlier → skip
-    "vol_outlier_lookback":  20,   # FIX: dipakai di candles[-2], bukan candles[-1]
-    "max_zone_width_pct":    8.0,  # zone width max 8% dari harga — filter low-liquidity
+    # === VELOCITY GATES ===
+    "velocity_gates": {
+        "chg_1h_max": 4.0,
+        "chg_4h_max": 8.0,
+        "chg_24h_max_early": 12.0,
+        "chg_24h_max_continuation": 30.0,
+        "chg_24h_min": -8.0,             # diimplementasikan
+    },
 
-    # ── PUMP REJECTION GATE ────────────────────────────────────────────────
-    # Dari audit: 4USDT lolos sebagai STRONG karena volume spike 10.66×
-    # padahal bear_streak=0 → ini bukan bounce setup, tapi pump event
-    # Pattern: vol_ratio tinggi + tidak ada tekanan jual = pump SEDANG terjadi
-    # Sinyal yang benar: ada tekanan jual (bear streak) LALU volume spike
-    "pump_reject_vol_ratio":  5.0,  # vol_ratio > ini = potensi pump
-    "pump_reject_bear_min":   1,    # bear_streak harus >= ini jika vol tinggi
+    # === API SETTINGS ===
+    "candle_limit_bitget": 100,
+    "coinalyze_lookback_h": 72,          # 72h untuk baseline
+    "coinalyze_funding_lookback_h": 168, # 7 hari untuk funding trend
+    "coinalyze_interval": "1hour",
+    "coinalyze_funding_interval": "8hour",
+    "coinalyze_batch_size": 20,          # Probe step 8: batch 20 bekerja
 
-    # ── MINIMUM COMPONENT SCORE ────────────────────────────────────────────
-    # FIX: Turunkan dari 10 ke 5 berdasarkan hasil run nyata.
-    # min_score_B=10 memblok 5/5 kandidat karena crash market membuat volume flat.
-    # Prioritas perbaikan dari backtest: naikkan threshold ke 70 (score 60-64 EV negatif),
-    # bukan block semua sinyal via min B.
-    # Score 5 = B1+B2 minimal ada sedikit konfirmasi, bukan zero sama sekali.
-    "min_score_B":            5,   # require B ≥ 5 (dari 30 max)
+    # === BASELINE ===
+    "baseline_recent_exclude": 3,
+    "baseline_lookback_n": 72,
+    "baseline_min_samples": 10,
 
-    # ── VOLATILITY GATE (G4 + G5) — dari data empiris ──────────────────────
-    # BBW threshold: top quintile dari large dataset = 0.078
-    # Turunkan ke 0.050 untuk meningkatkan recall (capture lebih banyak bounce)
-    # Tradeoff: precision sedikit turun tapi tidak kehilangan terlalu banyak hits
-    "gate_bbw_min":        0.050,  # Bollinger Band Width minimum
-    "gate_atr_pct_min":    1.20,   # ATR sebagai % dari harga minimum
+    # ── SCORING WEIGHTS v14.0 ─────────────────────────────────────────────
+    # Tier 1 — Coinalyze multi-exchange (paling kuat, cross-exchange)
+    "ls_ratio_weight": 35,          # Long/Short ratio Bybit (sinyal terkuat)
+    "buy_vol_ratio_weight": 30,     # Buy volume ratio Binance (bv/v dari OHLCV)
+    "funding_trend_weight": 25,     # Funding rate trend 24h (semakin negatif = bagus)
+    "funding_snapshot_weight": 15,  # Funding current absolute
 
-    # ── SCORING PARAMS (dari data empiris) ─────────────────────────────────
+    # Tier 2 — Coinalyze confirmation
+    "oi_buildup_weight": 20,        # OI naik + harga flat
+    "short_liq_weight": 20,         # Short liquidation spike
+    "liq_cascade_weight": 15,       # Liquidation acceleration
 
-    # A. VOLATILITY SCORE (0-50 pts)
-    # Dari large dataset: BBW corr=+0.236, ATR_pct corr=+0.230
-    # HIT avg BBW = 0.137 vs MISS avg = 0.057 (2.4x ratio)
-    # HIT avg ATR% = 3.12 vs MISS avg = 1.40 (2.2x ratio)
-    "score_vol_max":        50,    # Total A component
-    "bbw_strong":          0.150,  # ≥ ini → full BBW score (above HIT avg)
-    "bbw_medium":          0.078,  # ≥ ini → half BBW score (top quintile)
-    "atr_strong":          3.12,   # ≥ ini → full ATR score (HIT avg)
-    "atr_medium":          1.62,   # ≥ ini → half ATR score (top quintile)
-    # Bobot dalam komponen A: BBW 55%, ATR 45% (BBW sedikit lebih kuat)
-    "bbw_weight":          0.55,
-    "atr_weight":          0.45,
+    # Tier 3 — Bitget candles (technical)
+    "bbw_squeeze_weight": 25,       # BBW squeeze (Bitget)
+    "price_stability_weight": 12,
+    "volume_dryup_weight": 10,
+    "accumulation_weight": 20,      # Volume spike tanpa price spike (Bitget)
+    "volatility_return_weight": 15,
+    "rs_btc_weight": 12,            # Relative strength vs BTC
 
-    # B. VOLUME SCORE (0-30 pts)
-    # Sub-komponen B1: VolCompression (recent avg / prior avg)
-    # Dari large dataset: corr=+0.089 (confirmed), HIT avg=3.76 vs MISS=1.42
-    # Sub-komponen B2: VolZ_4H (Z-score vs 4H window)
-    # Dari large dataset: corr=+0.083 (confirmed), HIT avg=1.03 vs MISS=0.16
-    # BERBEDA: B1=recent spike vs baseline, B2=historical anomaly 4H window
-    "score_vol_micro_max":  30,
-    "vol_comp_strong":     3.76,   # ≥ HIT avg → full B1 score
-    "vol_comp_medium":     1.82,   # ≥ top quintile → half B1 score
-    "vol_z4h_strong":      2.0,    # ≥ ini → full B2 score (7.8% hit rate)
-    "vol_z4h_medium":      0.729,  # ≥ ini → half B2 score (threshold optimal)
-    "vol_comp_weight":     0.55,   # B1 sedikit lebih kuat dari B2
-    "vol_z4h_weight":      0.45,
+    # Continuation / Multi-wave
+    "multiwave_bonus": 30,
 
-    # C. MOMENTUM SCORE (0-20 pts)
-    # Sub-komponen C1: Bear streak (consecutive bearish candles masuk zone)
-    # Dari large dataset: corr=+0.030, streak 3-4 = hit 3.9-4.7% vs base 2.9%
-    # Sub-komponen C2: VolRatio (current vol vs 20-bar avg)
-    # Dari large dataset: corr=+0.068, ratio ≥1.44 = 4.3% hit rate
-    "score_momentum_max":   20,
-    "bear_streak_strong":    4,    # ≥ 4 consecutive bear candles
-    "bear_streak_medium":    2,    # ≥ 2 consecutive bear candles
-    "vol_ratio_strong":    2.0,    # ≥ 2× avg → full C2 score
-    "vol_ratio_medium":    1.44,   # ≥ 1.44× avg → half C2 score (threshold optimal)
-    "bear_weight":         0.40,   # C1 lebih lemah dari C2
-    "vol_ratio_weight":    0.60,
+    # === ALERT THRESHOLDS ===
+    "alert_threshold_early": 85,
+    "alert_threshold_continuation": 100,
+    "alert_threshold_reversal": 80,
+    "min_rr_ratio": 2.0,
+    "max_alerts_per_scan": 5,
 
-    # ── THRESHOLD — dari backtest: score 60-64 adalah EV negatif ─────────
-    # Backtest 262 signals: score 60-64 WR=20.7% < breakeven 31.5%
-    # Naikkan dari 60 ke 70 menghapus 40% sinyal EV negatif
-    "score_threshold_normal":  70,  # FIX: dari 60 → 70 (backtest: score<70 = -EV)
-    "score_threshold_caution": 80,  # saat BTC+ETH < SMA50 daily
-    "score_strong":            85,  # → kirim Telegram
+    # === RISK MANAGEMENT ===
+    "atr_candles": 14,
+    "sl_mult_volatile": 2.5,   # ATR > 4%
+    "sl_mult_normal": 2.0,     # ATR 2-4%
+    "sl_mult_quiet": 1.5,      # ATR < 2%
+    "tp1_pct": 15.0,
+    "tp2_pct": 30.0,
+    "tp3_pct": 50.0,
+    "account_balance": 10000.0,
+    "risk_per_trade_pct": 1.0,
+    "max_position_pct": 5.0,
+    "max_leverage": 10,
 
-    # ── REGIME CHECK ───────────────────────────────────────────────────────
-    # FIX: Bitget 1D max ~90 candles (terbukti dari run nyata n=90)
-    # SMA50 dari n=90 sudah valid dan cukup untuk deteksi trend
-    # Dual method: EMA200 jika ada (>200 candles), SMA50 jika tidak
-    "ema_regime_period":       50,  # SMA50 sebagai primary (90 candles cukup)
+    # === MULTI-WAVE ===
+    "pump_history_db": "/tmp/scanner_v14_history.db",
+    "pump_threshold_pct": 15,
+    "pump_max_duration_h": 24,
+    "multiwave_lookback_days": 30,
 
-    # ── OUTPUT ────────────────────────────────────────────────────────────
-    "top_n":                   10,
-    "max_alerts":               5,
-    "alert_cooldown_sec":    3600,
-    "cooldown_file": "/tmp/nexus_sr_v32_state.json",
-    "sleep_between_coins":    0.2,
+    # === BTC CIRCUIT BREAKER ===
+    "btc_dump_threshold": -3.0,
+
+    # === L/S RATIO THRESHOLDS (dari probe: l=long%, s=short%, r=l/s) ===
+    # Ketika longs < 40% (shorts dominan) + OI naik = short squeeze imminent
+    "ls_long_extreme_low": 0.38,   # Extreme short dominance
+    "ls_long_low": 0.44,           # Short dominance
+    "ls_long_normal": 0.50,        # Neutral
+    # Ketika longs > 60% + harga naik = distribution (bearish)
+    "ls_long_high": 0.58,
+
+    # === BUY VOLUME RATIO (dari probe: bv=buy_vol, v=total_vol) ===
+    "bv_ratio_strong": 0.62,       # bv/v > 62% = strong buying
+    "bv_ratio_moderate": 0.55,     # bv/v > 55% = moderate buying
 }
 
-MANUAL_EXCLUDE: set = set()
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🔗  COINALYZE CONFIG (dari probe lapangan Apr 2026)
+#  📊  DATA CLASSES
 # ══════════════════════════════════════════════════════════════════════════════
-# Bitget TIDAK ada di Coinalyze. Pakai Binance (A) + Bybit (6) sebagai proxy.
-# Coin yang sama (SOLUSDT, FETUSDT, dll.) bergerak hampir identik karena arbitrase.
-# Data derivatives ini sebagai CONTEXT INFO (tidak masuk scoring).
-CLZ = {
-    "api_key":    os.getenv("COINALYZE_API_KEY",
-                            "ab447e9a-3a26-4253-a68e-1cd0603d22d2"),
-    "base":       "https://api.coinalyze.net/v1",
+@dataclass
+class ClzData:
+    """Semua data Coinalyze untuk satu coin — multi-source aggregated"""
+    # Binance OHLCV dengan buy/sell breakdown (endpoint: ohlcv-history)
+    # Fields per candle: t, o, h, l, c, v, bv, tx, btx
+    ohlcv: List[dict] = field(default_factory=list)
 
-    # Symbol suffix dari probe: Binance=PERP.A, Bybit=.6
-    "bn_suffix":  "_PERP.A",   # BTCUSDT → BTCUSDT_PERP.A
-    "by_suffix":  ".6",        # BTCUSDT → BTCUSDT.6
+    # Open Interest history (endpoint: open-interest-history)
+    # Fields per candle: t, c (=OI value in USD)
+    oi: List[dict] = field(default_factory=list)
 
-    # Rate limit: 40 req/menit → sleep 1.6s antar call
-    "min_interval": 1.6,
-    "batch_size":    10,       # konservatif (doc max=20, tiap sym = 1 call)
+    # Liquidation history (endpoint: liquidation-history)
+    # Fields per candle: t, l (=long liq USD), s (=short liq USD)
+    liq: List[dict] = field(default_factory=list)
 
-    # Lookback
-    "lookback_h":    48,       # 48 jam untuk OI, L/S, liquidations
-    "funding_h":     72,       # 72 jam untuk funding rate trend
+    # Funding rate history (endpoint: funding-rate-history, interval: 8hour)
+    # Fields per entry: t, c (=funding rate)
+    funding_hist: List[dict] = field(default_factory=list)
 
-    # Timeout per TESTING kandidat — Coinalyze hanya dipanggil untuk candidates
-    # yang sudah lolos gate, tidak untuk semua 470 coin
-    "timeout":       12,
-}
+    # Long/Short ratio history — BYBIT ONLY (endpoint: long-short-ratio-history)
+    # Fields: t, l (=long ratio 0-1), s (=short ratio 0-1), r (=l/s ratio)
+    ls_ratio: List[dict] = field(default_factory=list)
 
-_clz_last: float = 0.0
+    @property
+    def has_ohlcv(self) -> bool:
+        return len(self.ohlcv) >= 10
 
-def _clz_get(endpoint: str, params: dict) -> Optional[Any]:
-    """Coinalyze GET dengan rate limit enforcement."""
-    global _clz_last
-    elapsed = time.time() - _clz_last
-    if elapsed < CLZ["min_interval"]:
-        time.sleep(CLZ["min_interval"] - elapsed)
-    _clz_last = time.time()
+    @property
+    def has_oi(self) -> bool:
+        return len(self.oi) >= 4
 
-    p = dict(params)
-    p["api_key"] = CLZ["api_key"]
+    @property
+    def has_liq(self) -> bool:
+        return len(self.liq) >= 4
+
+    @property
+    def has_funding_hist(self) -> bool:
+        return len(self.funding_hist) >= 3
+
+    @property
+    def has_ls(self) -> bool:
+        return len(self.ls_ratio) >= 4
+
+    @property
+    def last_buy_ratio(self) -> float:
+        """bv/v dari candle terakhir Binance OHLCV"""
+        if not self.has_ohlcv:
+            return 0.0
+        for c in reversed(self.ohlcv[:-1]):  # Skip live candle
+            v = float(c.get("v", 0) or 0)
+            bv = float(c.get("bv", 0) or 0)
+            if v > 0:
+                return bv / v
+        return 0.0
+
+    @property
+    def last_ls_long(self) -> float:
+        """Long ratio dari L/S terbaru (Bybit)"""
+        if not self.has_ls:
+            return 0.5
+        return float(self.ls_ratio[-2].get("l", 0.5) or 0.5)
+
+    @property
+    def last_ls_ratio(self) -> float:
+        """L/S ratio (l/s) dari entry terbaru"""
+        if not self.has_ls:
+            return 1.0
+        return float(self.ls_ratio[-2].get("r", 1.0) or 1.0)
+
+
+@dataclass
+class CoinData:
+    symbol: str
+    price: float
+    vol_24h: float
+    chg_24h: float       # Rolling dari candles
+    chg_1h: float
+    chg_4h: float
+    funding: float       # Current funding dari Bitget
+    candles: List[dict]  # Bitget 1H OHLCV
+    btc_chg_1h: float = 0.0
+    clz: ClzData = field(default_factory=ClzData)
+
+
+@dataclass
+class PhaseInfo:
+    phase: str
+    base_score: int
+    description: str
+    risk_level: str
+
+
+@dataclass
+class PumpType:
+    type_code: str
+    type_name: str
+    confidence: int
+    signals: List[str]
+
+
+@dataclass
+class PumpEvent:
+    symbol: str
+    timestamp: datetime
+    magnitude_pct: float
+    duration_hours: float
+    type: str
+
+
+@dataclass
+class ScoreResult:
+    symbol: str
+    score: int
+    phase: str
+    pump_types: List[PumpType]
+    confidence: str
+    components: Dict[str, Any]
+    catalysts: List[str]
+    entry: Optional[dict]
+    price: float
+    vol_24h: float
+    chg_24h: float
+    chg_1h: float
+    funding: float
+    urgency: str
+    risk_warnings: List[str] = field(default_factory=list)
+    position: Optional[dict] = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🗄️  DATABASE
+# ══════════════════════════════════════════════════════════════════════════════
+def init_db():
+    db = CONFIG["pump_history_db"]
+    conn = sqlite3.connect(db)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS pump_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL, timestamp INTEGER NOT NULL,
+            magnitude_pct REAL NOT NULL, duration_hours REAL NOT NULL,
+            event_type TEXT NOT NULL, created_at INTEGER DEFAULT (strftime('%s','now'))
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL, alerted_at INTEGER NOT NULL,
+            score INTEGER, phase TEXT, entry_price REAL,
+            outcome_pct REAL, outcome_checked INTEGER DEFAULT 0
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_sym_ts ON pump_events(symbol, timestamp DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_sym ON alerts(symbol, alerted_at DESC)")
+    conn.commit()
+    conn.close()
+
+
+def is_on_cooldown(symbol: str, cooldown_hours: int = 6) -> bool:
     try:
-        r = requests.get(f"{CLZ['base']}/{endpoint}", params=p,
-                         timeout=CLZ["timeout"])
-        if r.status_code == 429:
-            retry = int(r.headers.get("Retry-After", 10)) + 1
-            log.warning(f"Coinalyze 429 — tunggu {retry}s")
-            time.sleep(retry)
-            return None
-        if r.status_code == 401:
-            log.error("Coinalyze: API key invalid")
-            return None
-        if r.status_code == 400:
-            log.debug(f"Coinalyze 400 {endpoint} params={params}")
-            return None
-        r.raise_for_status()
-        return r.json()
+        conn = sqlite3.connect(CONFIG["pump_history_db"])
+        c = conn.cursor()
+        c.execute("SELECT MAX(alerted_at) FROM alerts WHERE symbol = ?", (symbol,))
+        row = c.fetchone()
+        conn.close()
+        if row and row[0]:
+            return (time.time() - row[0]) < (cooldown_hours * 3600)
+    except Exception:
+        pass
+    return False
+
+
+def set_alert(symbol: str, score: int, phase: str, entry_price: float):
+    try:
+        conn = sqlite3.connect(CONFIG["pump_history_db"])
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO alerts (symbol, alerted_at, score, phase, entry_price) VALUES (?,?,?,?,?)",
+            (symbol, int(time.time()), score, phase, entry_price)
+        )
+        conn.commit()
+        conn.close()
     except Exception as e:
-        log.debug(f"Coinalyze error {endpoint}: {e}")
+        log.warning(f"set_alert failed: {e}")
+
+
+def get_pump_history(symbol: str, days: int = 30) -> List[PumpEvent]:
+    try:
+        conn = sqlite3.connect(CONFIG["pump_history_db"])
+        c = conn.cursor()
+        cutoff = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+        c.execute("""
+            SELECT timestamp, magnitude_pct, duration_hours, event_type
+            FROM pump_events WHERE symbol = ? AND timestamp >= ?
+            ORDER BY timestamp DESC
+        """, (symbol, cutoff))
+        events = [
+            PumpEvent(symbol, datetime.fromtimestamp(r[0], tz=timezone.utc), r[1], r[2], r[3])
+            for r in c.fetchall()
+        ]
+        conn.close()
+        return events
+    except Exception:
+        return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🔧  HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+def _mean(vals: List[float]) -> float:
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+def robust_zscore(val: float, baseline: List[float]) -> float:
+    if not baseline or len(baseline) < 2:
+        return 0.0
+    med = sorted(baseline)[len(baseline) // 2]
+    deviations = [abs(x - med) for x in baseline]
+    mad = sorted(deviations)[len(deviations) // 2]
+    if mad < 1e-9:
+        return 0.0
+    return (val - med) / (mad * 1.4826)
+
+
+def score_from_z(z: float, strong: float, medium: float, weight: int) -> int:
+    if z >= strong:
+        return weight
+    elif z >= medium:
+        return int(weight * 0.6)
+    return 0
+
+
+def get_chg_from_candles(candles: List[dict], n_hours: int) -> float:
+    """Rolling n-hour change dari closed candles (BUKAN chgUTC)"""
+    if len(candles) < n_hours + 2:
+        return 0.0
+    now_price = candles[-2]["close"]
+    prev_price = candles[-(n_hours + 2)]["close"]
+    if prev_price <= 0:
+        return 0.0
+    return (now_price - prev_price) / prev_price * 100
+
+
+def get_hour_utc() -> int:
+    return datetime.now(timezone.utc).hour
+
+
+def volume_tod_mult(hour: int) -> float:
+    """Time-of-day volume normalization"""
+    if 2 <= hour <= 8:
+        return 1.35   # Low hour → inflate
+    elif 13 <= hour <= 21:
+        return 0.88   # Peak hour → deflate
+    return 1.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  📐  ATR & ENTRY/SL/TP
+# ══════════════════════════════════════════════════════════════════════════════
+def calc_atr(candles: List[dict], n: int = 14) -> float:
+    trs = []
+    for i in range(2, min(n + 2, len(candles))):
+        c = candles[-i]
+        pc = candles[-(i + 1)]["close"]
+        if pc > 0:
+            tr = max(
+                (c["high"] - c["low"]) / pc,
+                abs(c["high"] - pc) / pc,
+                abs(c["low"] - pc) / pc,
+            )
+            trs.append(tr)
+    return _mean(trs) if trs else 0.02
+
+
+def calc_entry_targets(data: CoinData) -> Optional[dict]:
+    if len(data.candles) < 16:
         return None
 
-def _bn_sym(base_usdt: str) -> str:
-    """SOLUSDT → SOLUSDT_PERP.A"""
-    return base_usdt + CLZ["bn_suffix"]
+    atr = calc_atr(data.candles, CONFIG["atr_candles"])
+    entry = data.price
 
-def _by_sym(base_usdt: str) -> str:
-    """SOLUSDT → SOLUSDT.6"""
-    # Bybit tidak selalu punya semua coin — fallback ke Binance jika gagal
-    return base_usdt.replace("USDT", "USDT") + CLZ["by_suffix"]
+    # SL: volatile = lebar, quiet = sempit
+    if atr > 0.04:
+        sl_mult = CONFIG["sl_mult_volatile"]
+    elif atr > 0.02:
+        sl_mult = CONFIG["sl_mult_normal"]
+    else:
+        sl_mult = CONFIG["sl_mult_quiet"]
+
+    sl = entry * (1 - atr * sl_mult)
+    sl_pct = (entry - sl) / entry * 100
+
+    tp1 = entry * (1 + CONFIG["tp1_pct"] / 100)
+    tp2 = entry * (1 + CONFIG["tp2_pct"] / 100)
+    tp3 = entry * (1 + CONFIG["tp3_pct"] / 100)
+
+    risk = entry - sl
+    if risk <= 0:
+        return None
+
+    rr1 = (tp1 - entry) / risk
+    rr2 = (tp2 - entry) / risk
+
+    if rr1 < CONFIG["min_rr_ratio"]:
+        return None  # R/R tidak layak
+
+    return {
+        "entry": round(entry, 8),
+        "entry_zone_low": round(entry * (1 - atr * 0.3), 8),
+        "entry_zone_high": round(entry * (1 + atr * 0.2), 8),
+        "sl": round(sl, 8),
+        "sl_pct": round(sl_pct, 1),
+        "tp1": round(tp1, 8), "tp1_pct": CONFIG["tp1_pct"],
+        "tp2": round(tp2, 8), "tp2_pct": CONFIG["tp2_pct"],
+        "tp3": round(tp3, 8), "tp3_pct": CONFIG["tp3_pct"],
+        "rr1": round(rr1, 2), "rr2": round(rr2, 2),
+        "atr_pct": round(atr * 100, 2),
+        "atr_decimal": atr,
+        "sl_mult": sl_mult,
+    }
 
 
-class CoinalyzeData:
+def calc_position_size(entry: float, sl: float, atr: float) -> dict:
+    bal = CONFIG["account_balance"]
+    risk_usd = bal * CONFIG["risk_per_trade_pct"] / 100
+    risk_per_unit = (entry - sl) / entry
+    if risk_per_unit <= 0:
+        risk_per_unit = atr * CONFIG["sl_mult_normal"]
+
+    pos_needed = risk_usd / risk_per_unit
+    pos_cap = bal * CONFIG["max_position_pct"] / 100
+    pos_val = min(pos_needed, pos_cap)
+    leverage = min(pos_val / bal, CONFIG["max_leverage"]) if pos_val > bal else 1.0
+    pos_val = min(pos_val, bal * max(leverage, 1))
+
+    return {
+        "position_size": round(pos_val / entry, 6) if entry > 0 else 0,
+        "leverage": round(leverage, 2),
+        "risk_usd": round(risk_usd, 2),
+        "position_value": round(pos_val, 2),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🎯  PHASE CLASSIFICATION
+# ══════════════════════════════════════════════════════════════════════════════
+def classify_phase(chg_24h: float) -> PhaseInfo:
+    if chg_24h < -8.0:
+        return PhaseInfo("DOWNTREND", 5, "Deep downtrend", "HIGH")
+    elif chg_24h < -3.0:
+        return PhaseInfo("WEAK", 15, "Weak", "MEDIUM-HIGH")
+    elif chg_24h > 25.0:
+        return PhaseInfo("PARABOLIC", 10, "Parabolic", "EXTREME")
+    elif chg_24h > 12.0:
+        base = max(20, 40 - int(chg_24h - 12) * 2)
+        return PhaseInfo("CONTINUATION", base, "Momentum", "MEDIUM")
+    else:
+        if abs(chg_24h) <= 3.0:
+            base = 60
+        elif chg_24h <= 8.0:
+            base = 50
+        else:
+            base = 40
+        return PhaseInfo("EARLY", base, "Early — prime zone", "LOW")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🏆  TIER 1 SIGNALS — COINALYZE MULTI-EXCHANGE (paling kuat)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def score_long_short_ratio(clz: ClzData) -> Tuple[int, dict]:
     """
-    Fetch semua derivatif data untuk satu coin.
-    Dipanggil hanya untuk TESTING candidates yang lolos semua gate.
+    SINYAL TERKUAT: Long/Short Ratio dari Bybit (564 markets, hourly).
 
-    Semua nilai dalam bentuk mentah dari API, diinterpretasikan di caller.
+    Logic:
+    - Longs < 40% (shorts dominan) + OI naik = SHORT SQUEEZE IMMINENT
+    - Longs turun dalam 4h terakhir (shorts adding) = squeeze building
+    - Longs > 58% + harga naik = distribution (jangan masuk)
+
+    Fields dari probe: l=long_ratio (0-1), s=short_ratio (0-1), r=l/s ratio
     """
+    if not clz.has_ls:
+        return 0, {"source": "no_ls_data"}
 
-    @staticmethod
-    def fetch_ohlcv_btx(symbol_usdt: str) -> Optional[dict]:
-        """
-        OHLCV + btx/bv/tx dari Binance.
-        Probe: field t,o,h,l,c,v,bv,tx,btx — 0% null untuk Binance.
-        Return: dict dengan last_candle dan baseline (48H)
-        """
-        bn  = _bn_sym(symbol_usdt)
-        now = int(time.time())
-        data = _clz_get("ohlcv-history", {
-            "symbols":  bn,
-            "interval": "1hour",
-            "from":     now - CLZ["lookback_h"] * 3600,
-            "to":       now,
-        })
-        if not isinstance(data, list) or not data:
-            return None
-        hist = data[0].get("history", [])
-        if len(hist) < 5:
-            return None
+    hist = clz.ls_ratio
+    # Gunakan closed candle (-2), bukan live (-1)
+    if len(hist) < 4:
+        return 0, {"source": "insufficient_ls"}
 
-        last    = hist[-2]  # confirmed bar, bukan live
-        prev24  = hist[-26:-2] if len(hist) >= 26 else hist[:-2]
+    current_long = float(hist[-2].get("l", 0.5) or 0.5)
+    current_short = float(hist[-2].get("s", 0.5) or 0.5)
+    ls_ratio = float(hist[-2].get("r", 1.0) or 1.0)
 
-        btx     = last.get("btx", 0) or 0
-        tx      = last.get("tx",  0) or 0
-        bv      = last.get("bv",  0) or 0
-        v       = last.get("v",   0) or 0
+    # Trend: apakah longs makin berkurang dalam 4h terakhir? (shorts adding)
+    long_4h_ago = float(hist[-5].get("l", 0.5) or 0.5) if len(hist) >= 5 else current_long
+    long_trend = current_long - long_4h_ago  # Negatif = longs berkurang = shorts adding
 
-        btx_ratio = btx / tx if tx > 0 else 0.0
-        bv_ratio  = bv  / v  if v  > 0 else 0.0
+    score = 0
+    signals = []
+    cfg = CONFIG
 
-        # Baseline btx_ratio untuk Z-score
-        baseline = []
-        for c in prev24:
-            c_tx  = c.get("tx",  0) or 0
-            c_btx = c.get("btx", 0) or 0
-            if c_tx > 0:
-                baseline.append(c_btx / c_tx)
+    # === EXTREME SHORT DOMINANCE — squeeze paling likely ===
+    if current_long < cfg["ls_long_extreme_low"]:   # < 38%
+        score += 30
+        signals.append(f"EXTREME_SHORT_DOM longs={current_long:.1%}")
+    elif current_long < cfg["ls_long_low"]:          # < 44%
+        score += 20
+        signals.append(f"SHORT_DOM longs={current_long:.1%}")
 
-        btx_z = 0.0
-        if len(baseline) >= 5:
-            mu    = sum(baseline) / len(baseline)
-            sigma = math.sqrt(sum((x-mu)**2 for x in baseline) / len(baseline))
-            btx_z = (btx_ratio - mu) / sigma if sigma > 0 else 0.0
+    # === SHORTS ADDING (trend negatif) ===
+    if long_trend < -0.03:    # Longs turun >3% dalam 4h
+        score += 12
+        signals.append(f"SHORTS_ADDING Δ={long_trend:.2%}")
+    elif long_trend < -0.015:
+        score += 6
+        signals.append(f"LONGS_REDUCING Δ={long_trend:.2%}")
 
-        return {
-            "btx":       btx,
-            "tx":        tx,
-            "bv":        bv,
-            "v":         v,
-            "btx_ratio": round(btx_ratio, 4),
-            "bv_ratio":  round(bv_ratio,  4),
-            "btx_z":     round(btx_z,     3),
-            "source":    "Binance",
-        }
+    # === PENALTI: Long-heavy = distribusi, jangan masuk ===
+    if current_long > cfg["ls_long_high"]:  # > 58%
+        score = max(0, score - 15)
+        signals.append(f"⚠️ LONG_HEAVY={current_long:.1%} (distribution risk)")
 
-    @staticmethod
-    def fetch_oi(symbol_usdt: str) -> Optional[dict]:
-        """
-        Open Interest history dari Binance.
-        Probe: fields t,o,h,l,c — value dalam USD (convert_to_usd=true).
-        OI change = (c[-1] - c[-2]) / c[-2] * 100
-        OI trend  = arah 4H terakhir
-        """
-        bn  = _bn_sym(symbol_usdt)
-        now = int(time.time())
-        data = _clz_get("open-interest-history", {
-            "symbols":       bn,
-            "interval":      "1hour",
-            "from":          now - CLZ["lookback_h"] * 3600,
-            "to":            now,
-            "convert_to_usd": "true",
-        })
-        if not isinstance(data, list) or not data:
-            return None
-        hist = data[0].get("history", [])
-        if len(hist) < 3:
-            return None
-
-        curr   = hist[-1].get("c", 0) or 0
-        prev1h = hist[-2].get("c", 0) or 0
-        prev4h = hist[-5].get("c", 0) if len(hist) >= 5 else prev1h
-
-        oi_chg_1h = (curr - prev1h) / prev1h * 100 if prev1h > 0 else 0.0
-        oi_chg_4h = (curr - prev4h) / prev4h * 100 if prev4h > 0 else 0.0
-
-        # OI divergence: OI naik saat harga turun = short buildup
-        # Harga tidak tersedia di sini; caller akan hitung jika butuh
-
-        return {
-            "oi_usd":     round(curr,       0),
-            "oi_chg_1h":  round(oi_chg_1h,  3),
-            "oi_chg_4h":  round(oi_chg_4h,  3),
-            "source":     "Binance",
-        }
-
-    @staticmethod
-    def fetch_funding(symbol_usdt: str) -> Optional[dict]:
-        """
-        Funding rate history dari Binance.
-        Probe: HTTP 400 saat interval=8hour. Fix: pakai interval=1hour.
-        value = per-period rate. 0.007073 = 0.7073% per 8 jam.
-        Negatif = shorts bayar longs (short squeeze fuel).
-        """
-        bn  = _bn_sym(symbol_usdt)
-        now = int(time.time())
-        data = _clz_get("funding-rate-history", {
-            "symbols":  bn,
-            "interval": "1hour",    # FIX: bukan 8hour (tidak ada di enum)
-            "from":     now - CLZ["funding_h"] * 3600,
-            "to":       now,
-        })
-        if not isinstance(data, list) or not data:
-            return None
-        hist = data[0].get("history", [])
-        # Filter hanya entry dengan nilai non-zero (funding settle per 8H,
-        # sehingga mayoritas candle 1H akan bernilai 0)
-        nonzero = [c.get("c", 0) for c in hist if (c.get("c") or 0) != 0]
-        if not nonzero:
-            return None
-
-        current = nonzero[-1]
-        trend   = nonzero[-1] - nonzero[0] if len(nonzero) >= 2 else 0.0
-        neg_pct = sum(1 for v in nonzero if v < 0) / len(nonzero) * 100
-
-        return {
-            "funding_current": round(current,  6),
-            "funding_trend":   round(trend,    6),
-            "funding_neg_pct": round(neg_pct,  1),
-            "funding_periods": len(nonzero),
-            "source":          "Binance",
-        }
-
-    @staticmethod
-    def fetch_ls_ratio(symbol_usdt: str) -> Optional[dict]:
-        """
-        Long/Short ratio dari Bybit.
-        Probe: field l=long%, s=short%, r=ratio. Bybit punya 542 USDT perps.
-        l + s = 100. Crowded short = l < 40.
-        """
-        by  = _by_sym(symbol_usdt)
-        now = int(time.time())
-        data = _clz_get("long-short-ratio-history", {
-            "symbols":  by,
-            "interval": "1hour",
-            "from":     now - CLZ["lookback_h"] * 3600,
-            "to":       now,
-        })
-        if not isinstance(data, list) or not data:
-            # Fallback: coba Binance jika Bybit tidak punya coin ini
-            bn   = _bn_sym(symbol_usdt)
-            data = _clz_get("long-short-ratio-history", {
-                "symbols":  bn,
-                "interval": "1hour",
-                "from":     now - CLZ["lookback_h"] * 3600,
-                "to":       now,
-            })
-            if not isinstance(data, list) or not data:
-                return None
-
-        hist = data[0].get("history", [])
-        if not hist:
-            return None
-
-        last     = hist[-1]
-        long_pct = last.get("l", 50.0) or 50.0
-        short_pct= last.get("s", 50.0) or 50.0
-        ratio    = last.get("r", 1.0)  or 1.0
-
-        # Trend: apakah longs makin berkurang (bearish momentum)
-        long_trend = 0.0
-        if len(hist) >= 5:
-            long_trend = last.get("l", 50) - hist[-5].get("l", 50)
-
-        return {
-            "long_pct":   round(long_pct,  2),
-            "short_pct":  round(short_pct, 2),
-            "ls_ratio":   round(ratio,     4),
-            "long_trend": round(long_trend,2),  # + = longs bertambah, - = berkurang
-            "source":     "Bybit",
-        }
-
-    @staticmethod
-    def fetch_liquidations(symbol_usdt: str) -> Optional[dict]:
-        """
-        Liquidation history dari Binance.
-        Probe: field l=long_liq, s=short_liq (USD per jam).
-        Short liq besar = forced buying → short squeeze fuel.
-        """
-        bn  = _bn_sym(symbol_usdt)
-        now = int(time.time())
-        data = _clz_get("liquidation-history", {
-            "symbols":       bn,
-            "interval":      "1hour",
-            "from":          now - CLZ["lookback_h"] * 3600,
-            "to":            now,
-            "convert_to_usd": "true",
-        })
-        if not isinstance(data, list) or not data:
-            return None
-        hist = data[0].get("history", [])
-        if not hist:
-            return None
-
-        last        = hist[-1]
-        long_liq_1h = last.get("l", 0) or 0   # long liquidations (bearish)
-        short_liq_1h= last.get("s", 0) or 0   # short liquidations (bullish)
-        long_liq_4h = sum(c.get("l", 0) or 0 for c in hist[-4:])
-        short_liq_4h= sum(c.get("s", 0) or 0 for c in hist[-4:])
-        long_liq_24h= sum(c.get("l", 0) or 0 for c in hist[-24:])
-        short_liq_24h=sum(c.get("s", 0) or 0 for c in hist[-24:])
-
-        # Dominance: short_liq / (long_liq + short_liq)
-        total_24h = long_liq_24h + short_liq_24h
-        short_dom = short_liq_24h / total_24h if total_24h > 0 else 0.5
-
-        return {
-            "short_liq_1h":  round(short_liq_1h,  0),
-            "long_liq_1h":   round(long_liq_1h,   0),
-            "short_liq_4h":  round(short_liq_4h,  0),
-            "long_liq_4h":   round(long_liq_4h,   0),
-            "short_liq_24h": round(short_liq_24h, 0),
-            "long_liq_24h":  round(long_liq_24h,  0),
-            "short_dom_24h": round(short_dom,      3),  # > 0.6 = short squeeze fuel
-            "source":        "Binance",
-        }
-
-    @classmethod
-    def fetch_all(cls, symbol_usdt: str) -> dict:
-        """
-        Fetch semua data derivatives untuk satu coin.
-        Tiap call dilindungi try/except — partial data lebih baik dari crash.
-        Return: dict kosong jika semua gagal.
-        """
-        result = {}
-
-        try:
-            d = cls.fetch_ohlcv_btx(symbol_usdt)
-            if d: result["btx"] = d
-        except Exception as e:
-            log.debug(f"  CLZ btx {symbol_usdt}: {e}")
-
-        try:
-            d = cls.fetch_oi(symbol_usdt)
-            if d: result["oi"] = d
-        except Exception as e:
-            log.debug(f"  CLZ oi {symbol_usdt}: {e}")
-
-        try:
-            d = cls.fetch_funding(symbol_usdt)
-            if d: result["funding"] = d
-        except Exception as e:
-            log.debug(f"  CLZ funding {symbol_usdt}: {e}")
-
-        try:
-            d = cls.fetch_ls_ratio(symbol_usdt)
-            if d: result["ls"] = d
-        except Exception as e:
-            log.debug(f"  CLZ ls {symbol_usdt}: {e}")
-
-        try:
-            d = cls.fetch_liquidations(symbol_usdt)
-            if d: result["liq"] = d
-        except Exception as e:
-            log.debug(f"  CLZ liq {symbol_usdt}: {e}")
-
-        return result
+    return min(score, cfg["ls_ratio_weight"]), {
+        "long_ratio": round(current_long, 4),
+        "short_ratio": round(current_short, 4),
+        "ls_ratio_val": round(ls_ratio, 4),
+        "long_trend_4h": round(long_trend, 4),
+        "signals": signals,
+    }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  💾  STATE FILE
-# ══════════════════════════════════════════════════════════════════════════════
-def _load_state() -> dict:
-    try:
-        path = CONFIG["cooldown_file"]
-        if os.path.exists(path):
-            with open(path) as f:
-                state = json.load(f)
-            now = time.time()
-            state["cooldowns"] = {
-                k: v for k, v in state.get("cooldowns", {}).items()
-                if now - v < CONFIG["alert_cooldown_sec"]
-            }
-            return state
-    except Exception:
-        pass
-    return {"cooldowns": {}}
-
-def _save_state(state: dict) -> None:
-    try:
-        with open(CONFIG["cooldown_file"], "w") as f:
-            json.dump(state, f)
-    except Exception:
-        pass
-
-_state = _load_state()
-log.info(f"State loaded: {len(_state['cooldowns'])} cooldowns")
-
-def is_on_cooldown(sym: str) -> bool:
-    return (time.time() - _state["cooldowns"].get(sym, 0)) < CONFIG["alert_cooldown_sec"]
-
-def set_cooldown(sym: str) -> None:
-    _state["cooldowns"][sym] = time.time()
-    _save_state(_state)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  📐  MATH UTILITIES
-# ══════════════════════════════════════════════════════════════════════════════
-def _mean(arr: list) -> float:
-    return sum(arr) / len(arr) if arr else 0.0
-
-def _std(arr: list) -> float:
-    if len(arr) < 2:
-        return 0.0
-    m = _mean(arr)
-    return math.sqrt(sum((x - m) ** 2 for x in arr) / len(arr))
-
-def _zscore(value: float, series: list, min_samples: int = 10) -> float:
-    if len(series) < min_samples:
-        return 0.0
-    sigma = _std(series)
-    return (value - _mean(series)) / sigma if sigma > 0 else 0.0
-
-def _linear_score(value: float, strong: float, medium: float, weight: float) -> float:
+def score_buy_volume_ratio(clz: ClzData) -> Tuple[int, dict]:
     """
-    Interpolasi linear [0, weight] dari value relatif terhadap strong/medium.
-    value >= strong  → weight (full)
-    value >= medium  → weight/2 .. weight (partial)
-    value >= 0       → 0 .. weight/2 (minimal)
-    value < 0        → 0
+    Buy Volume Ratio dari Binance OHLCV (field: bv/v).
+
+    Fields dari probe: v=total_vol, bv=buy_vol, tx=total_tx, btx=buy_tx_count
+    Ini adalah sinyal PALING LANGSUNG dari tekanan beli Binance.
+    Karena Binance = exchange terbesar, buying di sana akan spread ke Bitget.
+
+    Pattern yang dicari:
+    - bv/v ratio naik dalam 6h terakhir = buying pressure increasing
+    - bv/v > 0.62 = strong net buying
+    - tx count naik tapi harga flat = accumulation (banyak buy order kecil)
     """
-    if value >= strong:
-        return weight
-    if value >= medium:
-        ratio = (value - medium) / (strong - medium)
-        return weight * 0.5 + ratio * weight * 0.5
-    if value >= 0:
-        ratio = value / medium if medium > 0 else 0.0
-        return ratio * weight * 0.5
-    return 0.0
+    if not clz.has_ohlcv:
+        return 0, {"source": "no_ohlcv"}
+
+    hist = clz.ohlcv
+    cfg = CONFIG
+
+    # Ambil 6 candle terakhir (closed, exclude live)
+    recent = [c for c in hist[-7:-1] if float(c.get("v", 0) or 0) > 0]
+    if len(recent) < 3:
+        return 0, {"source": "insufficient_ohlcv"}
+
+    # Hitung bv/v ratio per candle
+    bv_ratios = []
+    for c in recent:
+        v = float(c.get("v", 0) or 0)
+        bv = float(c.get("bv", 0) or 0)
+        if v > 0:
+            bv_ratios.append(bv / v)
+
+    if not bv_ratios:
+        return 0, {"source": "no_bv_data"}
+
+    avg_bv_ratio = _mean(bv_ratios)
+    last_bv_ratio = bv_ratios[-1] if bv_ratios else 0
+
+    # Trend: apakah ratio naik?
+    if len(bv_ratios) >= 3:
+        early_avg = _mean(bv_ratios[:len(bv_ratios)//2])
+        late_avg = _mean(bv_ratios[len(bv_ratios)//2:])
+        bv_trend = late_avg - early_avg  # Positif = buying pressure naik
+    else:
+        bv_trend = 0
+
+    # Buy transaction count — banyak buy tx kecil = retail/bot accumulation
+    tx_total = [float(c.get("tx", 0) or 0) for c in recent]
+    btx_count = [float(c.get("btx", 0) or 0) for c in recent]
+    avg_btx_ratio = _mean([b/t for b, t in zip(btx_count, tx_total) if t > 0])
+
+    score = 0
+    signals = []
+
+    # === BUY VOLUME RATIO SCORING ===
+    if avg_bv_ratio >= cfg["bv_ratio_strong"]:    # > 62%
+        score += 25
+        signals.append(f"STRONG_BUY bv/v={avg_bv_ratio:.1%}")
+    elif avg_bv_ratio >= cfg["bv_ratio_moderate"]: # > 55%
+        score += 15
+        signals.append(f"NET_BUYING bv/v={avg_bv_ratio:.1%}")
+
+    # === TREND ACCELERATING ===
+    if bv_trend > 0.05:   # Ratio naik >5% dalam window
+        score += 8
+        signals.append(f"BUYING_ACCEL Δ={bv_trend:.2%}")
+    elif bv_trend > 0.02:
+        score += 4
+        signals.append(f"BUYING_RISING Δ={bv_trend:.2%}")
+
+    # === BUY TX DOMINANCE ===
+    if avg_btx_ratio >= 0.60:
+        score += 5
+        signals.append(f"BUY_TX_DOM btx_ratio={avg_btx_ratio:.1%}")
+
+    return min(score, cfg["buy_vol_ratio_weight"]), {
+        "avg_bv_ratio": round(avg_bv_ratio, 4),
+        "last_bv_ratio": round(last_bv_ratio, 4),
+        "bv_trend": round(bv_trend, 4),
+        "avg_btx_ratio": round(avg_btx_ratio, 4),
+        "signals": signals,
+    }
+
+
+def score_funding_trend(clz: ClzData, current_funding: float) -> Tuple[int, dict]:
+    """
+    Funding Rate TREND dari history (8h interval, 7 hari lookback).
+
+    Pattern yang dicari:
+    - Funding makin negatif dalam 24h = shorts terus adding = squeeze building
+    - Funding extreme (<-0.10%) + OI naik = squeeze imminent
+    - Funding flip: positif → negatif dalam 24h = sentiment shift
+
+    Field dari probe: c = funding rate per entry
+    """
+    cfg = CONFIG
+    score = 0
+    signals = []
+
+    # === SNAPSHOT SCORE (current funding) ===
+    if current_funding < -0.0010:       # Extreme: < -0.1%
+        score += cfg["funding_snapshot_weight"]
+        signals.append(f"EXTREME_FUNDING={current_funding*100:.4f}%")
+    elif current_funding < -0.0005:     # Strong: < -0.05%
+        score += int(cfg["funding_snapshot_weight"] * 0.7)
+        signals.append(f"STRONG_NEG_FUNDING={current_funding*100:.4f}%")
+    elif current_funding < -0.0002:
+        score += int(cfg["funding_snapshot_weight"] * 0.4)
+        signals.append(f"NEG_FUNDING={current_funding*100:.4f}%")
+
+    # === TREND SCORE (dari history) ===
+    if not clz.has_funding_hist:
+        return min(score, cfg["funding_trend_weight"] + cfg["funding_snapshot_weight"]), {
+            "signals": signals, "trend": "no_history"
+        }
+
+    hist = clz.funding_hist
+    rates = [float(c.get("c", 0) or 0) for c in hist if c.get("c") is not None]
+
+    if len(rates) < 3:
+        return score, {"signals": signals}
+
+    # 24h = 3 data points (8h interval)
+    # 72h = 9 data points
+    recent_24h = rates[-3:]    # Last 3 entries = 24h
+    prev_24h = rates[-6:-3] if len(rates) >= 6 else rates[:3]
+
+    avg_recent = _mean(recent_24h)
+    avg_prev = _mean(prev_24h)
+    funding_drift = avg_recent - avg_prev  # Negatif = makin bearish funding
+
+    # Trend: makin negatif = shorts terus adding
+    if funding_drift < -0.0003:   # Drift >0.03% more negative per 24h
+        score += cfg["funding_trend_weight"]
+        signals.append(f"FUNDING_TRENDING_NEGATIVE Δ={funding_drift*100:.4f}%")
+    elif funding_drift < -0.0001:
+        score += int(cfg["funding_trend_weight"] * 0.6)
+        signals.append(f"FUNDING_DRIFTING_NEG Δ={funding_drift*100:.4f}%")
+
+    # Funding flip: sebelumnya positif, sekarang negatif (sentiment shift)
+    if avg_prev > 0.0001 and avg_recent < -0.0001:
+        score += 8
+        signals.append(f"FUNDING_FLIPPED_NEG (was +{avg_prev*100:.4f}%)")
+
+    # Consistently negative over 72h = strong squeeze pressure
+    neg_count = sum(1 for r in rates[-9:] if r < -0.0001)
+    if neg_count >= 7:  # 7 dari 9 data points negatif
+        score += 6
+        signals.append(f"PERSISTENT_NEG {neg_count}/9 entries negative")
+
+    total_weight = cfg["funding_trend_weight"] + cfg["funding_snapshot_weight"]
+    return min(score, total_weight), {
+        "current": round(current_funding * 100, 5),
+        "avg_24h": round(avg_recent * 100, 5),
+        "avg_prev_24h": round(avg_prev * 100, 5),
+        "drift": round(funding_drift * 100, 5),
+        "signals": signals,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🌐  BITGET CLIENT
+#  🏆  TIER 2 SIGNALS — COINALYZE CONFIRMATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def score_oi_buildup(clz: ClzData) -> Tuple[int, dict]:
+    """
+    OI Buildup: OI naik tapi harga flat = accumulation (bukan pump).
+    OI naik + harga naik = momentum (bullish).
+    OI turun = deleveraging (tidak ada setup).
+
+    Field: c = OI value (USD)
+    """
+    if not clz.has_oi:
+        return 0, {"source": "no_oi"}
+
+    hist = clz.oi
+    # 4h OI change
+    if len(hist) < 6:
+        return 0, {"source": "insufficient_oi"}
+
+    oi_now = float(hist[-2].get("c", 0) or 0)
+    oi_4h = float(hist[-5].get("c", 0) or 0)
+    oi_12h = float(hist[-13].get("c", 0) or 0) if len(hist) >= 13 else oi_4h
+
+    if oi_4h <= 0:
+        return 0, {"source": "oi_zero"}
+
+    oi_chg_4h = (oi_now - oi_4h) / oi_4h * 100
+    oi_chg_12h = (oi_now - oi_12h) / oi_12h * 100 if oi_12h > 0 else 0
+
+    # OI trend (naik konsisten)
+    oi_vals = [float(c.get("c", 0) or 0) for c in hist[-12:-1]]
+    oi_trend_up = sum(1 for i in range(1, len(oi_vals)) if oi_vals[i] > oi_vals[i-1])
+    oi_consistency = oi_trend_up / max(len(oi_vals) - 1, 1)
+
+    score = 0
+    signals = []
+    w = CONFIG["oi_buildup_weight"]
+
+    if oi_chg_4h > 5.0 and oi_consistency >= 0.6:
+        score += w
+        signals.append(f"STRONG_OI_BUILDUP +{oi_chg_4h:.1f}% 4h (consistency={oi_consistency:.0%})")
+    elif oi_chg_4h > 2.5:
+        score += int(w * 0.6)
+        signals.append(f"OI_BUILDUP +{oi_chg_4h:.1f}% 4h")
+    elif oi_chg_4h > 1.0:
+        score += int(w * 0.3)
+        signals.append(f"OI_RISING +{oi_chg_4h:.1f}% 4h")
+
+    # Bonus: sustained buildup (12h)
+    if oi_chg_12h > 8.0:
+        score += 5
+        signals.append(f"OI_BUILDUP_12H +{oi_chg_12h:.1f}%")
+
+    return min(score, w + 5), {
+        "oi_chg_4h_pct": round(oi_chg_4h, 2),
+        "oi_chg_12h_pct": round(oi_chg_12h, 2),
+        "oi_consistency": round(oi_consistency, 2),
+        "signals": signals,
+    }
+
+
+def score_liquidations(clz: ClzData) -> Tuple[int, dict]:
+    """
+    Short Liquidation Cascade: short_liq naik = squeeze mulai / akan mulai.
+
+    Field: l = long liq USD, s = short liq USD
+    Pattern:
+    - Short liq spike (vs baseline) = shorts being squeezed NOW
+    - Short liq accelerating (setiap jam makin besar) = cascade ongoing
+    - Long liq spike = shorts attacking longs (bearish, skip)
+    """
+    if not clz.has_liq:
+        return 0, {"source": "no_liq"}
+
+    hist = clz.liq
+    if len(hist) < 6:
+        return 0, {"source": "insufficient_liq"}
+
+    # Baseline: exclude 3 candle terbaru
+    baseline_short = [float(c.get("s", 0) or 0) for c in hist[-24:-3]]
+    baseline_long = [float(c.get("l", 0) or 0) for c in hist[-24:-3]]
+
+    current_short = float(hist[-2].get("s", 0) or 0)
+    current_long = float(hist[-2].get("l", 0) or 0)
+
+    if not baseline_short:
+        return 0, {"source": "no_baseline"}
+
+    baseline_avg_short = _mean(baseline_short) + 1  # +1 untuk avoid /0
+    baseline_avg_long = _mean(baseline_long) + 1
+
+    short_liq_z = robust_zscore(current_short, baseline_short)
+    short_ratio = current_short / baseline_avg_short
+
+    # Cascade detection: apakah short liq naik terus dalam 4h?
+    recent_4h_short = [float(c.get("s", 0) or 0) for c in hist[-5:-1]]
+    cascade_score = 0
+    if len(recent_4h_short) >= 3:
+        increases = sum(1 for i in range(1, len(recent_4h_short))
+                       if recent_4h_short[i] > recent_4h_short[i-1] * 1.1)
+        cascade_score = increases  # 0-3
+
+    score = 0
+    signals = []
+    w = CONFIG["short_liq_weight"]
+
+    if short_liq_z >= 2.5:
+        score += w
+        signals.append(f"SHORT_LIQ_SPIKE z={short_liq_z:.1f} x{short_ratio:.1f}")
+    elif short_liq_z >= 1.5:
+        score += int(w * 0.6)
+        signals.append(f"SHORT_LIQ_ELEVATED z={short_liq_z:.1f}")
+
+    # Cascade bonus
+    if cascade_score >= 2:
+        score += CONFIG["liq_cascade_weight"]
+        signals.append(f"SHORT_LIQ_CASCADE {cascade_score}/3 candles accelerating")
+    elif cascade_score == 1:
+        score += int(CONFIG["liq_cascade_weight"] * 0.5)
+
+    # Penalti: long liq dominan = bears attacking (skip)
+    if current_long > current_short * 2 and current_long > baseline_avg_long * 2:
+        score = max(0, score - 10)
+        signals.append(f"⚠️ LONG_LIQ_DOM (bears in control)")
+
+    return min(score, w + CONFIG["liq_cascade_weight"]), {
+        "short_liq_z": round(short_liq_z, 2),
+        "short_ratio": round(short_ratio, 2),
+        "cascade_score": cascade_score,
+        "short_usd": round(current_short),
+        "long_usd": round(current_long),
+        "signals": signals,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🏆  TIER 3 SIGNALS — BITGET CANDLES (Technical)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detect_bbw_squeeze(candles: List[dict]) -> Tuple[int, dict]:
+    """BBW squeeze — menggunakan proper Bollinger Band formula"""
+    if len(candles) < 22:
+        return 0, {}
+
+    closes = [c["close"] for c in candles[-20:]]
+    sma = _mean(closes)
+    if sma <= 0:
+        return 0, {}
+
+    var = sum((x - sma) ** 2 for x in closes) / 20
+    std = var ** 0.5
+    bb_w = (sma + 2*std - (sma - 2*std)) / sma  # (upper - lower) / mid
+
+    # Historical minimum BBW
+    getting_tighter = False
+    if len(candles) >= 44:
+        prev_closes = [c["close"] for c in candles[-44:-24]]
+        if prev_closes:
+            p_sma = _mean(prev_closes)
+            p_var = sum((x - p_sma) ** 2 for x in prev_closes) / len(prev_closes)
+            p_std = p_var ** 0.5
+            p_bbw = (p_sma + 2*p_std - (p_sma - 2*p_std)) / p_sma if p_sma > 0 else 0
+            getting_tighter = bb_w < p_bbw
+
+    w = CONFIG["bbw_squeeze_weight"]
+    if bb_w < 0.04:
+        score, pat = w, "EXTREME_SQUEEZE"
+    elif bb_w < 0.06:
+        score, pat = int(w * 0.8), "TIGHT_SQUEEZE"
+    elif bb_w < 0.08:
+        score, pat = int(w * 0.55), "MODERATE_SQUEEZE"
+    elif bb_w < 0.10:
+        score, pat = int(w * 0.28), "LIGHT_SQUEEZE"
+    else:
+        score, pat = 0, "NO_SQUEEZE"
+
+    if getting_tighter and score > 0:
+        score = min(score + 5, w + 5)
+        pat += "+SQUEEZING"
+
+    return score, {"bb_w": round(bb_w, 4), "pattern": pat, "tighter": getting_tighter}
+
+
+def detect_price_stability(candles: List[dict]) -> Tuple[int, dict]:
+    """Price stability dalam 8 jam — coiling sebelum breakout"""
+    if len(candles) < 10:
+        return 0, {}
+    recent = candles[-9:-1]  # 8 closed candles
+    closes = [c["close"] for c in recent]
+    lo, hi = min(closes), max(closes)
+    ref = (lo + hi) / 2
+    if ref <= 0:
+        return 0, {}
+    range_pct = (hi - lo) / ref * 100
+
+    last = candles[-2]
+    curr_chg = (last["close"] - last["open"]) / last["open"] * 100 if last.get("open", 0) > 0 else 0
+
+    w = CONFIG["price_stability_weight"]
+    if range_pct < 1.5 and abs(curr_chg) < 0.5:
+        return w, {"range_pct": round(range_pct, 2), "pattern": "COILING"}
+    elif range_pct < 2.5:
+        return int(w * 0.67), {"range_pct": round(range_pct, 2), "pattern": "CONSOLIDATING"}
+    elif range_pct < 4.0:
+        return int(w * 0.33), {"range_pct": round(range_pct, 2), "pattern": "RANGING"}
+    return 0, {"range_pct": round(range_pct, 2), "pattern": "WIDE"}
+
+
+def detect_volume_dryup(candles: List[dict]) -> Tuple[int, dict]:
+    """Volume dry-up dengan time-of-day normalization"""
+    if len(candles) < 26:
+        return 0, {}
+    cur_vol = candles[-2].get("volume_usd", 0)
+    avg_vol = _mean([c.get("volume_usd", 0) for c in candles[-26:-2]])
+    if avg_vol <= 0:
+        return 0, {}
+
+    tod = volume_tod_mult(get_hour_utc())
+    adj_ratio = (cur_vol * tod) / avg_vol
+
+    w = CONFIG["volume_dryup_weight"]
+    if adj_ratio < 0.35:
+        return w, {"ratio": round(adj_ratio, 2), "pattern": "EXTREME_DRY"}
+    elif adj_ratio < 0.50:
+        return int(w * 0.7), {"ratio": round(adj_ratio, 2), "pattern": "VERY_DRY"}
+    elif adj_ratio < 0.65:
+        return int(w * 0.4), {"ratio": round(adj_ratio, 2), "pattern": "DRY"}
+    return 0, {"ratio": round(adj_ratio, 2), "pattern": "NORMAL"}
+
+
+def detect_accumulation(candles: List[dict]) -> Tuple[int, dict]:
+    """Volume spike tanpa price spike = whale accumulation (Bitget candles)"""
+    if len(candles) < 26:
+        return 0, {}
+    cur_vol = _mean([c.get("volume_usd", 0) for c in candles[-7:-1]])
+    base_vol = _mean([c.get("volume_usd", 0) for c in candles[-25:-7]])
+    if base_vol <= 0:
+        return 0, {}
+    ratio = cur_vol / base_vol
+
+    if candles[-7]["close"] > 0:
+        p_chg = (candles[-2]["close"] - candles[-7]["close"]) / candles[-7]["close"] * 100
+    else:
+        return 0, {}
+
+    w = CONFIG["accumulation_weight"]
+    if ratio >= 3.0 and -2 < p_chg < 4:
+        return w, {"vol_ratio": round(ratio, 2), "price_chg": round(p_chg, 2), "pattern": "STRONG_ACCUM"}
+    elif ratio >= 2.5 and -2 < p_chg < 5:
+        return int(w * 0.75), {"vol_ratio": round(ratio, 2), "price_chg": round(p_chg, 2), "pattern": "ACCUM"}
+    elif ratio >= 2.0 and -1 < p_chg < 4:
+        return int(w * 0.5), {"vol_ratio": round(ratio, 2), "price_chg": round(p_chg, 2), "pattern": "LIGHT_ACCUM"}
+    return 0, {"vol_ratio": round(ratio, 2), "pattern": "NO_ACCUM"}
+
+
+def detect_volatility_return(candles: List[dict]) -> Tuple[int, dict]:
+    """Long quiet period → explosive breakout (Type F pump)"""
+    if len(candles) < 50:
+        return 0, {}
+    atr_now = calc_atr(candles[-22:], 14)
+    atr_hist = calc_atr(candles[-72:-24], 14) if len(candles) >= 74 else calc_atr(candles[:-24], 14)
+    if atr_hist <= 0:
+        return 0, {}
+    ratio = atr_now / atr_hist
+    w = CONFIG["volatility_return_weight"]
+    if ratio < 0.40:
+        return w, {"atr_ratio": round(ratio, 3), "pattern": "EXTREME_QUIET"}
+    elif ratio < 0.60:
+        return int(w * 0.7), {"atr_ratio": round(ratio, 3), "pattern": "VERY_QUIET"}
+    elif ratio < 0.75:
+        return int(w * 0.4), {"atr_ratio": round(ratio, 3), "pattern": "QUIET"}
+    return 0, {"atr_ratio": round(ratio, 3), "pattern": "NORMAL_VOL"}
+
+
+def detect_rs_btc(coin_chg_1h: float, btc_chg_1h: float) -> Tuple[int, dict]:
+    """Relative strength vs BTC — decoupling = accumulation signal"""
+    if btc_chg_1h == 0:
+        return 0, {"rs": 0}
+    rs = coin_chg_1h - btc_chg_1h
+    w = CONFIG["rs_btc_weight"]
+    if rs > 3.0 and btc_chg_1h <= 0.5:
+        return w, {"rs": round(rs, 2), "pattern": "STRONG_DECOUPLE"}
+    elif rs > 2.0:
+        return int(w * 0.67), {"rs": round(rs, 2), "pattern": "OUTPERFORMING"}
+    elif rs > 1.0:
+        return int(w * 0.33), {"rs": round(rs, 2), "pattern": "SLIGHTLY_BETTER"}
+    return 0, {"rs": round(rs, 2), "pattern": "INLINE"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🔄  CONTINUATION & REVERSAL
+# ══════════════════════════════════════════════════════════════════════════════
+def check_multiwave_history(symbol: str) -> Tuple[int, dict]:
+    history = get_pump_history(symbol, CONFIG["multiwave_lookback_days"])
+    pumps = [e for e in history if e.type == "PUMP" and e.magnitude_pct >= CONFIG["pump_threshold_pct"]]
+    if len(pumps) < 2:
+        return 0, {}
+    gaps = [(pumps[i].timestamp - pumps[i+1].timestamp).total_seconds() / 3600
+            for i in range(len(pumps) - 1)]
+    avg_gap = _mean(gaps)
+    hours_since = (datetime.now(timezone.utc) - pumps[0].timestamp).total_seconds() / 3600
+    in_window = False
+    if avg_gap > 0:
+        if avg_gap * 0.5 <= hours_since <= avg_gap * 1.5:
+            score, pattern, in_window = 30, "IN_WINDOW", True
+        elif hours_since < avg_gap * 0.5:
+            score, pattern = 10, "TOO_EARLY"
+        elif hours_since <= avg_gap * 2:
+            score, pattern = 15, "NEAR_WINDOW"
+        else:
+            score, pattern = 0, "TOO_LATE"
+    else:
+        score, pattern = 0, "NO_GAP_DATA"
+    return score, {
+        "num_pumps": len(pumps), "avg_gap_h": round(avg_gap, 1),
+        "hours_since": round(hours_since, 1), "pattern": pattern, "in_window": in_window,
+    }
+
+
+def check_reversal_pattern(data: CoinData) -> Tuple[int, dict]:
+    candles = data.candles
+    score, signals = 0, []
+    distance = None
+    # Support level
+    if len(candles) >= 48:
+        lows = [c["low"] for c in candles[-48:]]
+        clusters: Dict[float, int] = {}
+        for low in lows:
+            matched = False
+            for cp in list(clusters.keys()):
+                if abs(low - cp) / cp < 0.015:
+                    clusters[cp] += 1
+                    matched = True
+                    break
+            if not matched:
+                clusters[low] = 1
+        if clusters:
+            support = max(clusters, key=clusters.get)
+            if clusters[support] >= 3:
+                distance = abs(data.price - support) / support
+                if distance < 0.015:
+                    score += 22; signals.append("AT_SUPPORT")
+                elif distance < 0.04:
+                    score += 12; signals.append("NEAR_SUPPORT")
+    # Capitulation volume
+    if len(candles) >= 24:
+        cv = candles[-2].get("volume_usd", 0)
+        av = _mean([c.get("volume_usd", 0) for c in candles[-24:-2]])
+        if av > 0 and cv > av * 3:
+            score += 15; signals.append("CAPITULATION_VOL")
+    # Rejection wick
+    last = candles[-2]
+    cr = last["high"] - last["low"]
+    if cr > 0 and (last["close"] - last["low"]) / cr > 0.55:
+        score += 10; signals.append("REJECTION_WICK")
+    # Funding extreme
+    if data.funding < -0.0005:
+        score += 12; signals.append("FUNDING_EXTREME")
+    return score, {"signals": signals, "distance_pct": round(distance*100, 2) if distance else None}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🚪  VELOCITY GATES
+# ══════════════════════════════════════════════════════════════════════════════
+def check_velocity_gates(chg_24h: float, chg_1h: float, chg_4h: float,
+                          is_continuation: bool = False) -> Tuple[bool, str]:
+    cfg = CONFIG["velocity_gates"]
+    if chg_24h < cfg["chg_24h_min"]:
+        return True, f"⛔ DUMP Δ24h={chg_24h:+.1f}%"
+    max_24h = cfg["chg_24h_max_continuation"] if is_continuation else cfg["chg_24h_max_early"]
+    if chg_24h > max_24h:
+        return True, f"⛔ LATE Δ24h={chg_24h:+.1f}%"
+    if chg_1h > cfg["chg_1h_max"]:
+        return True, f"⛔ PUMPING Δ1h={chg_1h:+.1f}%"
+    if chg_4h > cfg["chg_4h_max"]:
+        return True, f"⛔ LATE 4h Δ4h={chg_4h:+.1f}%"
+    return False, ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🏆  MASTER SCORING v14.0
+# ══════════════════════════════════════════════════════════════════════════════
+def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
+    if data.vol_24h < CONFIG["pre_filter_vol_min"] or data.price <= 0:
+        return None
+
+    phase = classify_phase(data.chg_24h)
+    is_cont = phase.phase == "CONTINUATION"
+
+    if phase.phase not in ["DOWNTREND", "WEAK"]:
+        blocked, reason = check_velocity_gates(data.chg_24h, data.chg_1h, data.chg_4h, is_cont)
+        if blocked:
+            log.debug(f"  {data.symbol}: {reason}")
+            return None
+
+    clz = data.clz
+    phase_score = phase.base_score
+    catalysts = []
+    risk_warnings = []
+    pump_types: List[PumpType] = []
+
+    # ─── TIER 1: Coinalyze Multi-Exchange ────────────────────────────────────
+    ls_sc, ls_d = score_long_short_ratio(clz)
+    bv_sc, bv_d = score_buy_volume_ratio(clz)
+    fund_sc, fund_d = score_funding_trend(clz, data.funding)
+
+    tier1_score = ls_sc + bv_sc + fund_sc
+
+    # Log tier 1
+    if ls_sc > 0:
+        catalysts.append(f"📊 L/S={ls_d.get('long_ratio',0):.1%}longs {' | '.join(ls_d.get('signals',[])[:2])}")
+    if bv_sc > 0:
+        catalysts.append(f"💚 BuyVol={bv_d.get('avg_bv_ratio',0):.1%} {' | '.join(bv_d.get('signals',[])[:2])}")
+    if fund_sc > 0:
+        catalysts.append(f"💰 Fund={fund_d.get('current',0):.4f}% {' | '.join(fund_d.get('signals',[])[:2])}")
+
+    # ─── TIER 2: Coinalyze Confirmation ──────────────────────────────────────
+    oi_sc, oi_d = score_oi_buildup(clz)
+    liq_sc, liq_d = score_liquidations(clz)
+
+    tier2_score = oi_sc + liq_sc
+
+    if oi_sc > 0:
+        catalysts.append(f"📈 OI +{oi_d.get('oi_chg_4h_pct',0):.1f}%4h {' | '.join(oi_d.get('signals',[])[:1])}")
+    if liq_sc > 0:
+        catalysts.append(f"💥 ShortLiq z={liq_d.get('short_liq_z',0):.1f} {' | '.join(liq_d.get('signals',[])[:2])}")
+
+    # ─── TIER 3: Bitget Technical ────────────────────────────────────────────
+    bbw_sc, bbw_d = detect_bbw_squeeze(data.candles)
+    stab_sc, stab_d = detect_price_stability(data.candles)
+    dry_sc, dry_d = detect_volume_dryup(data.candles)
+    accum_sc, accum_d = detect_accumulation(data.candles)
+    vret_sc, vret_d = detect_volatility_return(data.candles)
+    rs_sc, rs_d = detect_rs_btc(data.chg_1h, data.btc_chg_1h)
+
+    tier3_score = bbw_sc + stab_sc + dry_sc + accum_sc + vret_sc + rs_sc
+
+    if bbw_sc > 0:
+        catalysts.append(f"📐 BBW={bbw_d.get('bb_w',0):.3f} {bbw_d.get('pattern','')}")
+    if accum_sc > 0:
+        catalysts.append(f"🐋 Accum x{accum_d.get('vol_ratio',0):.1f} Δp={accum_d.get('price_chg',0):+.1f}%")
+    if vret_sc > 0:
+        catalysts.append(f"⚡ {vret_d.get('pattern','')} atr_ratio={vret_d.get('atr_ratio',0):.2f}")
+    if rs_sc > 0:
+        catalysts.append(f"📊 RS={rs_d.get('rs',0):+.1f}% vs BTC")
+
+    # ─── PUMP TYPE CLASSIFICATION ─────────────────────────────────────────────
+    # Identify dominant pump type berdasarkan score distribution
+    if ls_sc >= 20 and (liq_sc >= 10 or fund_sc >= 15):
+        pump_types.append(PumpType("E", "Short Squeeze", min((ls_sc + liq_sc + fund_sc) * 2, 100),
+                                    ls_d.get("signals", []) + liq_d.get("signals", [])))
+
+    if bv_sc >= 15 and accum_sc >= 10:
+        pump_types.append(PumpType("B", "Whale Accumulation", min((bv_sc + accum_sc) * 3, 100),
+                                    bv_d.get("signals", []) + [accum_d.get("pattern", "")]))
+
+    if bbw_sc >= 15 and (stab_sc >= 8 or dry_sc >= 6):
+        pump_types.append(PumpType("D", "Technical Breakout", min((bbw_sc + stab_sc) * 3, 100),
+                                    [bbw_d.get("pattern", ""), stab_d.get("pattern", "")]))
+
+    if vret_sc >= 10:
+        pump_types.append(PumpType("F", "Volatility Return", min(vret_sc * 5, 100),
+                                    [vret_d.get("pattern", "")]))
+
+    # ─── CONTINUATION / REVERSAL ─────────────────────────────────────────────
+    mw_bonus = 0
+    if phase.phase in ["EARLY", "CONTINUATION", "PARABOLIC"]:
+        mw_sc, mw_d = check_multiwave_history(data.symbol)
+        if mw_sc > 0:
+            mw_bonus = mw_sc
+            catalysts.append(f"🔄 Multi-wave {mw_d['num_pumps']}x, gap {mw_d['avg_gap_h']:.0f}h [{mw_d['pattern']}]")
+            pump_types.append(PumpType("G", "Multi-wave", mw_sc, [mw_d.get("pattern", "")]))
+
+    reversal_score = 0
+    if phase.phase in ["DOWNTREND", "WEAK"]:
+        rev_sc, rev_d = check_reversal_pattern(data)
+        reversal_score = rev_sc
+        if rev_sc >= 35:
+            catalysts.append(f"↩️ Reversal: {', '.join(rev_d.get('signals', []))}")
+            pump_types.append(PumpType("R", "Reversal Bounce", min(rev_sc, 100), rev_d.get("signals", [])))
+        else:
+            risk_warnings.append(f"⚠️ Reversal weak ({rev_sc}pts) — falling knife risk")
+
+    # ─── TOTAL SCORE ──────────────────────────────────────────────────────────
+    total = phase_score + tier1_score + tier2_score + tier3_score + mw_bonus + reversal_score
+
+    # Data quality penalty: jika tidak ada data Coinalyze sama sekali
+    has_any_clz = clz.has_ohlcv or clz.has_oi or clz.has_liq or clz.has_ls or clz.has_funding_hist
+    if not has_any_clz:
+        risk_warnings.append("⚠️ No Coinalyze data — score based on Bitget candles only")
+
+    # ─── THRESHOLD ────────────────────────────────────────────────────────────
+    if phase.phase == "EARLY":
+        threshold = CONFIG["alert_threshold_early"]
+    elif phase.phase == "CONTINUATION":
+        threshold = CONFIG["alert_threshold_continuation"]
+    elif phase.phase in ["DOWNTREND", "WEAK"]:
+        threshold = CONFIG["alert_threshold_reversal"]
+    else:
+        threshold = 110  # PARABOLIC: strict
+
+    if total < threshold:
+        return None
+
+    if not pump_types:
+        return None  # Harus ada tipe pump yang teridentifikasi
+
+    # ─── ENTRY / SL / TP ─────────────────────────────────────────────────────
+    entry_data = calc_entry_targets(data)
+    if entry_data is None:
+        return None  # R/R tidak layak
+
+    position = calc_position_size(entry_data["entry"], entry_data["sl"], entry_data["atr_decimal"])
+
+    # ─── URGENCY & CONFIDENCE ─────────────────────────────────────────────────
+    type_labels = {
+        "E": "💰 SHORT SQUEEZE", "B": "🐋 WHALE ACCUM",
+        "D": "📐 BREAKOUT", "F": "⚡ VOL RETURN",
+        "G": "🔄 CONTINUATION", "R": "↩️ REVERSAL"
+    }
+    top = pump_types[0]
+    all_types = "/".join([pt.type_code for pt in pump_types])
+    urg = f"{type_labels.get(top.type_code, '🎯')} [{all_types}]"
+
+    confidence = "very_strong" if total >= 120 else "strong" if total >= 90 else "watch"
+
+    # Data coverage info
+    data_sources = []
+    if clz.has_ls: data_sources.append("L/S✅")
+    if clz.has_ohlcv: data_sources.append("BV✅")
+    if clz.has_funding_hist: data_sources.append("Fund✅")
+    if clz.has_oi: data_sources.append("OI✅")
+    if clz.has_liq: data_sources.append("Liq✅")
+
+    return ScoreResult(
+        symbol=data.symbol, score=min(total, 250),
+        phase=phase.phase, pump_types=pump_types, confidence=confidence,
+        components={
+            "phase": phase_score,
+            "tier1_clz": tier1_score, "tier2_clz": tier2_score,
+            "tier3_technical": tier3_score, "multiwave": mw_bonus,
+            "reversal": reversal_score,
+            "detail": {
+                "ls": ls_sc, "bv": bv_sc, "fund": fund_sc,
+                "oi": oi_sc, "liq": liq_sc,
+                "bbw": bbw_sc, "stab": stab_sc, "dry": dry_sc,
+                "accum": accum_sc, "vret": vret_sc, "rs": rs_sc,
+            },
+            "data_sources": " ".join(data_sources) if data_sources else "Bitget-only",
+        },
+        catalysts=catalysts, entry=entry_data,
+        price=data.price, vol_24h=data.vol_24h,
+        chg_24h=data.chg_24h, chg_1h=data.chg_1h,
+        funding=data.funding, urgency=urg,
+        risk_warnings=risk_warnings, position=position,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  📤  ALERT BUILDER v14.0
+# ══════════════════════════════════════════════════════════════════════════════
+def build_alert_v14(r: ScoreResult, rank: int) -> str:
+    vol = f"${r.vol_24h/1e6:.1f}M" if r.vol_24h >= 1e6 else f"${r.vol_24h/1e3:.0f}K"
+    em = {"very_strong": "🟢", "strong": "🟡", "watch": "⚪"}.get(r.confidence, "⚪")
+    bar_len = min(20, r.score * 20 // 200)
+    bar = "█" * bar_len + "░" * (20 - bar_len)
+    comp = r.components
+    d = comp.get("detail", {})
+
+    lines = [
+        f"{'─'*58}",
+        f"#{rank}  {r.symbol}  {em}  Score: {r.score}  [{r.phase}]",
+        f"   {bar}",
+        f"   {r.urgency}",
+        f"   Data: {comp.get('data_sources', 'N/A')}",
+        f"",
+    ]
+
+    if r.catalysts:
+        lines.append("   📊 Signals:")
+        for c in r.catalysts[:7]:
+            lines.append(f"      {c}")
+        lines.append("")
+
+    if r.risk_warnings:
+        lines.append("   ⚠️ Risks:")
+        for w in r.risk_warnings[:3]:
+            lines.append(f"      {w}")
+        lines.append("")
+
+    lines.append(f"   Vol: {vol} | Δ1h: {r.chg_1h:+.1f}% | Δ24h: {r.chg_24h:+.1f}% | F: {r.funding*100:.4f}%")
+    lines.append(f"   Phase:{comp['phase']} T1:{comp['tier1_clz']} T2:{comp['tier2_clz']} T3:{comp['tier3_technical']}")
+    lines.append(f"   L/S:{d.get('ls',0)} BV:{d.get('bv',0)} Fund:{d.get('fund',0)} OI:{d.get('oi',0)} Liq:{d.get('liq',0)}")
+    lines.append(f"   BBW:{d.get('bbw',0)} Accum:{d.get('accum',0)} VRet:{d.get('vret',0)} RS:{d.get('rs',0)}")
+
+    if r.entry:
+        e = r.entry
+        lines += [
+            f"",
+            f"   💰 ENTRY ZONE:",
+            f"      Low:  ${e['entry_zone_low']:.8f}  ← pullback entry",
+            f"      Mid:  ${e['entry']:.8f}  ← ideal",
+            f"      High: ${e['entry_zone_high']:.8f}  ← breakout confirm",
+            f"      SL:   ${e['sl']:.8f}  (-{e['sl_pct']:.1f}%)  [ATR×{e['sl_mult']:.1f}]",
+            f"      TP1:  ${e['tp1']:.8f}  (+{e['tp1_pct']:.0f}%)  R/R {e['rr1']:.1f}x",
+            f"      TP2:  ${e['tp2']:.8f}  (+{e['tp2_pct']:.0f}%)  R/R {e['rr2']:.1f}x",
+            f"      TP3:  ${e['tp3']:.8f}  (+{e['tp3_pct']:.0f}%)  [trailing]",
+        ]
+
+    if r.position:
+        p = r.position
+        lines.append(f"      Size: {p['position_size']:.4f} | Lev: {p['leverage']:.1f}x | Risk: ${p['risk_usd']:.0f}")
+
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  🌐  API CLIENTS
 # ══════════════════════════════════════════════════════════════════════════════
 class BitgetClient:
     BASE = "https://api.bitget.com"
-    _candle_cache: Dict = {}
+    _cache: Dict = {}
+    _cache_ts: Dict = {}
+    CACHE_TTL = 55 * 60
 
     @staticmethod
     def _get(url: str, params: dict = None, timeout: int = 12) -> Optional[dict]:
@@ -625,1143 +1416,452 @@ class BitgetClient:
                 return r.json()
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 429:
-                    log.warning("Bitget rate limit — tunggu 30s")
-                    time.sleep(30); continue
-                if e.response.status_code not in (400, 404):
-                    log.warning(f"Bitget HTTP {e.response.status_code}")
+                    time.sleep(10); continue
                 break
             except Exception:
-                if attempt < 2:
-                    time.sleep(3)
+                if attempt < 2: time.sleep(3)
         return None
 
     @classmethod
     def get_tickers(cls) -> Dict[str, dict]:
-        """GET /api/v2/mix/market/tickers — semua USDT-Futures."""
         data = cls._get(f"{cls.BASE}/api/v2/mix/market/tickers",
                         params={"productType": "USDT-FUTURES"})
         if not data or data.get("code") != "00000":
             return {}
-        return {d["symbol"]: d for d in data.get("data", [])}
+        return {item["symbol"]: item for item in data.get("data", [])}
 
     @classmethod
-    def get_candles(cls, symbol: str, granularity: str = "1H",
-                    limit: int = 200) -> List[dict]:
-        """
-        GET /api/v2/mix/market/candles
-        Mendukung limit > 200 via pagination otomatis.
-        """
-        cache_key = f"{symbol}:{granularity}:{limit}"
-        if cache_key in cls._candle_cache:
-            return cls._candle_cache[cache_key]
+    def get_candles(cls, symbol: str, limit: int = 100) -> List[dict]:
+        key = f"{symbol}:{limit}"
+        if key in cls._cache and time.time() - cls._cache_ts.get(key, 0) < cls.CACHE_TTL:
+            return cls._cache[key]
+        data = cls._get(f"{cls.BASE}/api/v2/mix/market/candles",
+                        params={"symbol": symbol, "productType": "USDT-FUTURES",
+                                "granularity": "1H", "limit": limit})
+        if not data or data.get("code") != "00000":
+            return []
+        candles = []
+        for row in data.get("data", []):
+            try:
+                vol_usd = float(row[6]) if len(row) > 6 else float(row[5]) * float(row[4])
+                candles.append({"ts": int(row[0]), "open": float(row[1]),
+                                 "high": float(row[2]), "low": float(row[3]),
+                                 "close": float(row[4]), "volume_usd": vol_usd})
+            except Exception:
+                continue
+        candles.sort(key=lambda x: x["ts"])
+        cls._cache[key] = candles
+        cls._cache_ts[key] = time.time()
+        return candles
 
-        def _parse(raw_rows: list) -> List[dict]:
-            out = []
-            for row in raw_rows:
-                try:
-                    vol = float(row[6]) if len(row) > 6 else float(row[5]) * float(row[4])
-                    out.append({
-                        "ts":    int(row[0]),
-                        "open":  float(row[1]),
-                        "high":  float(row[2]),
-                        "low":   float(row[3]),
-                        "close": float(row[4]),
-                        "vol":   vol,
-                    })
-                except (IndexError, ValueError):
+    @classmethod
+    def get_funding(cls, symbol: str) -> float:
+        data = cls._get(f"{cls.BASE}/api/v2/mix/market/current-fund-rate",
+                        params={"symbol": symbol, "productType": "USDT-FUTURES"})
+        try:
+            return float(data["data"][0]["fundingRate"])
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def clear_cache(cls):
+        cls._cache.clear(); cls._cache_ts.clear()
+
+
+class CoinalyzeClient:
+    """
+    Client untuk Coinalyze API dengan multi-exchange support.
+
+    Binance symbols: {COIN}USDT_PERP.A  (ex: BTCUSDT_PERP.A)
+    Bybit symbols:   {COIN}USDT.6        (ex: BTCUSDT.6)
+
+    Available endpoints (dari probe):
+    - ohlcv-history          : OHLCV + buy/sell breakdown (v, bv, tx, btx)
+    - open-interest-history  : OI history (c = value USD)
+    - liquidation-history    : Liquidations (l = long liq, s = short liq)
+    - funding-rate-history   : Funding rate (c = rate)
+    - long-short-ratio-history: L/S ratio BYBIT ONLY (l, s, r)
+    """
+    BASE = "https://api.coinalyze.net/v1"
+    _class_last_call: float = 0.0
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self._markets_cache: Optional[List[dict]] = None
+        # Symbol maps: bitget_base → coinalyze_symbol
+        self._bn_map: Dict[str, str] = {}   # Binance symbols
+        self._by_map: Dict[str, str] = {}   # Bybit L/S symbols
+
+    def _wait(self):
+        elapsed = time.time() - CoinalyzeClient._class_last_call
+        wait = 0.35 - elapsed
+        if wait > 0:
+            time.sleep(wait)
+        CoinalyzeClient._class_last_call = time.time()
+
+    def _get(self, endpoint: str, params: dict) -> Optional[Any]:
+        p = dict(params)
+        p["api_key"] = self.api_key
+        for attempt in range(2):
+            self._wait()
+            try:
+                r = requests.get(f"{self.BASE}/{endpoint}", params=p, timeout=12)
+                if r.status_code == 429:
+                    wait = int(r.headers.get("Retry-After", 10)) + 1
+                    log.warning(f"  Coinalyze rate limit — wait {wait}s")
+                    time.sleep(wait)
                     continue
-            return out
+                if r.status_code != 200:
+                    log.debug(f"  Coinalyze {endpoint} HTTP {r.status_code}")
+                    return None
+                data = r.json()
+                if isinstance(data, dict) and "error" in data:
+                    log.debug(f"  Coinalyze error: {data['error']}")
+                    return None
+                return data
+            except requests.exceptions.Timeout:
+                if attempt < 1: time.sleep(3)
+            except Exception as e:
+                log.warning(f"  Coinalyze request error: {e}")
+                if attempt < 1: time.sleep(3)
+        return None
 
-        if limit <= 200:
-            data = cls._get(
-                f"{cls.BASE}/api/v2/mix/market/candles",
-                params={"symbol": symbol, "productType": "USDT-FUTURES",
-                        "granularity": granularity, "limit": limit}
-            )
-            if not data or data.get("code") != "00000":
-                return []
-            result = sorted(_parse(data.get("data", [])), key=lambda x: x["ts"])
-            cls._candle_cache[cache_key] = result
-            return result
+    def build_symbol_maps(self, bitget_symbols: List[str]) -> None:
+        """
+        Build mapping dari Bitget symbol → Coinalyze symbol untuk Binance & Bybit.
+        Contoh: BTCUSDT → BTCUSDT_PERP.A (Binance), BTCUSDT.6 (Bybit)
 
-        # Pagination untuk limit > 200
-        collected: Dict[int, dict] = {}
-        end_time = None
-        for _ in range(math.ceil(limit / 200)):
-            params = {"symbol": symbol, "productType": "USDT-FUTURES",
-                      "granularity": granularity, "limit": 200}
-            if end_time is not None:
-                params["endTime"] = str(end_time)
-            data = cls._get(f"{cls.BASE}/api/v2/mix/market/candles", params=params)
-            if not data or data.get("code") != "00000":
-                break
-            raw = data.get("data", [])
-            if not raw:
-                break
-            for c in _parse(raw):
-                collected[c["ts"]] = c
-            if len(raw) < 200:
-                break
-            end_time = min(c["ts"] for c in _parse(raw)) - 1
-            if len(collected) >= limit:
-                break
-            time.sleep(0.15)
+        Logic: Strip 'USDT' suffix dari Bitget symbol untuk dapatkan base coin,
+        lalu cari di Coinalyze markets list.
+        """
+        if self._markets_cache is None:
+            log.info("  Loading Coinalyze markets...")
+            data = self._get("future-markets", {})
+            self._markets_cache = data if isinstance(data, list) else []
+            log.info(f"  Got {len(self._markets_cache)} Coinalyze markets")
 
-        result = sorted(collected.values(), key=lambda x: x["ts"])[-limit:]
-        cls._candle_cache[cache_key] = result
+        markets = self._markets_cache
+
+        # Build lookup: symbol_on_exchange → coinalyze_symbol per exchange
+        bn_lookup: Dict[str, str] = {}   # exchange=A (Binance)
+        by_ls_lookup: Dict[str, str] = {} # exchange=6 (Bybit), dengan L/S data
+
+        for m in markets:
+            exc = m.get("exchange", "")
+            sym_on_exc = m.get("symbol_on_exchange", "")
+            clz_sym = m.get("symbol", "")
+            is_perp = m.get("is_perpetual", False)
+            quote = m.get("quote_asset", "").upper()
+
+            if not (is_perp and quote == "USDT" and clz_sym):
+                continue
+
+            if exc == "A":  # Binance
+                bn_lookup[sym_on_exc] = clz_sym
+
+            elif exc == "6" and m.get("has_long_short_ratio_data"):  # Bybit dengan L/S
+                by_ls_lookup[sym_on_exc] = clz_sym
+
+        # Map dari Bitget symbols ke Coinalyze
+        mapped_bn, mapped_by = 0, 0
+        for sym in bitget_symbols:
+            # Bitget format: BTCUSDT → base = BTC, pair = BTCUSDT
+            base_coin = sym.replace("USDT", "")
+
+            # Binance: cari BTCUSDT di lookup
+            if sym in bn_lookup:
+                self._bn_map[sym] = bn_lookup[sym]
+                mapped_bn += 1
+            # Bybit: cari BTCUSDT di lookup
+            if sym in by_ls_lookup:
+                self._by_map[sym] = by_ls_lookup[sym]
+                mapped_by += 1
+
+        log.info(f"  Symbol mapping: {mapped_bn}/{len(bitget_symbols)} Binance, "
+                 f"{mapped_by}/{len(bitget_symbols)} Bybit L/S")
+
+    def _batch_fetch(self, endpoint: str, symbols: List[str], params: dict) -> Dict[str, list]:
+        """Generic batch fetch — returns {clz_symbol: history_list}"""
+        batch_size = CONFIG["coinalyze_batch_size"]
+        result: Dict[str, list] = {}
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i:i+batch_size]
+            try:
+                p = dict(params)
+                p["symbols"] = ",".join(batch)
+                data = self._get(endpoint, p)
+                if data and isinstance(data, list):
+                    for item in data:
+                        sym = item.get("symbol", "")
+                        hist = item.get("history", [])
+                        if sym and hist:
+                            result[sym] = hist
+            except Exception as e:
+                log.warning(f"  Batch {i//batch_size+1} failed: {e}")
         return result
 
-    @classmethod
-    def clear_cache(cls) -> None:
-        cls._candle_cache.clear()
+    def fetch_all_data(self, bitget_symbols: List[str],
+                       from_ts: int, to_ts: int) -> Dict[str, ClzData]:
+        """
+        Fetch semua data Coinalyze untuk list of Bitget symbols.
+        Returns: {bitget_symbol: ClzData}
+        """
+        result: Dict[str, ClzData] = {sym: ClzData() for sym in bitget_symbols}
 
+        # Get Binance & Bybit symbols yang ada mapping-nya
+        bn_syms = [self._bn_map[s] for s in bitget_symbols if s in self._bn_map]
+        by_syms = [self._by_map[s] for s in bitget_symbols if s in self._by_map]
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  📊  INDICATORS (Pine Script compatible)
-# ══════════════════════════════════════════════════════════════════════════════
+        # Reverse maps untuk lookup
+        bn_rev = {v: k for k, v in self._bn_map.items()}
+        by_rev = {v: k for k, v in self._by_map.items()}
 
-def _wilder_ema(values: list, period: int) -> list:
-    """Wilder's RMA — Pine's ta.atr internal."""
-    if not values:
-        return []
-    alpha  = 1.0 / period
-    result = [values[0]]
-    for v in values[1:]:
-        result.append(alpha * v + (1.0 - alpha) * result[-1])
-    return result
+        interval = CONFIG["coinalyze_interval"]
+        fund_interval = CONFIG["coinalyze_funding_interval"]
+        fund_from = to_ts - CONFIG["coinalyze_funding_lookback_h"] * 3600
 
-def _std_ema(values: list, period: int) -> list:
-    """Standard EMA — Pine's ta.ema."""
-    if not values:
-        return []
-    alpha  = 2.0 / (period + 1)
-    result = [values[0]]
-    for v in values[1:]:
-        result.append(alpha * v + (1.0 - alpha) * result[-1])
-    return result
+        # ── 1: Binance OHLCV (v, bv, tx, btx) ───────────────────────────────
+        if bn_syms:
+            log.info(f"  Fetching Binance OHLCV ({len(bn_syms)} syms)...")
+            ohlcv_data = self._batch_fetch("ohlcv-history", bn_syms,
+                                           {"interval": interval, "from": from_ts, "to": to_ts})
+            for clz_sym, hist in ohlcv_data.items():
+                bitget_sym = bn_rev.get(clz_sym)
+                if bitget_sym and bitget_sym in result:
+                    result[bitget_sym].ohlcv = hist
+            log.info(f"    Got {len(ohlcv_data)} OHLCV")
 
-def compute_delta_volume(candles: List[dict]) -> List[float]:
-    """Pine: upAndDownVolume() — lines 23-38. Signed volume per candle."""
-    result = []
-    is_buy = True
-    for c in candles:
-        if   c["close"] > c["open"]: is_buy = True
-        elif c["close"] < c["open"]: is_buy = False
-        result.append(c["vol"] if is_buy else -c["vol"])
-    return result
+        # ── 2: Binance OI History ─────────────────────────────────────────────
+        if bn_syms:
+            log.info(f"  Fetching OI history...")
+            oi_data = self._batch_fetch("open-interest-history", bn_syms,
+                                        {"interval": interval, "from": from_ts, "to": to_ts,
+                                         "convert_to_usd": "true"})
+            for clz_sym, hist in oi_data.items():
+                bitget_sym = bn_rev.get(clz_sym)
+                if bitget_sym and bitget_sym in result:
+                    result[bitget_sym].oi = hist
+            log.info(f"    Got {len(oi_data)} OI series")
 
-def compute_vol_thresholds(dv: List[float], vol_len: int) -> Tuple[List[float], List[float]]:
-    """Pine: vol_hi = ta.highest(Vol/2.5, vol_len), vol_lo = ta.lowest(...)"""
-    n      = len(dv)
-    scaled = [v / 2.5 for v in dv]
-    vol_hi = [max(scaled[max(0, i - vol_len + 1): i + 1]) for i in range(n)]
-    vol_lo = [min(scaled[max(0, i - vol_len + 1): i + 1]) for i in range(n)]
-    return vol_hi, vol_lo
+        # ── 3: Binance Liquidations ───────────────────────────────────────────
+        if bn_syms:
+            log.info(f"  Fetching Liquidations...")
+            liq_data = self._batch_fetch("liquidation-history", bn_syms,
+                                         {"interval": interval, "from": from_ts, "to": to_ts,
+                                          "convert_to_usd": "true"})
+            for clz_sym, hist in liq_data.items():
+                bitget_sym = bn_rev.get(clz_sym)
+                if bitget_sym and bitget_sym in result:
+                    result[bitget_sym].liq = hist
+            log.info(f"    Got {len(liq_data)} Liq series")
 
-def compute_atr(candles: List[dict], period: int = 200) -> List[float]:
-    """Pine: ta.atr(200) — Wilder's smoothed ATR."""
-    trs = []
-    for i, c in enumerate(candles):
-        pc  = candles[i-1]["close"] if i > 0 else c["close"]
-        trs.append(max(c["high"] - c["low"],
-                       abs(c["high"] - pc),
-                       abs(c["low"]  - pc)))
-    return _wilder_ema(trs, period)
+        # ── 4: Binance Funding Rate History (7 hari) ──────────────────────────
+        if bn_syms:
+            log.info(f"  Fetching Funding rate history (7d)...")
+            fund_data = self._batch_fetch("funding-rate-history", bn_syms,
+                                          {"interval": fund_interval,
+                                           "from": fund_from, "to": to_ts})
+            for clz_sym, hist in fund_data.items():
+                bitget_sym = bn_rev.get(clz_sym)
+                if bitget_sym and bitget_sym in result:
+                    result[bitget_sym].funding_hist = hist
+            log.info(f"    Got {len(fund_data)} funding histories")
 
-def compute_ema(values: list, period: int) -> List[float]:
-    return _std_ema(values, period)
-
-def compute_bbw(candles: List[dict], period: int = 20, mult: float = 2.0) -> List[float]:
-    """
-    Bollinger Band Width = (upper - lower) / middle.
-    Normalized: output adalah desimal relatif terhadap SMA.
-    Dari data empiris: HIT avg BBW = 0.137 vs MISS avg = 0.057 (2.4× ratio).
-    """
-    closes = [c["close"] for c in candles]
-    n      = len(closes)
-    result = [0.0] * n
-    for i in range(period - 1, n):
-        window = closes[i - period + 1: i + 1]
-        sma    = sum(window) / period
-        sd     = math.sqrt(sum((x - sma) ** 2 for x in window) / period)
-        result[i] = (mult * 2 * sd / sma) if sma > 0 else 0.0
-    return result
-
-def compute_vol_compression(candles: List[dict], fast: int = 5,
-                             slow: int = 20) -> float:
-    """
-    Volume compression: avg vol fast period / avg vol slow period.
-    Dari data empiris: HIT avg = 3.76 vs MISS avg = 1.42.
-    Nilai > 1.0 = volume recent lebih tinggi dari baseline (spike).
-    """
-    if len(candles) < slow + fast + 1:
-        return 1.0
-    vols      = [c["vol"] for c in candles]
-    recent    = vols[-fast:]
-    prior_end = len(vols) - fast
-    prior     = vols[max(0, prior_end - slow): prior_end]
-    avg_r     = _mean(recent)
-    avg_p     = _mean(prior)
-    return avg_r / avg_p if avg_p > 0 else 1.0
-
-def compute_vol_z4h(candles: List[dict], window: int = 96) -> float:
-    """
-    Volume Z-score vs 4H window (96 candles 1H = 4 hari).
-    Dari data empiris: HIT avg Z = 1.03 vs MISS avg = 0.16.
-    Gunakan candle[-2] (confirmed bar, bukan live).
-    """
-    vols = [c["vol"] for c in candles]
-    if len(vols) < window + 5:
-        return 0.0
-    cur_vol  = vols[-2]
-    baseline = vols[-(window + 5):-5]
-    return _zscore(cur_vol, baseline, min_samples=20)
-
-def compute_vol_ratio(candles: List[dict], period: int = 20) -> float:
-    """
-    Current vol / rolling avg vol (period candles sebelumnya).
-    Dari data empiris: HIT avg = 2.63 vs MISS avg = 1.38.
-    Gunakan candle[-2].
-    """
-    vols = [c["vol"] for c in candles]
-    if len(vols) < period + 2:
-        return 1.0
-    cur_vol  = vols[-2]
-    baseline = vols[-(period + 2):-2]
-    avg      = _mean(baseline)
-    return cur_vol / avg if avg > 0 else 1.0
-
-def compute_atr_pct(candles: List[dict], atr_arr: List[float]) -> float:
-    """ATR sebagai % dari harga saat ini. Dari data: HIT avg=3.12% vs MISS=1.40%."""
-    price = candles[-1]["close"]
-    if price <= 0 or not atr_arr:
-        return 0.0
-    return atr_arr[-1] / price * 100
-
-def compute_bear_streak(candles: List[dict]) -> int:
-    """
-    Berapa candle bearish berturut-turut sebelum candle terakhir.
-    Dari data: streak 3-4 = hit 3.9-4.7% vs base 2.9%.
-    """
-    streak = 0
-    for c in reversed(candles[:-1]):   # exclude last (live)
-        if c["close"] < c["open"]:
-            streak += 1
+        # ── 5: Bybit Long/Short Ratio (SINYAL TERKUAT!) ──────────────────────
+        if by_syms:
+            log.info(f"  Fetching Bybit L/S ratio ({len(by_syms)} syms)...")
+            ls_data = self._batch_fetch("long-short-ratio-history", by_syms,
+                                        {"interval": interval, "from": from_ts, "to": to_ts})
+            for clz_sym, hist in ls_data.items():
+                bitget_sym = by_rev.get(clz_sym)
+                if bitget_sym and bitget_sym in result:
+                    result[bitget_sym].ls_ratio = hist
+            log.info(f"    Got {len(ls_data)} L/S ratio series")
         else:
-            break
-        if streak >= 6:
-            break
-    return streak
+            log.warning("  No Bybit symbols mapped — L/S ratio not available")
+
+        return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  📐  ENTRY / SL / TP  (per-coin, bukan fixed %)
+#  📤  TELEGRAM
 # ══════════════════════════════════════════════════════════════════════════════
-
-def find_resistance_levels(candles: List[dict], entry: float,
-                           atr: float, lookback: int = 10) -> List[float]:
-    """
-    Cari pivot highs di atas entry price — kandidat TP resistance.
-    Lookback lebih kecil (10) dari zone detection (20) karena
-    resistance tidak harus sekuat support.
-
-    Juga tambahkan swing high dari 100 candle terakhir jika relevan.
-    """
-    highs = [c["high"] for c in candles]
-    n     = len(highs)
-    found: set = set()
-
-    for i in range(lookback, n - lookback):
-        val = highs[i]
-        if val < entry * 1.003:          # minimal 0.3% di atas entry
-            continue
-        if (val >= max(highs[max(0, i - lookback): i]) and
-                val >= max(highs[i + 1: i + lookback + 1])):
-            found.add(round(val, 10))
-
-    # Recent swing high (last 100 candles) sebagai kandidat tambahan
-    window = min(100, n)
-    recent_max = max(highs[-window:])
-    if recent_max > entry * 1.01:        # minimal 1% di atas entry
-        found.add(round(recent_max, 10))
-
-    # Hanya yang benar-benar di atas entry
-    return sorted(r for r in found if r > entry * 1.002)
-
-
-def compute_trade_setup(
-    candles:  List[dict],
-    zone:     dict,
-    atr_arr:  List[float],
-    bbw:      float,
-    price:    float,
-) -> dict:
-    """
-    Hitung Entry, SL, TP per coin berdasarkan kondisi masing-masing.
-
-    ── ENTRY ─────────────────────────────────────────────────────────────────
-    · LIMIT di zone_top  → jika harga masih di atas zone_top
-    · MARKET di harga saat ini → jika sudah di dalam zone
-
-    ── SL ────────────────────────────────────────────────────────────────────
-    · zone_bottom − 1.0×ATR
-    · Rasionale: zone_bottom = pivot_low − ATR_formasi.
-      Turun 1 ATR lagi dari sana = struktur zone benar-benar rusak.
-      Lebih akurat dari fixed % karena mempertimbangkan volatility coin.
-
-    ── TP (per-coin, 3 metode) ───────────────────────────────────────────────
-    Metode 1 — ATR Projection (basis volatility regime dari BBW):
-      BBW ≥ 0.150  → 5.0×ATR   (sangat volatile, potensi move besar)
-      BBW ≥ 0.078  → 3.5×ATR   (volatile)
-      BBW ≥ 0.050  → 2.5×ATR   (medium-high, minimum gate)
-
-    Metode 2 — Resistance Level (pivot high terdekat di atas entry):
-      Dipakai jika R:R ≥ 2.0 dari SL yang sudah dihitung.
-      Jika resistance terlalu dekat (R:R < 2.0), gunakan ATR projection.
-
-    Metode 3 — Minimum R:R floor = 2.0:1
-      TP tidak pernah kurang dari entry + 2.0 × risk.
-
-    Final TP = nilai tertinggi yang masih logis:
-      Jika resistance ada DAN lebih dekat dari ATR target DAN R:R ≥ 2.0:
-        → gunakan resistance (lebih konservatif, lebih mungkin tercapai)
-      Else:
-        → ATR projection (lebih agresif)
-      Kemudian enforce min R:R 2.0:1.
-    """
-    atr = atr_arr[-1] if atr_arr else price * 0.02
-
-    # ── ENTRY ──────────────────────────────────────────────────────────────
-    zone_top = zone["zone_top"]
-    zone_bot = zone["zone_bottom"]
-
-    if price <= zone_top:
-        entry      = price       # sudah dalam zone → masuk market
-        entry_type = "MARKET"
-    else:
-        entry      = zone_top    # di atas zone → limit di zone_top
-        entry_type = "LIMIT"
-
-    # ── SL ─────────────────────────────────────────────────────────────────
-    sl = zone_bot - atr * 1.0
-    sl = max(sl, price * 0.0001)   # tidak boleh negatif/nol
-
-    risk = entry - sl
-    if risk <= 0:
-        risk = atr                 # fallback: risk = 1 ATR
-
-    # ── RESISTANCE ─────────────────────────────────────────────────────────
-    res_levels = find_resistance_levels(candles, entry, atr)
-
-    # ── TP METODE 1: ATR Projection ─────────────────────────────────────────
-    if   bbw >= 0.150: atr_mult, regime_label = 5.0, "volatile"
-    elif bbw >= 0.078: atr_mult, regime_label = 3.5, "high"
-    else:              atr_mult, regime_label = 2.5, "medium"
-
-    tp_atr = entry + atr * atr_mult
-
-    # ── TP METODE 2: Resistance level ──────────────────────────────────────
-    tp_res    = None
-    res_label = ""
-    for res in res_levels:
-        rr_res = (res - entry) / risk
-        if rr_res >= 2.0:          # hanya pakai jika R:R ≥ 2.0
-            tp_res    = res
-            res_label = f"R:R{rr_res:.1f}"
-            break
-
-    # ── TP METODE 3: Floor R:R = 2.0 ───────────────────────────────────────
-    tp_floor = entry + risk * 2.0
-
-    # ── FINAL TP SELECTION ──────────────────────────────────────────────────
-    if tp_res is not None and tp_res < tp_atr:
-        # Resistance lebih dekat dari ATR target
-        # Gunakan resistance (lebih konservatif tapi lebih realistis)
-        tp        = tp_res
-        tp_method = f"Resist {res_label}"
-    else:
-        # Pakai ATR projection
-        tp        = tp_atr
-        extra     = f"+Res@{tp_res:.5f}" if tp_res else ""
-        tp_method = f"ATR×{atr_mult:.1f}({regime_label}){extra}"
-
-    # Pastikan minimum R:R = 2.0
-    if tp < tp_floor:
-        tp        = tp_floor
-        tp_method = "MinRR2.0"
-
-    # ── METRICS ────────────────────────────────────────────────────────────
-    risk_pct   = (entry - sl) / entry * 100    if entry > 0 else 0
-    reward_pct = (tp    - entry) / entry * 100 if entry > 0 else 0
-    rr         = reward_pct / risk_pct         if risk_pct > 0 else 0
-
-    return {
-        "entry":      round(entry, 8),
-        "entry_type": entry_type,
-        "sl":         round(sl, 8),
-        "tp":         round(tp, 8),
-        "tp_method":  tp_method,
-        "risk_pct":   round(risk_pct, 2),
-        "reward_pct": round(reward_pct, 2),
-        "rr":         round(rr, 2),
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  🟩  ZONE DETECTION  (Pine Script identical)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def find_pivot_lows(lows: List[float], lookback: int) -> List[Optional[float]]:
-    """Pine: ta.pivotlow(src, lookbackPeriod, lookbackPeriod) — line 67."""
-    n      = len(lows)
-    result = [None] * n
-    for i in range(lookback, n - lookback):
-        val = lows[i]
-        if val <= min(lows[i - lookback: i]) and \
-           val <= min(lows[i + 1: i + lookback + 1]):
-            result[i] = val
-    return result
-
-def detect_support_zones(candles: List[dict]) -> List[dict]:
-    """
-    Pine: calcSupportResistance() — support branch.
-    Pivot low + Vol > vol_hi → zone terbentuk.
-    Hitung touch_count dan break_count dari sisa candle.
-    """
-    cfg  = CONFIG
-    lb   = cfg["lookback_period"]
-    vl   = cfg["vol_len"]
-    bw   = cfg["box_width_multiplier"]
-    ap   = cfg["atr_period"]
-
-    if len(candles) < lb * 2 + 10:
-        return []
-
-    dv      = compute_delta_volume(candles)
-    vh, _   = compute_vol_thresholds(dv, vl)
-    atr     = compute_atr(candles, ap)
-    lows    = [c["low"] for c in candles]
-    pivots  = find_pivot_lows(lows, lb)
-
-    zones = []
-    n     = len(candles)
-
-    for i, piv in enumerate(pivots):
-        if piv is None:
-            continue
-        if dv[i] <= vh[i]:              # Pine line 74: Vol > vol_hi
-            continue
-        if math.isnan(atr[i]) or atr[i] <= 0:
-            continue
-
-        zone_top    = piv
-        zone_bottom = piv - atr[i] * bw
-        break_count = 0
-        touch_count = 0
-        in_zone     = False
-        broke_at    = n
-
-        for j in range(i + lb, n):
-            if j >= broke_at:
-                break
-            c_low  = candles[j]["low"]
-            c_high = candles[j]["high"]
-            if not in_zone:
-                if zone_bottom <= c_low <= zone_top:
-                    in_zone      = True
-                    touch_count += 1
-            else:
-                if c_low > zone_top:
-                    in_zone = False
-                elif c_high < zone_bottom:
-                    break_count += 1
-                    in_zone  = False
-                    broke_at = j
-
-        zones.append({
-            "zone_top":    zone_top,
-            "zone_bottom": zone_bottom,
-            "touch_count": touch_count,
-            "break_count": break_count,
-        })
-
-    return zones
-
-def get_zone_state(zone: dict, c_low: float, c_high: float) -> str:
-    """Pine: brekout_sup/sup_holds — lines 105-120."""
-    top = zone["zone_top"]; bot = zone["zone_bottom"]
-    if c_high < bot:             return "BROKEN"
-    if bot <= c_low <= top:      return "TESTING"
-    return "VALID"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  🌍  REGIME CHECK  (SMA50 daily — Bitget max ~90 candles 1D dari probe)
-# ══════════════════════════════════════════════════════════════════════════════
-def is_caution_mode(btc_1d: List[dict], eth_1d: List[dict]) -> Tuple[bool, dict]:
-    """
-    CAUTION MODE: BTC dan ETH KEDUANYA di bawah SMA50 daily.
-
-    Dari probe lapangan: Bitget 1D candles max ~90 dalam praktik.
-    SMA50 dari 90 candles = 3 bulan data = valid untuk trend detection.
-    Dual method:
-    - Primary  : SMA50 jika n >= 50
-    - Fallback : EMA200 jika n >= 200 (belum pernah terjadi di Bitget 1D)
-    """
-    period = CONFIG["ema_regime_period"]   # 50
-
-    def _check(candles: List[dict], name: str) -> Tuple[bool, str]:
-        if not candles:
-            return False, f"{name}: no data"
-        closes = [c["close"] for c in candles]
-        price  = closes[-1]
-        n      = len(closes)
-        if n >= 200:
-            ema   = _std_ema(closes, 200)
-            below = price < ema[-1]
-            return below, (f"{name} ${price:,.0f} vs EMA200 ${ema[-1]:,.0f} "
-                           f"n={n} ({'BELOW' if below else 'ABOVE'})")
-        elif n >= period:
-            sma   = sum(closes[-period:]) / period
-            below = price < sma
-            return below, (f"{name} ${price:,.0f} vs SMA{period} ${sma:,.0f} "
-                           f"n={n} ({'BELOW' if below else 'ABOVE'})")
-        return False, f"{name}: n={n} < {period}, insufficient"
-
-    btc_below, btc_msg = _check(btc_1d, "BTC")
-    eth_below, eth_msg = _check(eth_1d, "ETH")
-    caution = btc_below and eth_below
-    return caution, {"btc": btc_msg, "eth": eth_msg, "caution": caution}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  🎯  SCORING  (3 komponen, total 100 pts, semua dari data empiris)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def score_A_volatility(bbw: float, atr_pct: float) -> Tuple[int, dict]:
-    """
-    Komponen A: Volatility Score (0-50 pts)
-    BASIS DATA: BBW corr=+0.236, ATR_pct corr=+0.230 (terkuat di kedua dataset)
-    HIT avg BBW = 0.137 (2.4× MISS avg 0.057)
-    HIT avg ATR_pct = 3.12% (2.2× MISS avg 1.40%)
-
-    Sub-A1: BBW score (0-27.5 pts = 55% dari 50)
-    Sub-A2: ATR_pct score (0-22.5 pts = 45% dari 50)
-    """
-    cfg = CONFIG
-
-    # A1: BBW
-    a1_raw = _linear_score(bbw, cfg["bbw_strong"], cfg["bbw_medium"], 1.0)
-    a1_pts = round(a1_raw * cfg["score_vol_max"] * cfg["bbw_weight"])
-
-    # A2: ATR_pct
-    a2_raw = _linear_score(atr_pct, cfg["atr_strong"], cfg["atr_medium"], 1.0)
-    a2_pts = round(a2_raw * cfg["score_vol_max"] * cfg["atr_weight"])
-
-    total = min(a1_pts + a2_pts, cfg["score_vol_max"])
-    return total, {"a1_bbw": a1_pts, "a2_atr": a2_pts,
-                   "bbw": round(bbw, 4), "atr_pct": round(atr_pct, 2)}
-
-
-def score_B_volume(vol_compression: float, vol_z4h: float) -> Tuple[int, dict]:
-    """
-    Komponen B: Volume Score (0-30 pts)
-    BASIS DATA: vol_compression corr=+0.089, vol_z4h corr=+0.083 (confirmed kedua dataset)
-
-    Sub-B1: Vol Compression (0-16.5 pts = 55% dari 30)
-    Mengukur: spike volume RECENT vs baseline (akumulasi short-term)
-    HIT avg = 3.76 vs MISS avg = 1.42
-
-    Sub-B2: Vol Z-score 4H (0-13.5 pts = 45% dari 30)
-    Mengukur: anomali volume vs window 4H historis (akumulasi longer-term)
-    HIT avg Z = 1.03 vs MISS avg = 0.16
-    BERBEDA dari B1: B1=recent spike, B2=historical anomaly
-    """
-    cfg = CONFIG
-
-    # B1: Vol Compression
-    b1_raw = _linear_score(vol_compression, cfg["vol_comp_strong"],
-                           cfg["vol_comp_medium"], 1.0)
-    b1_pts = round(b1_raw * cfg["score_vol_micro_max"] * cfg["vol_comp_weight"])
-
-    # B2: Vol Z-score 4H
-    b2_raw = _linear_score(vol_z4h, cfg["vol_z4h_strong"], cfg["vol_z4h_medium"], 1.0)
-    b2_pts = round(b2_raw * cfg["score_vol_micro_max"] * cfg["vol_z4h_weight"])
-
-    total = min(b1_pts + b2_pts, cfg["score_vol_micro_max"])
-    return total, {"b1_comp": b1_pts, "b2_z4h": b2_pts,
-                   "vol_comp": round(vol_compression, 3),
-                   "vol_z4h": round(vol_z4h, 3)}
-
-
-def score_C_momentum(bear_streak: int, vol_ratio: float) -> Tuple[int, dict]:
-    """
-    Komponen C: Momentum Score (0-20 pts)
-    BASIS DATA: bear_streak corr=+0.030, vol_ratio corr=+0.068 (confirmed kedua dataset)
-
-    Sub-C1: Bear Streak (0-8 pts = 40% dari 20)
-    Mengukur: berapa candle bearish berturut-turut sebelum entry
-    Data: streak 3-4 = 3.9-4.7% hit rate vs base 2.9%
-    Ini adalah oversold setup — harga sudah ditekan cukup untuk bisa bounce
-
-    Sub-C2: Vol Ratio (0-12 pts = 60% dari 20)
-    Mengukur: apakah ada volume lebih saat masuk zone
-    Data: vol_ratio ≥1.44 = kombinasi BBW+ATR+VolRatio = 12.7% hit rate
-    BERBEDA dari B1/B2: ini adalah CURRENT bar vol vs recent avg (bukan spike detection)
-    """
-    cfg = CONFIG
-
-    # C1: Bear streak
-    # streak ≥ 4 = full, streak ≥ 2 = half, streak < 2 = minimal
-    if bear_streak >= cfg["bear_streak_strong"]:
-        c1_raw = 1.0
-    elif bear_streak >= cfg["bear_streak_medium"]:
-        c1_raw = 0.5 + 0.5 * (bear_streak - cfg["bear_streak_medium"]) / \
-                       (cfg["bear_streak_strong"] - cfg["bear_streak_medium"])
-    else:
-        c1_raw = bear_streak / cfg["bear_streak_medium"] * 0.5 \
-                 if cfg["bear_streak_medium"] > 0 else 0.0
-
-    c1_pts = round(c1_raw * cfg["score_momentum_max"] * cfg["bear_weight"])
-
-    # C2: Vol ratio
-    c2_raw = _linear_score(vol_ratio, cfg["vol_ratio_strong"],
-                           cfg["vol_ratio_medium"], 1.0)
-    c2_pts = round(c2_raw * cfg["score_momentum_max"] * cfg["vol_ratio_weight"])
-
-    total = min(c1_pts + c2_pts, cfg["score_momentum_max"])
-    return total, {"c1_bear": c1_pts, "c2_volr": c2_pts,
-                   "bear_streak": bear_streak,
-                   "vol_ratio": round(vol_ratio, 3)}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  📱  TELEGRAM & OUTPUT
-# ══════════════════════════════════════════════════════════════════════════════
-def send_telegram(msg: str) -> bool:
-    bot  = CONFIG["bot_token"]
-    chat = CONFIG["chat_id"]
-    if not bot or not chat:
+def send_telegram(message: str) -> bool:
+    bot_token = CONFIG.get("bot_token")
+    chat_id = CONFIG.get("chat_id")
+    if not bot_token or not chat_id:
         return False
     try:
         r = requests.post(
-            f"https://api.telegram.org/bot{bot}/sendMessage",
-            json={"chat_id": chat, "text": msg, "parse_mode": "HTML"},
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
             timeout=10
         )
-        return r.ok
+        return r.status_code == 200
     except Exception as e:
         log.error(f"Telegram error: {e}")
         return False
 
 
-def build_table(results: list, caution: bool) -> str:
-    mode = "⚠️ CAUTION (thr=80)" if caution else "✅ NORMAL (thr=70)"
-    now  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines = [
-        "",
-        "═" * 160,
-        f"  NEXUS-SR v3.2  |  Bitget Futures  |  {now}  |  {mode}",
-        "═" * 160,
-        f"  {'#':>2}  {'Coin':<13} {'Price':>12}  "
-        f"{'Score':>5}  {'A':>3} {'B':>3} {'C':>3}  "
-        f"{'BBW':>6} {'ATR%':>5}  "
-        f"{'Entry':>12} {'Type':>5}  "
-        f"{'SL':>12} {'Risk%':>5}  "
-        f"{'TP':>12} {'Rwd%':>5}  {'R:R':>4}  "
-        f"── Coinalyze Context ──",
-        "─" * 160,
-    ]
-    for i, r in enumerate(results, 1):
-        raw = r["symbol"].replace("USDT", "")
-
-        # Build derivatives context string
-        deriv_parts = []
-        if r.get("btx_z")       is not None: deriv_parts.append(f"btxZ={r['btx_z']:+.2f}")
-        if r.get("oi_chg_1h")   is not None: deriv_parts.append(f"OI1h={r['oi_chg_1h']:+.2f}%")
-        if r.get("funding")      is not None: deriv_parts.append(f"fund={r['funding']:.5f}")
-        if r.get("long_pct")    is not None: deriv_parts.append(f"L%={r['long_pct']:.1f}")
-        if r.get("short_liq_4h") is not None and r["short_liq_4h"] > 0:
-            deriv_parts.append(f"sLiq4h=${r['short_liq_4h']:,.0f}")
-        deriv_str = "  ".join(deriv_parts) if deriv_parts else "(no CLZ data)"
-
-        lines.append(
-            f"  {i:>2}  {raw:<13} {r['price']:>12.6f}  "
-            f"{r['score']:>5.1f}  {r['sa']:>3} {r['sb']:>3} {r['sc']:>3}  "
-            f"{r['bbw']:>6.4f} {r['atr_pct']:>4.1f}%  "
-            f"{r['entry']:>12.6f} {r['entry_type']:>5}  "
-            f"{r['sl']:>12.6f} {r['risk_pct']:>4.1f}%  "
-            f"{r['tp']:>12.6f} {r['reward_pct']:>4.1f}%  {r['rr']:>4.1f}  "
-            f"{deriv_str}  {r['strength']}"
-        )
-    lines += [
-        "─" * 160,
-        "  Score: A=Volatility(0-50) B=Volume(0-30) C=Momentum(0-20)",
-        "  CLZ context: btxZ=taker_buy_zscore  OI1h=OI_change_1H  fund=funding_rate",
-        "               L%=long_position_%  sLiq4h=short_liquidations_4H",
-        "  Note: CLZ data dari Binance/Bybit (proxy). Tidak masuk scoring.",
-        "═" * 160,
-    ]
-    return "\n".join(lines)
-
-
-def build_approaching_table(approaching: list) -> str:
-    """Coin dalam 5% di atas zone_top — belum TESTING tapi mendekati."""
-    if not approaching:
-        return ""
-    lines = [
-        "",
-        "  ↘  APPROACHING ZONES  (0-5% di atas zone_top, belum masuk)",
-        "  " + "─" * 90,
-        f"  {'#':>2}  {'Coin':<13} {'Price':>12} {'ZoneTop':>10} {'ZoneBot':>10} "
-        f"{'Dist%':>6}  {'BBW':>6} {'ATR%':>6}  Vol24h(M)",
-        "  " + "─" * 90,
-    ]
-    for i, a in enumerate(sorted(approaching, key=lambda x: x["dist_pct"]), 1):
-        raw = a["symbol"].replace("USDT", "")
-        gate_ok = "✓" if a["gate_ok"] else "✗"
-        lines.append(
-            f"  {i:>2}  {raw:<13} {a['price']:>12.6f} {a['zone_top']:>10.5f} "
-            f"{a['zone_bot']:>10.5f} {a['dist_pct']:>5.2f}%  "
-            f"{a['bbw']:>6.4f} {a['atr_pct']:>5.2f}%  "
-            f"${a['vol_24h_m']:.1f}M  gate:{gate_ok}"
-        )
-    lines.append("  " + "─" * 90)
-    lines.append("  ✓ = lolos gate BBW+ATR  ✗ = belum cukup volatil untuk 15% move")
-    return "\n".join(lines)
-
-
-def build_telegram_msg(results: list, caution: bool,
-                       n_tested: int, n_candidates: int) -> str:
-    mode = "⚠️ CAUTION" if caution else "🟢 NORMAL"
-    now  = datetime.now(timezone.utc).strftime("%H:%M UTC")
-    txt  = (
-        f"🎯 <b>NEXUS-SR v3.2</b> [{now}]\n"
-        f"Mode: {mode} | {len(results)}/{n_tested} signals | Universe: {n_candidates}\n"
-        f"{'─'*28}\n"
-    )
-    for i, r in enumerate(results, 1):
-        raw      = r["symbol"].replace("USDT", "")
-        rr_emoji = "🔥" if r["rr"] >= 3 else "✅" if r["rr"] >= 2 else "⚠️"
-
-        # Derivatives context lines (hanya yang ada datanya)
-        deriv_lines = []
-        if r.get("funding") is not None:
-            sign = "🔴" if r["funding"] < -0.0001 else "🟡" if r["funding"] < 0 else "🟢"
-            deriv_lines.append(f"  {sign} Funding: <code>{r['funding']:.5f}</code> "
-                               f"({'neg=squeeze' if r['funding'] < 0 else 'pos=longs'})")
-        if r.get("long_pct") is not None:
-            crowded = "🐻 crowded short" if r["long_pct"] < 40 else \
-                      "🐂 crowded long" if r["long_pct"] > 65 else "⚖️ balanced"
-            deriv_lines.append(f"  L/S: Long <code>{r['long_pct']:.1f}%</code> "
-                               f"/ Short <code>{r['short_pct']:.1f}%</code>  {crowded}")
-        if r.get("oi_chg_1h") is not None:
-            oi_sign = "↑" if r["oi_chg_1h"] > 0 else "↓"
-            deriv_lines.append(f"  OI: <code>{r['oi_chg_1h']:+.2f}%</code>/1H  "
-                               f"<code>{r['oi_chg_4h']:+.2f}%</code>/4H {oi_sign}")
-        if r.get("short_liq_4h") is not None and r["short_liq_4h"] > 0:
-            deriv_lines.append(f"  Short Liq 4H: <code>${r['short_liq_4h']:,.0f}</code> "
-                               f"(squeeze fuel)")
-        if r.get("btx_z") is not None:
-            btx_label = "⚡ buy aggression" if r["btx_z"] > 1.5 else "normal"
-            deriv_lines.append(f"  BuyTx Z: <code>{r['btx_z']:+.2f}</code>  {btx_label}")
-
-        deriv_block = "\n".join(deriv_lines) if deriv_lines else \
-                      "  <i>CLZ: no derivatives data</i>"
-
-        txt += (
-            f"{i}. <b>{raw}</b>  [{r['strength']}]  Score:<b>{r['score']:.0f}</b>\n"
-            f"   Zone: <code>{r['zone_bot']:.5f} – {r['zone_top']:.5f}</code>\n"
-            f"   📥 Entry ({r['entry_type']}): <code>{r['entry']:.6f}</code>\n"
-            f"   🛑 SL: <code>{r['sl']:.6f}</code> (-{r['risk_pct']:.1f}%)\n"
-            f"   🎯 TP: <code>{r['tp']:.6f}</code> (+{r['reward_pct']:.1f}%)"
-            f"  {rr_emoji} R:R <b>{r['rr']:.2f}</b>\n"
-            f"   📐 <i>{r['tp_method']}</i>\n"
-            f"{deriv_block}\n\n"
-        )
-    txt += (
-        "📊 <i>Score dari Bitget OHLCV | CLZ context dari Binance/Bybit proxy\n"
-        "⚠️ Paper mode — verifikasi sebelum live trade.</i>"
-    )
-    return txt
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-#  🚀  MAIN SCAN
+#  🚀  MAIN SCANNER LOOP v14.0
 # ══════════════════════════════════════════════════════════════════════════════
-def run_scan() -> None:
-    cfg      = CONFIG
-    start_ts = time.time()
-
-    log.info("=" * 70)
-    log.info(f"  NEXUS-SR v3.2 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    log.info("=" * 70)
-
-    # ── 1. Regime check (FIX: EMA200 daily) ───────────────────────────────
-    log.info("Fetching BTC/ETH daily data untuk regime check …")
-    btc_1d  = BitgetClient.get_candles("BTCUSDT", "1D", cfg["candle_limit_1d"])
-    eth_1d  = BitgetClient.get_candles("ETHUSDT", "1D", cfg["candle_limit_1d"])
-    caution, regime_debug = is_caution_mode(btc_1d, eth_1d)
-    threshold = cfg["score_threshold_caution"] if caution else cfg["score_threshold_normal"]
-    log.info(f"  {regime_debug['btc']}")
-    log.info(f"  {regime_debug['eth']}")
-    log.info(f"Market regime: {'⚠️ CAUTION (thr=80)' if caution else '✅ NORMAL (thr=70)'}")
-
-    # ── 2. Fetch tickers ────────────────────────────────────────────────
-    log.info("Fetching Bitget USDT-Futures tickers …")
-    tickers = BitgetClient.get_tickers()
-    if not tickers:
-        send_telegram("⚠️ NEXUS-SR v3: Gagal fetch tickers")
-        return
-    log.info(f"Tickers received: {len(tickers)}")
-
-    # ── 3. Build candidates ────────────────────────────────────────────
-    skip_stats   = defaultdict(int)
-    candidates   = []
-
+def select_universe(tickers: Dict) -> List[str]:
+    """Mid-tier volume sweet spot ($1M–$100M)"""
+    vol_min = CONFIG["pre_filter_vol_min"]
+    vol_max = CONFIG["pre_filter_vol_max"]
+    candidates = []
     for sym, t in tickers.items():
-        if sym in MANUAL_EXCLUDE:
-            skip_stats["excluded"] += 1; continue
-        if is_on_cooldown(sym):
-            skip_stats["cooldown"] += 1; continue
         try:
             vol = float(t.get("quoteVolume", 0))
-            chg = abs(float(t.get("change24h", 0)) * 100)
+            if vol_min <= vol <= vol_max:
+                candidates.append((sym, vol))
         except Exception:
-            skip_stats["parse_err"] += 1; continue
-        if vol < cfg["min_vol_24h"]:
-            skip_stats["vol_low"] += 1; continue
-        if vol > cfg["max_vol_24h"]:
-            skip_stats["vol_high"] += 1; continue
-        if chg > cfg["gate_chg_24h_max"]:
-            skip_stats["pumped"] += 1; continue
-        candidates.append((sym, t))
+            pass
+    candidates.sort(key=lambda x: x[1])
+    n = len(candidates)
+    if n > 20:
+        lo, hi = n // 10, n * 9 // 10
+        candidates = candidates[lo:hi]
+    if len(candidates) > CONFIG["max_symbols_per_scan"]:
+        random.shuffle(candidates)
+        candidates = candidates[:CONFIG["max_symbols_per_scan"]]
+    syms = [s for s, _ in candidates]
+    log.info(f"  Universe: {len(syms)} symbols (${vol_min/1e6:.0f}M–${vol_max/1e6:.0f}M)")
+    return syms
 
-    log.info(f"Candidates: {len(candidates)} | Skip: {dict(skip_stats)}")
 
-    # ── 4. Phase 1: candle fetch + zone detection + gate filtering ──────
-    log.info("Phase 1: candle fetch + zone detection …")
-    BitgetClient.clear_cache()
+def main():
+    log.info(f"{'═'*70}")
+    log.info(f"  PRE-PUMP SCANNER v{VERSION}")
+    log.info(f"  Target: Pump ≥15% / 24h | Signal 1-3h sebelumnya")
+    log.info(f"  Data: Bitget(price) + Binance+Bybit via Coinalyze")
+    log.info(f"{'═'*70}")
 
-    testing_candidates = []
-    all_approaching    = []
+    if not CONFIG.get("coinalyze_api_key"):
+        log.error("❌ COINALYZE_API_KEY tidak di-set!")
+        return 1
 
-    for idx, (sym, ticker) in enumerate(candidates):
-        if (idx + 1) % 100 == 0:
-            log.info(f"  Phase 1: {idx+1}/{len(candidates)}")
+    init_db()
+    clz = CoinalyzeClient(CONFIG["coinalyze_api_key"])
 
-        try:
-            price   = float(ticker.get("lastPr", 0))
-            vol_24h = float(ticker.get("quoteVolume", 0))
-            if price <= 0:
-                skip_stats["no_price"] += 1; continue
+    # === STEP 1: Fetch Bitget tickers ===
+    log.info("📊 Step 1: Fetching Bitget tickers...")
+    tickers = BitgetClient.get_tickers()
+    if not tickers:
+        log.error("❌ No tickers from Bitget")
+        return 1
+    log.info(f"  Got {len(tickers)} tickers")
 
-            candles = BitgetClient.get_candles(sym, "1H", cfg["candle_limit_1h"])
-            if len(candles) < cfg["lookback_period"] * 2 + 30:
-                skip_stats["candle_short"] += 1; continue
+    # === STEP 2: BTC circuit breaker ===
+    btc_candles = BitgetClient.get_candles("BTCUSDT", 5)
+    btc_chg_1h = 0.0
+    if len(btc_candles) >= 3:
+        btc_chg_1h = (btc_candles[-2]["close"] - btc_candles[-3]["close"]) / btc_candles[-3]["close"] * 100
+    log.info(f"  BTC 1h: {btc_chg_1h:+.2f}%")
+    if btc_chg_1h < CONFIG["btc_dump_threshold"]:
+        log.warning(f"⛔ BTC CIRCUIT BREAKER: {btc_chg_1h:+.1f}% — scan paused")
+        return 0
 
-            # ── Zone Gate G3: volume outlier ──────────────────────────────
-            # FIX: gunakan candles[-2] (confirmed bar), bukan candles[-1] (live)
-            # Candle live volume bisa undercount jika jam baru dimulai
-            lb  = cfg["vol_outlier_lookback"]
-            cur = candles[-2]["vol"]                           # ← FIX: [-2] bukan [-1]
-            avg = _mean([c["vol"] for c in candles[-lb-2:-2]]) # ← baseline sebelum bar itu
-            if avg > 0 and cur > cfg["vol_outlier_mult"] * avg:
-                skip_stats["vol_outlier"] += 1; continue
+    # === STEP 3: Select universe ===
+    log.info("🔍 Step 3: Selecting scan universe...")
+    active = select_universe(tickers)
+    if not active:
+        log.error("❌ No symbols passed universe filter")
+        return 1
 
-            # ── Pre-compute indicators (one pass per coin) ────────────────
-            atr_arr  = compute_atr(candles, cfg["atr_period"])
-            bbw_arr  = compute_bbw(candles, 20)
-            atr_pct  = compute_atr_pct(candles, atr_arr)
-            bbw      = bbw_arr[-1]
+    # === STEP 4: Build Coinalyze symbol mapping ===
+    log.info("🗺️  Step 4: Building Coinalyze symbol maps...")
+    clz.build_symbol_maps(active)
 
-            # ── Zone detection ────────────────────────────────────────────
-            zones = detect_support_zones(candles)
-            if not zones:
-                skip_stats["no_zones"] += 1; continue
+    # === STEP 5: Batch fetch ALL Coinalyze data ===
+    log.info("📈 Step 5: Fetching Coinalyze multi-exchange data...")
+    now_ts = int(time.time())
+    from_ts = now_ts - CONFIG["coinalyze_lookback_h"] * 3600
 
-            # ── Zone Gate G1+G2: TESTING state, break_count < 3 ──────────
-            testing_zones = []
-            for z in zones:
-                if z["break_count"] >= cfg["max_break_count"]:
-                    continue
-                for lookback_i in (1, 2):
-                    if lookback_i >= len(candles):
-                        continue
-                    c = candles[-lookback_i]
-                    if get_zone_state(z, c["low"], c["high"]) == "TESTING":
-                        testing_zones.append(z)
-                        break
+    clz_data = clz.fetch_all_data(active, from_ts, now_ts)
 
-            # ── Approaching zones (pre-alert, tidak kirim telegram) ───────
-            if not testing_zones:
-                for z in zones:
-                    if z["break_count"] >= cfg["max_break_count"]:
-                        continue
-                    state = get_zone_state(z, candles[-1]["low"], candles[-1]["high"])
-                    if state == "VALID":
-                        dist_pct = (price - z["zone_top"]) / price * 100
-                        if 0 < dist_pct <= 5.0:
-                            gate_ok = (bbw >= cfg["gate_bbw_min"] and
-                                       atr_pct >= cfg["gate_atr_pct_min"])
-                            all_approaching.append({
-                                "symbol":    sym,
-                                "price":     price,
-                                "zone_top":  z["zone_top"],
-                                "zone_bot":  z["zone_bottom"],
-                                "dist_pct":  round(dist_pct, 2),
-                                "bbw":       round(bbw, 4),
-                                "atr_pct":   round(atr_pct, 2),
-                                "vol_24h_m": round(vol_24h / 1_000_000, 1),
-                                "gate_ok":   gate_ok,
-                            })
-                skip_stats["no_testing"] += 1; continue
+    # Stats
+    has_ohlcv = sum(1 for d in clz_data.values() if d.has_ohlcv)
+    has_oi    = sum(1 for d in clz_data.values() if d.has_oi)
+    has_liq   = sum(1 for d in clz_data.values() if d.has_liq)
+    has_fund  = sum(1 for d in clz_data.values() if d.has_funding_hist)
+    has_ls    = sum(1 for d in clz_data.values() if d.has_ls)
+    log.info(f"  Coverage: OHLCV={has_ohlcv} OI={has_oi} Liq={has_liq} Fund={has_fund} L/S={has_ls}")
 
-            # ── Volatility Gate G4+G5 (dari data empiris) ─────────────────
-            # Coin yang tidak lolos gate ini secara mekanis tidak bisa 15% move
-            if bbw < cfg["gate_bbw_min"]:
-                skip_stats["gate_bbw"] += 1; continue
-            if atr_pct < cfg["gate_atr_pct_min"]:
-                skip_stats["gate_atr"] += 1; continue
-
-            testing_candidates.append({
-                "sym":     sym,
-                "ticker":  ticker,
-                "candles": candles,
-                "zones":   testing_zones,
-                "atr_arr": atr_arr,
-                "bbw_arr": bbw_arr,
-                "atr_pct": atr_pct,
-                "bbw":     bbw,
-                "vol_24h": vol_24h,
-            })
-
-        except Exception as e:
-            log.debug(f"  Error Phase1 {sym}: {e}")
-
-        time.sleep(cfg["sleep_between_coins"])
-
-    log.info(
-        f"Phase 1 done: {len(testing_candidates)} pass all gates | "
-        f"approaching: {len(all_approaching)} | "
-        f"skip: {dict(skip_stats)}"
-    )
-
-    # ── 5. Phase 2: score each testing candidate + Coinalyze derivatives ──
-    log.info(f"Phase 2: scoring {len(testing_candidates)} candidates + Coinalyze …")
+    # === STEP 6: Score each coin ===
+    log.info("🎯 Step 6: Scoring...")
     results = []
 
-    for d in testing_candidates:
-        sym     = d["sym"]
-        candles = d["candles"]
-        zones   = d["zones"]
-        atr_pct = d["atr_pct"]
-        bbw     = d["bbw"]
+    for sym in active:
+        if is_on_cooldown(sym):
+            continue
 
         try:
-            price = float(d["ticker"].get("lastPr", 0))
+            ticker = tickers.get(sym, {})
+            price  = float(ticker.get("lastPr", 0))
+            vol_24h = float(ticker.get("quoteVolume", 0))
             if price <= 0:
                 continue
 
-            # Pilih zona terbaik: paling dekat harga (sudah dalam TESTING state)
-            best_zone = min(zones, key=lambda z: abs(z["zone_top"] - price))
-
-            # ── Zone width guard: filter low-liquidity coins ──────────────
-            zone_width_pct = (best_zone["zone_top"] - best_zone["zone_bottom"]) \
-                             / price * 100 if price > 0 else 999
-            if zone_width_pct > cfg["max_zone_width_pct"]:
-                log.info(
-                    f"  {sym}: zone width {zone_width_pct:.1f}% > "
-                    f"{cfg['max_zone_width_pct']}% → low liquidity, skip"
-                )
+            candles = BitgetClient.get_candles(sym, CONFIG["candle_limit_bitget"])
+            if len(candles) < 30:
                 continue
 
-            # Compute score components
-            vol_comp    = compute_vol_compression(candles)
-            vol_z4h     = compute_vol_z4h(candles)
-            vol_ratio   = compute_vol_ratio(candles)
-            bear_streak = compute_bear_streak(candles)
+            chg_24h = get_chg_from_candles(candles, 24)
+            chg_1h  = get_chg_from_candles(candles, 1)
+            chg_4h  = get_chg_from_candles(candles, 4)
+            funding = BitgetClient.get_funding(sym)
 
-            sa, det_a = score_A_volatility(bbw, atr_pct)
-            sb, det_b = score_B_volume(vol_comp, vol_z4h)
-            sc, det_c = score_C_momentum(bear_streak, vol_ratio)
-
-            total = sa + sb + sc
-
-            # ── Pump rejection gate ───────────────────────────────────────
-            # Pattern: volume spike BESAR + tidak ada bear streak = pump event
-            # Bounce legitimate: ada tekanan jual (bear streak) LALU volume masuk
-            # Referensi audit: 4USDT vol_ratio=10.66x, bear=0 → pump, bukan bounce
-            is_pump = (vol_ratio > cfg["pump_reject_vol_ratio"] and
-                       bear_streak < cfg["pump_reject_bear_min"])
-            if is_pump:
-                log.info(
-                    f"  {sym}: PUMP REJECTED — "
-                    f"vol_ratio={vol_ratio:.2f}x bear={bear_streak} "
-                    f"(pattern: spike without prior selling = pump event)"
-                )
-                continue
-
-            # ── Minimum B score gate ──────────────────────────────────────
-            # Volume harus mengkonfirmasi sinyal — volatility saja tidak cukup
-            if sb < cfg["min_score_B"]:
-                log.info(
-                    f"  {sym}: B={sb} < min {cfg['min_score_B']} — "
-                    f"no volume confirmation, skip "
-                    f"(A={sa} B={sb} C={sc} total={sa+sb+sc})"
-                )
-                continue
-
-            log.info(
-                f"  {sym}: score={total} (thr={threshold}) | "
-                f"A={sa}(BBW={bbw:.4f},ATR={atr_pct:.2f}%) "
-                f"B={sb}(VC={vol_comp:.2f}x,VZ4h={vol_z4h:.2f}) "
-                f"C={sc}(bear={bear_streak},vr={vol_ratio:.2f}x) | "
-                f"Zone={best_zone['zone_top']:.5f} Price={price:.5f}"
+            coin_data = CoinData(
+                symbol=sym, price=price, vol_24h=vol_24h,
+                chg_24h=chg_24h, chg_1h=chg_1h, chg_4h=chg_4h,
+                funding=funding, candles=candles,
+                btc_chg_1h=btc_chg_1h,
+                clz=clz_data.get(sym, ClzData()),
             )
 
-            if total < threshold:
-                log.info(f"    ❌ {sym} gagal threshold")
-                continue
-
-            strength = ("STRONG"   if total >= cfg["score_strong"]           else
-                        "MODERATE" if total >= cfg["score_threshold_normal"] else
-                        "WEAK")
-
-            # ── Trade setup (Entry / SL / TP per-coin) ───────────────────
-            trade = compute_trade_setup(
-                candles  = candles,
-                zone     = best_zone,
-                atr_arr  = d["atr_arr"],
-                bbw      = bbw,
-                price    = price,
-            )
-
-            log.info(
-                f"    ✅ {sym} lolos! strength={strength} | "
-                f"Entry={trade['entry_type']}@{trade['entry']:.5f} "
-                f"SL={trade['sl']:.5f}(-{trade['risk_pct']:.1f}%) "
-                f"TP={trade['tp']:.5f}(+{trade['reward_pct']:.1f}%) "
-                f"R:R={trade['rr']:.2f} [{trade['tp_method']}]"
-            )
-
-            # ── Coinalyze derivatives (context info, tidak masuk score) ──
-            # Hanya fetch untuk coin yang sudah lolos semua gate
-            deriv = CoinalyzeData.fetch_all(sym)
-            btx_d = deriv.get("btx", {})
-            oi_d  = deriv.get("oi",  {})
-            fund_d= deriv.get("funding", {})
-            ls_d  = deriv.get("ls",  {})
-            liq_d = deriv.get("liq", {})
-
-            # Log ringkas derivatives
-            deriv_summary = []
-            if btx_d:  deriv_summary.append(f"btx_z={btx_d.get('btx_z',0):.2f}")
-            if oi_d:   deriv_summary.append(f"oi_1h={oi_d.get('oi_chg_1h',0):+.2f}%")
-            if fund_d: deriv_summary.append(f"fund={fund_d.get('funding_current',0):.5f}")
-            if ls_d:   deriv_summary.append(f"long%={ls_d.get('long_pct',50):.1f}")
-            if liq_d:  deriv_summary.append(f"s_liq4h=${liq_d.get('short_liq_4h',0):,.0f}")
-            if deriv_summary:
-                log.info(f"      CLZ: {' | '.join(deriv_summary)}")
-
-            results.append({
-                "symbol":       sym,
-                "price":        round(price, 8),
-                "zone_top":     round(best_zone["zone_top"], 8),
-                "zone_bot":     round(best_zone["zone_bottom"], 8),
-                # Trade setup
-                "entry":        trade["entry"],
-                "entry_type":   trade["entry_type"],
-                "sl":           trade["sl"],
-                "tp":           trade["tp"],
-                "tp_method":    trade["tp_method"],
-                "risk_pct":     trade["risk_pct"],
-                "reward_pct":   trade["reward_pct"],
-                "rr":           trade["rr"],
-                # Score
-                "score":        round(total, 1),
-                "sa":           sa, "sb": sb, "sc": sc,
-                # Indicators
-                "bbw":          round(bbw, 4),
-                "atr_pct":      round(atr_pct, 2),
-                "vol_comp":     round(vol_comp, 3),
-                "vol_z4h":      round(vol_z4h, 3),
-                "vol_ratio":    round(vol_ratio, 3),
-                "bear_streak":  bear_streak,
-                "zone_width_pct": round(zone_width_pct, 1),
-                "touches":      best_zone["touch_count"],
-                "breaks":       best_zone["break_count"],
-                "strength":     strength,
-                "caution":      caution,
-                "vol_24h_m":    round(d["vol_24h"] / 1_000_000, 1),
-                # Coinalyze derivatives (context info)
-                "btx_z":        btx_d.get("btx_z",       None),
-                "btx_ratio":    btx_d.get("btx_ratio",   None),
-                "bv_ratio":     btx_d.get("bv_ratio",    None),
-                "oi_usd":       oi_d.get("oi_usd",       None),
-                "oi_chg_1h":    oi_d.get("oi_chg_1h",   None),
-                "oi_chg_4h":    oi_d.get("oi_chg_4h",   None),
-                "funding":      fund_d.get("funding_current", None),
-                "funding_trend":fund_d.get("funding_trend",   None),
-                "long_pct":     ls_d.get("long_pct",     None),
-                "short_pct":    ls_d.get("short_pct",    None),
-                "ls_ratio":     ls_d.get("ls_ratio",     None),
-                "long_trend":   ls_d.get("long_trend",   None),
-                "short_liq_4h": liq_d.get("short_liq_4h", None),
-                "long_liq_4h":  liq_d.get("long_liq_4h",  None),
-                "short_dom_24h":liq_d.get("short_dom_24h", None),
-                "deriv_source": "Binance/Bybit proxy",
-            })
+            result = score_coin_v14(coin_data)
+            if result:
+                results.append(result)
+                types = "/".join([pt.type_code for pt in result.pump_types])
+                src = result.components.get("data_sources", "")
+                log.info(f"  ✅ {sym}: {result.score} [{result.phase}] [{types}] {src}")
 
         except Exception as e:
-            log.warning(f"  Error Phase2 {sym}: {e}")
+            log.warning(f"  ⚠️ {sym}: {e}")
 
-    # ── 6. Sort + output ────────────────────────────────────────────────
-    # Sort: Score DESC → A(volatility) DESC → B(volume) DESC
-    results.sort(key=lambda x: (-x["score"], -x["sa"], -x["sb"]))
-    top = results[:cfg["top_n"]]
+    # === STEP 7: Sort & alert ===
+    results.sort(key=lambda x: x.score, reverse=True)
+    max_alerts = CONFIG["max_alerts_per_scan"]
 
-    elapsed = round(time.time() - start_ts, 1)
-    log.info(
-        f"\nSignals: {len(results)} | Shown: {len(top)} | "
-        f"Approaching: {len(all_approaching)} | Time: {elapsed}s"
-    )
+    log.info(f"\n{'═'*70}")
+    log.info(f"  📊 DONE: {len(results)} signals | Sending top {min(max_alerts, len(results))}")
+    log.info(f"{'═'*70}\n")
 
-    # ── Terminal output ─────────────────────────────────────────────────
-    print(build_table(top, caution))
-    print(build_approaching_table(all_approaching[:10]))
+    sent = 0
+    for rank, r in enumerate(results[:10], 1):
+        msg = build_alert_v14(r, rank)
+        print(msg)
+        if sent < max_alerts:
+            if send_telegram(msg):
+                sent += 1
+            entry_price = r.entry["entry"] if r.entry else r.price
+            set_alert(r.symbol, r.score, r.phase, entry_price)
 
-    if not top:
-        log.info("Tidak ada sinyal saat ini.")
-        _save_state(_state)
-        return
+    if not results:
+        log.info("  No signals this cycle")
 
-    # ── Telegram ────────────────────────────────────────────────────────
-    strong  = [r for r in top if r["strength"] == "STRONG"]
-    # Filter Telegram: hanya coin dengan vol ≥ min_vol_signal (kurangi noise low-cap)
-    tg_pool = [r for r in (strong if strong else top)
-               if r["vol_24h_m"] * 1_000_000 >= cfg["min_vol_signal"]]
-    targets = tg_pool[:cfg["max_alerts"]] if tg_pool else []
-
-    if targets:
-        ok = send_telegram(
-            build_telegram_msg(targets, caution,
-                               len(testing_candidates), len(candidates))
-        )
-        if ok:
-            log.info(f"📤 Telegram: {len(targets)} signals sent")
-            for r in targets:
-                set_cooldown(r["symbol"])
-
-    _save_state(_state)
-    log.info(f"=== SELESAI — {datetime.now(timezone.utc).strftime('%H:%M UTC')} ===")
+    BitgetClient.clear_cache()
+    return 0
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  ▶️  ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    if not CONFIG["bot_token"] or not CONFIG["chat_id"]:
-        log.error("FATAL: BOT_TOKEN / CHAT_ID tidak ditemukan!")
+    try:
+        exit(main())
+    except KeyboardInterrupt:
+        log.info("\n⚠️ Stopped by user")
+        exit(0)
+    except Exception as e:
+        log.error(f"❌ Fatal: {e}", exc_info=True)
         exit(1)
-    run_scan()
