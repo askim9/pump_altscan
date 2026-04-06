@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v14.2 — FINAL OPTIMIZED                                   ║
+║  PRE-PUMP SCANNER v14.3 — FINAL WITH STOCK TOKEN BLOCK                       ║
 ║                                                                              ║
-║  FIXES:                                                                     ║
-║  • Fixed Retry-After parsing (float support)                                ║
-║  • Optimized rate limiting (batch size 10, wait 0.6s)                       ║
-║  • Adjusted short squeeze threshold for better detection                    ║
-║  • Better error handling for funding history                                ║
-║  • Added optional debug logging                                             ║
+║  NEW: Blacklist for stock tokens (HOOD, COIN, MSTR, NVDA, AAPL, etc.)       ║
+║  FIXES: Retry-After parsing, optimized rate limits, adjusted thresholds     ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -32,7 +28,7 @@ try:
 except ImportError:
     pass
 
-VERSION = "14.2-FINAL"
+VERSION = "14.3-STOCK-BLOCK"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -51,7 +47,7 @@ log = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ⚙️  CONFIG v14.2
+#  ⚙️  CONFIG v14.3
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG: Dict = {
     "coinalyze_api_key": os.getenv("COINALYZE_API_KEY", "ab447e9a-3a26-4253-a68e-1cd0603d22d2"),
@@ -121,16 +117,21 @@ CONFIG: Dict = {
     "bv_ratio_strong": 0.62,
     "bv_ratio_moderate": 0.55,
     # Adjusted thresholds for short squeeze detection (more sensitive)
-    "short_squeeze_ls_min": 15,      # lowered from 20
-    "short_squeeze_liq_min": 8,      # lowered from 10
-    "short_squeeze_fund_min": 10,    # lowered from 15
-    "whale_accum_bv_min": 15,        # unchanged
-    "whale_accum_accum_min": 10,     # unchanged
+    "short_squeeze_ls_min": 15,
+    "short_squeeze_liq_min": 8,
+    "short_squeeze_fund_min": 10,
+    "whale_accum_bv_min": 15,
+    "whale_accum_accum_min": 10,
+    # BLACKLIST: stock tokens to exclude (mencegah false signal dari saham)
+    "stock_token_blacklist": [
+        "TSLAUSDT","CRCLUSDT", "SPYUSDT","GOOGLUSDT","COINUSDT","NVDAUSDT","METAUSDT","QQQUSDT","GLDUSDT",
+"MSFTUSDT","AAPLUSDT","MSTRUSDT","PLTRUSDT","INTCUSDT","XAUSDT",  # tambahan jika perlu
+    ],
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  📊  DATA CLASSES (same as before)
+#  📊  DATA CLASSES
 # ══════════════════════════════════════════════════════════════════════════════
 @dataclass
 class ClzData:
@@ -237,7 +238,7 @@ class ScoreResult:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🗄️  DATABASE (unchanged)
+#  🗄️  DATABASE
 # ══════════════════════════════════════════════════════════════════════════════
 def init_db():
     db = CONFIG["pump_history_db"]
@@ -347,6 +348,11 @@ def volume_tod_mult(hour: int) -> float:
     elif 13 <= hour <= 21:
         return 0.88
     return 1.0
+
+def is_stock_token(symbol: str) -> bool:
+    """Cek apakah simbol termasuk dalam blacklist stock token"""
+    blacklist = CONFIG.get("stock_token_blacklist", [])
+    return symbol in blacklist
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -551,7 +557,6 @@ def score_funding_trend(clz: ClzData, current_funding: float) -> Tuple[int, dict
         score += int(cfg["funding_snapshot_weight"] * 0.4)
         signals.append(f"NEG_FUNDING={current_funding*100:.4f}%")
     if not clz.has_funding_hist:
-        # If no history, just return snapshot score
         return min(score, cfg["funding_trend_weight"] + cfg["funding_snapshot_weight"]), {
             "signals": signals, "trend": "no_history"
         }
@@ -886,7 +891,7 @@ def check_velocity_gates(chg_24h: float, chg_1h: float, chg_4h: float,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🏆  MASTER SCORING v14.2 (with adjusted thresholds)
+#  🏆  MASTER SCORING v14.3
 # ══════════════════════════════════════════════════════════════════════════════
 def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     if data.vol_24h < CONFIG["pre_filter_vol_min"] or data.price <= 0:
@@ -939,7 +944,7 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
         catalysts.append(f"📊 RS={rs_d.get('rs',0):+.1f}% vs BTC")
     # Pump types with adjusted thresholds
     cfg = CONFIG
-    # Short squeeze (Type E) - more sensitive now
+    # Short squeeze (Type E)
     if ls_sc >= cfg["short_squeeze_ls_min"] and (liq_sc >= cfg["short_squeeze_liq_min"] or fund_sc >= cfg["short_squeeze_fund_min"]):
         pump_types.append(PumpType("E", "Short Squeeze", min((ls_sc+liq_sc+fund_sc)*2, 100), ls_d.get("signals",[])+liq_d.get("signals",[])))
         log.debug(f"  {data.symbol}: Short squeeze candidate (ls={ls_sc}, liq={liq_sc}, fund={fund_sc})")
@@ -1283,12 +1288,12 @@ class CoinalyzeClient:
             log.info(f"    Got {len(liq_data)} Liq series")
         if bn_syms:
             log.info(f"  Fetching Funding rate history (7d)...")
-            # Try alternative endpoint if this fails
+            # Try alternative interval if 8hour fails
             fund_data = self._batch_fetch("funding-rate-history", bn_syms,
                                           {"interval": fund_interval,
                                            "from": fund_from, "to": to_ts})
             if not fund_data:
-                log.warning("  Funding rate history returned empty, trying alternative interval '1day'...")
+                log.warning("  Funding rate history empty, trying '1day' interval...")
                 fund_data = self._batch_fetch("funding-rate-history", bn_syms,
                                               {"interval": "1day",
                                                "from": fund_from, "to": to_ts})
@@ -1339,6 +1344,9 @@ def select_universe(tickers: Dict) -> List[str]:
     vol_max = CONFIG["pre_filter_vol_max"]
     candidates = []
     for sym, t in tickers.items():
+        # Skip stock tokens
+        if is_stock_token(sym):
+            continue
         try:
             vol = float(t.get("quoteVolume", 0))
             if vol_min <= vol <= vol_max:
@@ -1354,7 +1362,7 @@ def select_universe(tickers: Dict) -> List[str]:
         random.shuffle(candidates)
         candidates = candidates[:CONFIG["max_symbols_per_scan"]]
     syms = [s for s, _ in candidates]
-    log.info(f"  Universe: {len(syms)} symbols (${vol_min/1e6:.0f}M–${vol_max/1e6:.0f}M)")
+    log.info(f"  Universe: {len(syms)} symbols (${vol_min/1e6:.0f}M–${vol_max/1e6:.0f}M) [stock tokens blocked]")
     return syms
 
 
@@ -1363,6 +1371,7 @@ def main():
     log.info(f"  PRE-PUMP SCANNER v{VERSION}")
     log.info(f"  Target: Pump ≥15% / 24h | Signal 1-3h sebelumnya")
     log.info(f"  Data: Bitget(price) + Binance+Bybit via Coinalyze (FINAL OPTIMIZED)")
+    log.info(f"  Stock token blacklist enabled: {len(CONFIG['stock_token_blacklist'])} symbols blocked")
     log.info(f"{'═'*70}")
 
     if not CONFIG.get("coinalyze_api_key"):
