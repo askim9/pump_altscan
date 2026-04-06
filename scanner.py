@@ -125,7 +125,8 @@ CONFIG: Dict = {
     # BLACKLIST: stock tokens to exclude (mencegah false signal dari saham)
     "stock_token_blacklist": [
         "TSLAUSDT","CRCLUSDT", "SPYUSDT","GOOGLUSDT","COINUSDT","NVDAUSDT","METAUSDT","QQQUSDT","GLDUSDT",
-"MSFTUSDT","AAPLUSDT","MSTRUSDT","PLTRUSDT","INTCUSDT","XAUSDT",  # tambahan jika perlu
+"MSFTUSDT","AAPLUSDT","MSTRUSDT","PLTRUSDT","INTCUSDT","XAUSDT", "BZUSDT", "TONUSDT", "BGBUSDT",  "BNBUSDT", "TRXUSDT", 
+         "MCDUSDT", "XRPUSDT" # tambahan jika perlu
     ],
 }
 
