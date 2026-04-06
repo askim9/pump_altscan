@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v14.1 — FULLY INTEGRATED & FIXED                          ║
+║  PRE-PUMP SCANNER v14.2 — FINAL OPTIMIZED                                   ║
 ║                                                                              ║
-║  FIXES: Retry-After parsing (float), User-Agent, error handling             ║
-║  ALL SCORING FUNCTIONS INCLUDED                                             ║
+║  FIXES:                                                                     ║
+║  • Fixed Retry-After parsing (float support)                                ║
+║  • Optimized rate limiting (batch size 10, wait 0.6s)                       ║
+║  • Adjusted short squeeze threshold for better detection                    ║
+║  • Better error handling for funding history                                ║
+║  • Added optional debug logging                                             ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -28,7 +32,7 @@ try:
 except ImportError:
     pass
 
-VERSION = "14.1-FULL"
+VERSION = "14.2-FINAL"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -42,9 +46,12 @@ _fh.setFormatter(_fmt)
 _root.addHandler(_fh)
 log = logging.getLogger(__name__)
 
+# Set to DEBUG for more details (including short squeeze threshold checks)
+# log.setLevel(logging.DEBUG)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ⚙️  CONFIG v14.1
+#  ⚙️  CONFIG v14.2
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG: Dict = {
     "coinalyze_api_key": os.getenv("COINALYZE_API_KEY", "ab447e9a-3a26-4253-a68e-1cd0603d22d2"),
@@ -67,8 +74,8 @@ CONFIG: Dict = {
     "coinalyze_funding_lookback_h": 168,
     "coinalyze_interval": "1hour",
     "coinalyze_funding_interval": "8hour",
-    "coinalyze_batch_size": 20,
-    "coinalyze_rate_limit_wait": 0.5,
+    "coinalyze_batch_size": 10,               # Reduced from 20 to avoid rate limits
+    "coinalyze_rate_limit_wait": 0.6,         # Increased from 0.5 for safety
     "baseline_recent_exclude": 3,
     "baseline_lookback_n": 72,
     "baseline_min_samples": 10,
@@ -113,11 +120,17 @@ CONFIG: Dict = {
     "ls_long_high": 0.58,
     "bv_ratio_strong": 0.62,
     "bv_ratio_moderate": 0.55,
+    # Adjusted thresholds for short squeeze detection (more sensitive)
+    "short_squeeze_ls_min": 15,      # lowered from 20
+    "short_squeeze_liq_min": 8,      # lowered from 10
+    "short_squeeze_fund_min": 10,    # lowered from 15
+    "whale_accum_bv_min": 15,        # unchanged
+    "whale_accum_accum_min": 10,     # unchanged
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  📊  DATA CLASSES
+#  📊  DATA CLASSES (same as before)
 # ══════════════════════════════════════════════════════════════════════════════
 @dataclass
 class ClzData:
@@ -224,7 +237,7 @@ class ScoreResult:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🗄️  DATABASE
+#  🗄️  DATABASE (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 def init_db():
     db = CONFIG["pump_history_db"]
@@ -315,13 +328,6 @@ def robust_zscore(val: float, baseline: List[float]) -> float:
     if mad < 1e-9:
         return 0.0
     return (val - med) / (mad * 1.4826)
-
-def score_from_z(z: float, strong: float, medium: float, weight: int) -> int:
-    if z >= strong:
-        return weight
-    elif z >= medium:
-        return int(weight * 0.6)
-    return 0
 
 def get_chg_from_candles(candles: List[dict], n_hours: int) -> float:
     if len(candles) < n_hours + 2:
@@ -545,6 +551,7 @@ def score_funding_trend(clz: ClzData, current_funding: float) -> Tuple[int, dict
         score += int(cfg["funding_snapshot_weight"] * 0.4)
         signals.append(f"NEG_FUNDING={current_funding*100:.4f}%")
     if not clz.has_funding_hist:
+        # If no history, just return snapshot score
         return min(score, cfg["funding_trend_weight"] + cfg["funding_snapshot_weight"]), {
             "signals": signals, "trend": "no_history"
         }
@@ -879,7 +886,7 @@ def check_velocity_gates(chg_24h: float, chg_1h: float, chg_4h: float,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🏆  MASTER SCORING v14.1
+#  🏆  MASTER SCORING v14.2 (with adjusted thresholds)
 # ══════════════════════════════════════════════════════════════════════════════
 def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     if data.vol_24h < CONFIG["pre_filter_vol_min"] or data.price <= 0:
@@ -930,16 +937,22 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
         catalysts.append(f"⚡ {vret_d.get('pattern','')} atr_ratio={vret_d.get('atr_ratio',0):.2f}")
     if rs_sc > 0:
         catalysts.append(f"📊 RS={rs_d.get('rs',0):+.1f}% vs BTC")
-    # Pump types
-    if ls_sc >= 20 and (liq_sc >= 10 or fund_sc >= 15):
+    # Pump types with adjusted thresholds
+    cfg = CONFIG
+    # Short squeeze (Type E) - more sensitive now
+    if ls_sc >= cfg["short_squeeze_ls_min"] and (liq_sc >= cfg["short_squeeze_liq_min"] or fund_sc >= cfg["short_squeeze_fund_min"]):
         pump_types.append(PumpType("E", "Short Squeeze", min((ls_sc+liq_sc+fund_sc)*2, 100), ls_d.get("signals",[])+liq_d.get("signals",[])))
-    if bv_sc >= 15 and accum_sc >= 10:
+        log.debug(f"  {data.symbol}: Short squeeze candidate (ls={ls_sc}, liq={liq_sc}, fund={fund_sc})")
+    # Whale accumulation (Type B)
+    if bv_sc >= cfg["whale_accum_bv_min"] and accum_sc >= cfg["whale_accum_accum_min"]:
         pump_types.append(PumpType("B", "Whale Accumulation", min((bv_sc+accum_sc)*3, 100), bv_d.get("signals",[])+[accum_d.get("pattern","")]))
+    # Technical breakout (Type D)
     if bbw_sc >= 15 and (stab_sc >= 8 or dry_sc >= 6):
         pump_types.append(PumpType("D", "Technical Breakout", min((bbw_sc+stab_sc)*3, 100), [bbw_d.get("pattern",""), stab_d.get("pattern","")]))
+    # Volatility return (Type F)
     if vret_sc >= 10:
         pump_types.append(PumpType("F", "Volatility Return", min(vret_sc*5, 100), [vret_d.get("pattern","")]))
-    # Multi-wave
+    # Multi-wave (Type G)
     mw_bonus = 0
     if phase.phase in ["EARLY", "CONTINUATION", "PARABOLIC"]:
         mw_sc, mw_d = check_multiwave_history(data.symbol)
@@ -947,6 +960,7 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
             mw_bonus = mw_sc
             catalysts.append(f"🔄 Multi-wave {mw_d['num_pumps']}x, gap {mw_d['avg_gap_h']:.0f}h [{mw_d['pattern']}]")
             pump_types.append(PumpType("G", "Multi-wave", mw_sc, [mw_d.get("pattern","")]))
+    # Reversal (Type R)
     reversal_score = 0
     if phase.phase in ["DOWNTREND", "WEAK"]:
         rev_sc, rev_d = check_reversal_pattern(data)
@@ -960,6 +974,7 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     has_any_clz = clz.has_ohlcv or clz.has_oi or clz.has_liq or clz.has_ls or clz.has_funding_hist
     if not has_any_clz:
         risk_warnings.append("⚠️ No Coinalyze data — score based on Bitget candles only")
+    # Thresholds
     if phase.phase == "EARLY":
         threshold = CONFIG["alert_threshold_early"]
     elif phase.phase == "CONTINUATION":
@@ -1048,7 +1063,7 @@ def build_alert_v14(r: ScoreResult, rank: int) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🌐  API CLIENTS — FIXED
+#  🌐  API CLIENTS — FINAL FIXED
 # ══════════════════════════════════════════════════════════════════════════════
 class BitgetClient:
     BASE = "https://api.bitget.com"
@@ -1268,9 +1283,15 @@ class CoinalyzeClient:
             log.info(f"    Got {len(liq_data)} Liq series")
         if bn_syms:
             log.info(f"  Fetching Funding rate history (7d)...")
+            # Try alternative endpoint if this fails
             fund_data = self._batch_fetch("funding-rate-history", bn_syms,
                                           {"interval": fund_interval,
                                            "from": fund_from, "to": to_ts})
+            if not fund_data:
+                log.warning("  Funding rate history returned empty, trying alternative interval '1day'...")
+                fund_data = self._batch_fetch("funding-rate-history", bn_syms,
+                                              {"interval": "1day",
+                                               "from": fund_from, "to": to_ts})
             for clz_sym, hist in fund_data.items():
                 bitget_sym = bn_rev.get(clz_sym)
                 if bitget_sym:
@@ -1341,7 +1362,7 @@ def main():
     log.info(f"{'═'*70}")
     log.info(f"  PRE-PUMP SCANNER v{VERSION}")
     log.info(f"  Target: Pump ≥15% / 24h | Signal 1-3h sebelumnya")
-    log.info(f"  Data: Bitget(price) + Binance+Bybit via Coinalyze (FIXED)")
+    log.info(f"  Data: Bitget(price) + Binance+Bybit via Coinalyze (FINAL OPTIMIZED)")
     log.info(f"{'═'*70}")
 
     if not CONFIG.get("coinalyze_api_key"):
