@@ -76,7 +76,7 @@ CONFIG: Dict = {
     "chat_id":            os.getenv("CHAT_ID"),
 
     # ── Universe filter ───────────────────────────────────────────────────────
-    "pre_filter_vol_min":     1_000_000,
+    "pre_filter_vol_min":     300_000,
     "pre_filter_vol_max":   100_000_000,
     "max_symbols_per_scan":         150,
 
