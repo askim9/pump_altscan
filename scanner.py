@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  PRE-PUMP SCANNER v14.8 — BUG-FIXED & AUDITED                               ║
+║  PRE-PUMP SCANNER v14.9 — DATA-AUDITED (104 PUMP EVENTS, 120 SIMBOL)        ║
 ║                                                                              ║
-║  PERBAIKAN DARI AUDIT HASIL RUN v14.7 (37 sinyal, 150 simbol):              ║
+║  PERBAIKAN DARI AUDIT RAW DATA v2 (104 pump events, 120 simbol, 46 fitur):  ║
 ║                                                                              ║
 ║  [BUG KRITIS DIPERBAIKI]                                                     ║
-║  • L/S Score selalu 0: threshold direlaksasi sesuai data Bybit aktual        ║
-║    ls_long_extreme_low: 0.38 → 0.42  (lebih realistis)                      ║
-║    ls_long_low:         0.44 → 0.47  (mencakup lebih banyak kondisi)        ║
-║    Tambah tier menengah: long_trend < -0.02 → partial score                 ║
-║    Tambah diagnostik log: selalu log nilai L/S aktual                        ║
-║  • DistToSupport selalu 0: window diperluas 48 → 96 candle (4 hari),        ║
-║    tolerance cluster dinaikan 1.5% → 2.0%, bounce_min turun ke 2           ║
+║  • detect_price_stability DIINVERT: reward range LEBAR (pump_med=3.45%),    ║
+║    bukan sempit. COILING (range<1.5%) sekarang dapat skor 0.                ║
+║  • rs_24h threshold OUTPERFORM: 0.5 → 0.3 (median aktual=0.366, bukan      ║
+║    0.728 di JSON — delta 0.362). Threshold lama hanya cover 37% pump events.║
+║  • Type D trigger: hapus stab_sc>=6 (anti-pump). inside_compression=0 pada  ║
+║    63.5% pump events. Syarat baru: bbw_sc>=8 + dry_sc>=5 + CLZ confirmed.  ║
 ║                                                                              ║
-║  [ANOMALI DIPERBAIKI]                                                        ║
-║  • Signal rate 24.7% terlalu tinggi: threshold EARLY 90 → 95                ║
-║  • OI display negatif: fix format string `OI {chg:+.1f}%` agar benar        ║
-║  • squeeze_alt terlalu longgar: threshold liq naik 15 → 18                  ║
+║  [WEIGHT DISESUAIKAN]                                                        ║
+║  • momentum_decel_weight: 12 → 8 (signal melemah di v2 universe 120 simbol, ║
+║    median -0.364 → -0.062, 53% pump events negatif vs 60% di v1)           ║
 ║                                                                              ║
-║  [DIPERTAHANKAN DARI v14.7]                                                  ║
+║  [FITUR BARU]                                                                ║
+║  • detect_lower_wick + upper wick comparison: reward lower>upper             ║
+║    (net buying pressure), penalti upper>>lower (net selling pressure).       ║
+║    last_wick_up STRONG rank 5 (v2) — pump/rang 4.6x, dump/rang 7.2x.       ║
+║                                                                              ║
+║  [DIPERTAHANKAN DARI v14.8]                                                  ║
 ║  • BBW lebar = bullish (diinvert dari v14.6)                                 ║
 ║  • ATR absolut tinggi = fitur #1 (komponen ganda)                            ║
 ║  • RS 1h negatif = catchup pending (diinvert)                                ║
-║  • 4 fitur baru: LowerWick(15), MomDecel(12), DistSupport(10), RS24h(10)   ║
+║  • L/S threshold relaksasi | DistSupport 96c | threshold EARLY 95           ║
 ║  • Type D konfirmasi Coinalyze wajib                                         ║
 ║  • Blacklist case-insensitive + simbol saham                                 ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -49,7 +52,7 @@ try:
 except ImportError:
     pass
 
-VERSION = "14.8-BUGFIXED-AUDITED"
+VERSION = "14.9-DATA-AUDITED"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -118,7 +121,7 @@ CONFIG: Dict = {
 
     # ── FITUR BARU v14.7 (dipertahankan) ──────────────────────────────────────
     "lower_wick_weight":         15,   # disc=90.75, lift=2.56x
-    "momentum_decel_weight":     12,   # disc=46.85, pullback pre-breakout
+    "momentum_decel_weight":     8,    # disc=46.85, v14.9: turun 12→8 (signal melemah di v2 universe 120 simbol, median -0.364→-0.062)
     "dist_to_support_weight":    10,   # pump median 1% dari support
     "rs_24h_weight":             10,   # outperform BTC 24h sebelum pump
 
@@ -864,6 +867,12 @@ def detect_bbw_squeeze(candles: List[dict]) -> Tuple[int, dict]:
 
 
 def detect_price_stability(candles: List[dict]) -> Tuple[int, dict]:
+    """
+    v14.9 DIINVERT: range_pct LEBAR = bullish, bukan sempit.
+    Audit raw data v2: pump_med range_pct=3.45%, ranging_med=0.91%.
+    Pump terjadi saat range LEBAR — reward range lebar, penalti range sempit.
+    (v14.8 reward range sempit/COILING = kontradiksi langsung dengan data.)
+    """
     if len(candles) < 10:
         return 0, {}
     recent    = candles[-9:-1]
@@ -873,16 +882,14 @@ def detect_price_stability(candles: List[dict]) -> Tuple[int, dict]:
     if ref <= 0:
         return 0, {}
     range_pct = (hi - lo) / ref * 100
-    last      = candles[-2]
-    curr_chg  = (last["close"] - last["open"]) / last["open"] * 100 if last.get("open", 0) > 0 else 0
     w = CONFIG["price_stability_weight"]
-    if range_pct < 1.5 and abs(curr_chg) < 0.5:
-        return w, {"range_pct": round(range_pct, 2), "pattern": "COILING"}
-    elif range_pct < 2.5:
-        return int(w * 0.67), {"range_pct": round(range_pct, 2), "pattern": "CONSOLIDATING"}
-    elif range_pct < 4.0:
-        return int(w * 0.33), {"range_pct": round(range_pct, 2), "pattern": "RANGING"}
-    return 0, {"range_pct": round(range_pct, 2), "pattern": "WIDE"}
+    if range_pct >= 4.0:
+        return w, {"range_pct": round(range_pct, 2), "pattern": "WIDE_EXPANSION"}
+    elif range_pct >= 2.5:
+        return int(w * 0.67), {"range_pct": round(range_pct, 2), "pattern": "RANGING"}
+    elif range_pct >= 1.5:
+        return int(w * 0.33), {"range_pct": round(range_pct, 2), "pattern": "CONSOLIDATING"}
+    return 0, {"range_pct": round(range_pct, 2), "pattern": "COILING"}
 
 
 def detect_volume_dryup(candles: List[dict]) -> Tuple[int, dict]:
@@ -997,25 +1004,35 @@ def detect_rs_btc(coin_chg_1h: float, btc_chg_1h: float) -> Tuple[int, dict]:
 
 def detect_lower_wick(candles: List[dict]) -> Tuple[int, dict]:
     """
-    v14.7+: Lower wick panjang = sinyal terkuat ke-4.
-    disc=90.75, lift=2.56x. Pre-pump lower_wick = 1.03% (vs ranging 0.21%).
-    Rata-rata 3 candle terakhir untuk mengurangi noise.
+    v14.9 UPDATE: Tambah perbandingan last_wick_dn vs last_wick_up (net buying pressure).
+    Audit raw data v2: last_wick_up pump/rang ratio = 4.6x (STRONG rank 5), tapi
+    DUMP/rang ratio = 7.2x — upper wick tinggi ambiguous. Implementasi yang tepat:
+    reward jika lower_wick > upper_wick (net buying pressure dominan),
+    penalti jika upper_wick >> lower_wick (net selling pressure).
+    last_wick_dn tetap sinyal utama (disc=90.75, lift=2.56x, ratio 3.37x).
     """
     if len(candles) < 5:
         return 0, {}
-    wick_pcts = []
+    wick_pcts       = []
+    upper_wick_pcts = []
     for c in candles[-4:-1]:
         lo       = c["low"]
+        hi       = c["high"]
         op       = c.get("open", 0)
         cl       = c["close"]
-        body_low = min(op, cl) if op > 0 else cl
+        body_low  = min(op, cl) if op > 0 else cl
+        body_high = max(op, cl) if op > 0 else cl
         if body_low > 0:
-            wick = (body_low - lo) / body_low * 100
-            wick_pcts.append(max(0.0, wick))
+            lower_w = (body_low - lo) / body_low * 100
+            wick_pcts.append(max(0.0, lower_w))
+        if body_high > 0:
+            upper_w = (hi - body_high) / body_high * 100
+            upper_wick_pcts.append(max(0.0, upper_w))
     if not wick_pcts:
         return 0, {}
-    avg_wick = _mean(wick_pcts)
-    max_wick = max(wick_pcts)
+    avg_wick       = _mean(wick_pcts)
+    max_wick       = max(wick_pcts)
+    avg_upper_wick = _mean(upper_wick_pcts) if upper_wick_pcts else 0.0
     w = CONFIG["lower_wick_weight"]
     if avg_wick >= 1.0:
         score, pat = w, "STRONG_REJECTION_WICK"
@@ -1028,10 +1045,19 @@ def detect_lower_wick(candles: List[dict]) -> Tuple[int, dict]:
     if max_wick >= 1.5 and score > 0:
         score = min(score + 3, w + 3)
         pat  += "+MAX_WICK"
+    # Net buying pressure: reward jika lower > upper (buying dominan)
+    if avg_wick > avg_upper_wick and score > 0:
+        score = min(score + 2, w + 3)
+        pat  += "+NET_BUY_PRESSURE"
+    # Net selling pressure: penalti jika upper >> lower (selling dominan)
+    elif avg_upper_wick > avg_wick * 1.5 and avg_upper_wick > 0.5:
+        score = max(0, score - 3)
+        pat  += "+NET_SELL_PRESSURE"
     return score, {
-        "avg_wick_pct": round(avg_wick, 3),
-        "max_wick_pct": round(max_wick, 3),
-        "pattern":      pat,
+        "avg_wick_pct":       round(avg_wick, 3),
+        "max_wick_pct":       round(max_wick, 3),
+        "avg_upper_wick_pct": round(avg_upper_wick, 3),
+        "pattern":            pat,
     }
 
 
@@ -1153,18 +1179,19 @@ def detect_dist_to_support(candles: List[dict], price: float) -> Tuple[int, dict
 
 def detect_rs_24h(candles: List[dict], btc_chg_24h: float) -> Tuple[int, dict]:
     """
-    v14.7+: RS 24h vs BTC — konsisten positif sebelum pump.
-    Pre-pump outperform BTC +0.73% vs ranging -0.40%.
-    Berbeda dari rs_1h yang ambigu.
+    v14.9 FIX: Threshold OUTPERFORM diturunkan 0.5 → 0.3.
+    Audit raw data v2: pump_median rs_24h = 0.366 (bukan 0.728 di JSON — delta 0.362).
+    Threshold lama >= 0.5 hanya mencakup 37% pump events.
+    Threshold baru >= 0.3 mencakup ~50% pump events sesuai median aktual.
     """
     coin_chg_24h = get_chg_from_candles(candles, 24) if len(candles) >= 26 else 0.0
     if btc_chg_24h == 0:
         return 0, {"rs_24h": 0}
     rs_24h = coin_chg_24h - btc_chg_24h
     w = CONFIG["rs_24h_weight"]
-    if rs_24h >= 0.5:
+    if rs_24h >= 0.3:
         score, pat = w, "OUTPERFORM_BTC_24H"
-    elif rs_24h >= 0.2:
+    elif rs_24h >= 0.1:
         score, pat = int(w * 0.6), "SLIGHT_OUTPERFORM_24H"
     elif rs_24h >= -0.1:
         score, pat = int(w * 0.2), "INLINE_BTC_24H"
@@ -1387,19 +1414,24 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
         ))
 
     # ── Type D: Technical Breakout + konfirmasi Coinalyze ─────────────────────
+    # v14.9 FIX: Hapus syarat stab_sc >= 6 (anti-pump).
+    # Audit raw data: 63.5% pump events memiliki inside_compression=0 (sudah keluar compression).
+    # stab_sc >= 6 identik dengan kondisi COILING/CONSOLIDATING = inside_compression=1,
+    # yang justru anti-pump (ranging_med=1, 77.5% ranging dalam compression).
+    # Type D sekarang hanya mensyaratkan BBW lebar + dry volume + konfirmasi Coinalyze.
     type_d_coinalyze_confirmed = (
         oi_sc   >= cfg["type_d_min_oi_sc"]  or
         liq_sc  >= cfg["type_d_min_liq_sc"] or
         fund_sc >= cfg["type_d_min_fund_sc"]
     )
-    if bbw_sc >= 8 and (stab_sc >= 6 or dry_sc >= 5) and type_d_coinalyze_confirmed:
+    if bbw_sc >= 8 and dry_sc >= 5 and type_d_coinalyze_confirmed:
         pump_types.append(PumpType(
             "D", "Technical Breakout",
-            min((bbw_sc + stab_sc) * 3, 100),
-            [bbw_d.get("pattern", ""), stab_d.get("pattern", "")],
+            min((bbw_sc + dry_sc) * 3, 100),
+            [bbw_d.get("pattern", ""), dry_d.get("pattern", "")],
         ))
-        log.debug(f"  {data.symbol}: Type D confirmed (bbw={bbw_sc} stab={stab_sc} oi={oi_sc} liq={liq_sc} fund={fund_sc})")
-    elif bbw_sc >= 8 and (stab_sc >= 6 or dry_sc >= 5) and not type_d_coinalyze_confirmed:
+        log.debug(f"  {data.symbol}: Type D confirmed (bbw={bbw_sc} dry={dry_sc} oi={oi_sc} liq={liq_sc} fund={fund_sc})")
+    elif bbw_sc >= 8 and dry_sc >= 5 and not type_d_coinalyze_confirmed:
         risk_warnings.append("⚠️ BBW expansion tanpa konfirmasi derivatif — Type D diabaikan")
 
     # ── Type F: Volatility Return / High ATR ──────────────────────────────────
@@ -1936,9 +1968,11 @@ def main():
     log.info(f"  PRE-PUMP SCANNER v{VERSION}")
     log.info(f"  Target: Pump ≥15% / 24h | Signal 1-3h sebelumnya")
     log.info(f"  Data:   Bitget(price/candles) + Binance+Bybit via Coinalyze")
-    log.info(f"  Riset:  269 pump events nyata | 120 simbol | 31 hari | 2 run")
-    log.info(f"  Fix:    L/S threshold relaksasi | DistSupport 96c | threshold 95")
-    log.info(f"  Fix:    OI display +/- | squeeze_alt diperketat | signal rate turun")
+    log.info(f"  Riset:  104 pump events | 120 simbol | 46 fitur | v2 dataset")
+    log.info(f"  Fix:    price_stability INVERT (range lebar=bullish, pump_med=3.45%)")
+    log.info(f"  Fix:    rs_24h threshold 0.5→0.3 (median aktual=0.366, cover 50% pump)")
+    log.info(f"  Fix:    Type D hapus stab_sc (anti-pump) — syarat bbw+dry+CLZ")
+    log.info(f"  Fix:    momentum_decel weight 12→8 (signal melemah di v2 universe)")
     log.info(f"  Stock token blacklist: {len(CONFIG['stock_token_blacklist'])} symbols")
     log.info(f"{'═'*70}")
 
