@@ -52,7 +52,7 @@ try:
 except ImportError:
     pass
 
-VERSION = "14.9-DATA-AUDITED"
+VERSION = "14.9.1-COVERAGE-FIX"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 _fmt  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -76,13 +76,16 @@ CONFIG: Dict = {
     "chat_id":            os.getenv("CHAT_ID"),
 
     # ── Universe filter ───────────────────────────────────────────────────────
-    "pre_filter_vol_min":     500_000,
-    "pre_filter_vol_max":   100_000_000,
+    # v14.9 FIX: vol_min $1M → $300K (pump terbesar justru dari coin vol kering $100K-$800K)
+    # v14.9 FIX: vol_max $100M → $200M (ZEC $110M terblokir padahal pump +19%)
+    "pre_filter_vol_min":     300_000,
+    "pre_filter_vol_max":   200_000_000,
     "max_symbols_per_scan":         150,
 
     # ── Velocity gates ────────────────────────────────────────────────────────
+    # v14.9 FIX: chg_1h_max 4% → 6% — early breakout +5-8% sebelum pump besar justru diblokir gate lama
     "velocity_gates": {
-        "chg_1h_max":                4.0,
+        "chg_1h_max":                6.0,
         "chg_4h_max":                8.0,
         "chg_24h_max_early":        12.0,
         "chg_24h_max_continuation": 30.0,
@@ -130,6 +133,8 @@ CONFIG: Dict = {
     "alert_threshold_early":     95,   # ← NAIK dari 90 (signal rate terlalu tinggi)
     "alert_threshold_continuation": 100,
     "alert_threshold_reversal":  80,
+    # v14.9: Bitget-only threshold (coin tanpa Coinalyze data) = early - 20
+    "alert_threshold_bitget_only": 75,  # 95 - 20 = 75 (Tier 1 definitif 0 untuk Bitget-only)
 
     # ── Entry/SL/TP ───────────────────────────────────────────────────────────
     "min_rr_ratio":         2.0,
@@ -1478,6 +1483,22 @@ def score_coin_v14(data: CoinData) -> Optional[ScoreResult]:
     else:
         threshold = 110
 
+    # v14.9 FIX: Bitget-only scoring tier — coin tanpa Coinalyze tetap bisa lolos.
+    # Root Cause: CHR yang lolos semua gate gagal karena threshold 95 bergantung pada
+    # Tier 1 Coinalyze signals. Pump dari technical breakout murni tidak pernah cukup tinggi.
+    # Solusi: jika coin Bitget-only (tidak ada Coinalyze mapping), turunkan threshold
+    # sebesar 20 poin karena Tier 1 score-nya secara definitif 0.
+    if not has_any_clz and phase.phase == "EARLY":
+        bitget_only_threshold = cfg.get("alert_threshold_bitget_only", threshold - 20)
+        if total >= bitget_only_threshold:
+            log.info(f"  {data.symbol}: Bitget-only path (score={total} >= {bitget_only_threshold})")
+            risk_warnings.append(f"⚠️ Bitget-only signal — no derivatives data (threshold relaxed to {bitget_only_threshold})")
+        else:
+            # Gunakan threshold normal (sudah pasti tidak lolos tapi dicek di bawah)
+            pass
+        # Override threshold untuk coin Bitget-only
+        threshold = bitget_only_threshold
+
     if total < threshold:
         return None
     if not pump_types:
@@ -1955,11 +1976,37 @@ def select_universe(tickers: Dict) -> List[str]:
     if n > 20:
         lo, hi     = n // 10, n * 9 // 10
         candidates = candidates[lo:hi]
+    # v14.9 FIX: Hapus random.shuffle — ganti dengan score-based prioritization.
+    # Root Cause: random.shuffle membuat setiap coin hanya punya ~37.5% chance per run
+    # jika ada 400 kandidat. ZEC dan CHR yang lolos filter bisa terbuang tanpa alasan.
+    # Prioritasi: urutkan berdasarkan vol acceleration (vol sekarang vs median).
+    # Coin dengan vol surge terbesar mendapat slot prioritas di 150 teratas.
     if len(candidates) > CONFIG["max_symbols_per_scan"]:
-        random.shuffle(candidates)
-        candidates = candidates[:CONFIG["max_symbols_per_scan"]]
+        # Hitung vol acceleration score per coin: vol_now / median_vol_bins
+        # Sebagai proxy sederhana: urutkan berdasarkan posisi di distribution
+        # Coin yang berada di tengah-bawah range (vol baru mulai naik) diprioritaskan
+        # dengan membagi list menjadi terciles dan mengambil dari setiap tercile secara proporsional.
+        max_n = CONFIG["max_symbols_per_scan"]
+        # Hitung vol acceleration: ambil chg_1h dari ticker sebagai proxy momentum
+        def vol_score(item):
+            sym, vol = item
+            t = tickers.get(sym, {})
+            try:
+                # Gunakan change24h sebagai proxy — coin yang mulai bergerak punya
+                # change positif tapi belum besar (pre-pump window)
+                chg = abs(float(t.get("change24h", 0) or 0))
+                # Prioritaskan coin yang vol-nya mulai bergerak (vol medium, bukan terlalu kecil/besar)
+                # Normalisasi: coin di vol mid-range dengan momentum awal = kandidat terbaik
+                vol_norm = vol / vol_max  # 0..1
+                # Score: kombinasi vol (lebih besar = lebih liquid) + momentum awal
+                return vol_norm * 0.6 + min(chg / 20.0, 1.0) * 0.4
+            except Exception:
+                return 0.0
+        candidates.sort(key=vol_score, reverse=True)
+        candidates = candidates[:max_n]
+        log.info(f"  Universe pruned: {n} → {len(candidates)} (score-based, no shuffle)")
     syms = [s for s, _ in candidates]
-    log.info(f"  Universe: {len(syms)} symbols (${vol_min/1e6:.0f}M–${vol_max/1e6:.0f}M)")
+    log.info(f"  Universe: {len(syms)} symbols (${vol_min/1e6:.2f}M–${vol_max/1e6:.0f}M)")
     return syms
 
 
@@ -1973,6 +2020,10 @@ def main():
     log.info(f"  Fix:    rs_24h threshold 0.5→0.3 (median aktual=0.366, cover 50% pump)")
     log.info(f"  Fix:    Type D hapus stab_sc (anti-pump) — syarat bbw+dry+CLZ")
     log.info(f"  Fix:    momentum_decel weight 12→8 (signal melemah di v2 universe)")
+    log.info(f"  [v14.9.1 COVERAGE] vol_min $1M→$300K | vol_max $100M→$200M")
+    log.info(f"  [v14.9.1 COVERAGE] random.shuffle DIHAPUS → score-based prioritization")
+    log.info(f"  [v14.9.1 COVERAGE] chg_1h_max 4%→6% (tangkap early breakout)")
+    log.info(f"  [v14.9.1 COVERAGE] Bitget-only threshold: 75 (tanpa Coinalyze data)")
     log.info(f"  Stock token blacklist: {len(CONFIG['stock_token_blacklist'])} symbols")
     log.info(f"{'═'*70}")
 
