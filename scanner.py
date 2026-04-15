@@ -82,9 +82,9 @@ CONFIG: Dict = {
     "cooldown_hours":         24,
 
     # ── API Keys (environment variables) ──────────────────────────────
-    "telegram_token":         os.getenv("TELEGRAM_TOKEN", ""),
-    "telegram_chat_id":       os.getenv("TELEGRAM_CHAT_ID", ""),
-    "coinalyze_key":          os.getenv("COINALYZE_KEY", ""),
+    "telegram_token":         os.getenv("BOT_TOKEN"),
+    "telegram_chat_id":       os.getenv("CHAT_ID"),
+    "coinalyze_key":          os.getenv("COINALYZE_API_KEY", "ab447e9a-3a26-4253-a68e-1cd0603d22d2"),
 
     # ── Phase 1: Bitget pre-filter ─────────────────────────────────────
     # Basis: riset empiris 1.362 pump events + 51 sinyal
