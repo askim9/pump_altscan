@@ -689,7 +689,7 @@ class CoinalyzeClient:
     BASE_URL      = "https://api.coinalyze.net/v1"
     _last_call    = 0.0
     BATCH_SIZE    = 5   # max symbols per request
-    RATE_WAIT     = 1.2 # detik antar request
+    RATE_WAIT     = 13  # detik antar request — Coinalyze free: ~5 req/menit
 
     def __init__(self, api_key: str):
         self.api_key       = api_key
@@ -1011,7 +1011,7 @@ def detect_bbw_squeeze_duration(candles: List[dict]) -> Tuple[bool, int, dict]:
     stop_idx  = max(start_idx - max_dur - 5, 20)
 
     for i in range(start_idx, stop_idx, -1):
-        window = candles[max(0, i - 20):i]  # window[-1] = candles[i-1], tidak include i
+        window = candles[max(0, i - 22):i]  # 22 candle: cukup untuk calc_bbw (min 22)
         if len(window) < 20:
             break
         bbw = calc_bbw(window)
