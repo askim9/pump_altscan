@@ -82,9 +82,9 @@ CONFIG: Dict = {
     "cooldown_hours":         24,
 
     # ── API Keys (environment variables) ──────────────────────────────
-    "telegram_token":         os.getenv("BOT_TOKEN"),
-    "telegram_chat_id":       os.getenv("CHAT_ID"),
-    "coinalyze_key":          os.getenv("COINALYZE_API_KEY", "ab447e9a-3a26-4253-a68e-1cd0603d22d2"),
+    "telegram_token":         os.getenv("TELEGRAM_TOKEN", ""),
+    "telegram_chat_id":       os.getenv("TELEGRAM_CHAT_ID", ""),
+    "coinalyze_key":          os.getenv("COINALYZE_API_KEY", "99ddb324-cc99-4977-a492-a785d75c9b87"),
 
     # ── Phase 1: Bitget pre-filter ─────────────────────────────────────
     # Basis: riset empiris 1.362 pump events + 51 sinyal
@@ -141,6 +141,72 @@ CONFIG: Dict = {
     # ── Outcome Tracking ───────────────────────────────────────────────
     # Basis: T2 lead time — 46% pump terjadi di 12-24 jam
     "outcome_window_hours":   24,           # lebih panjang dari v16 (12h)
+
+    # ── Whitelist (coin yang dipindai) ────────────────────────────────
+    # 383 symbols dari scanner v16 — sudah tervalidasi ada di Bitget
+    # NEXUS-PB scan hanya dari whitelist ini (bukan semua 535 symbols)
+    "whitelist": {
+        "4USDT", "0GUSDT", "1000BONKUSDT", "1000PEPEUSDT", "1000RATSUSDT", "1000SHIBUSDT", "1000XECUSDT", "1INCHUSDT",
+        "1MBABYDOGEUSDT", "2ZUSDT", "AAVEUSDT", "ACEUSDT", "ACHUSDT", "ACTUSDT", "ADAUSDT", "AEROUSDT",
+        "AGLDUSDT", "AINUSDT", "AIOUSDT", "AIXBTUSDT", "AKTUSDT", "ALCHUSDT", "ALGOUSDT", "ALICEUSDT",
+        "ALLOUSDT", "ALTUSDT", "ANIMEUSDT", "ANKRUSDT", "APEUSDT", "APEXUSDT", "API3USDT", "APRUSDT",
+        "APTUSDT", "ARUSDT", "ARBUSDT", "ARCUSDT", "ARIAUSDT", "ARKUSDT", "ARKMUSDT", "ARPAUSDT",
+        "ASTERUSDT", "ATUSDT", "ATHUSDT", "ATOMUSDT", "AUCTIONUSDT", "AVAXUSDT", "AVNTUSDT", "AWEUSDT",
+        "AXLUSDT", "AXSUSDT", "AZTECUSDT", "BUSDT", "B2USDT", "BABYUSDT", "BANUSDT", "BANANAUSDT",
+        "BANANAS31USDT", "BANKUSDT", "BARDUSDT", "BATUSDT", "BCHUSDT", "BEATUSDT", "BERAUSDT", "BGBUSDT",
+        "BIGTIMEUSDT", "BIOUSDT", "BIRBUSDT", "BLASTUSDT", "BLESSUSDT", "BLURUSDT", "BNBUSDT", "BOMEUSDT",
+        "BRETTUSDT", "BREVUSDT", "BROCCOLIUSDT", "BSVUSDT", "BTCUSDT", "BULLAUSDT", "C98USDT", "CAKEUSDT",
+        "CCUSDT", "CELOUSDT", "CFXUSDT", "CHILLGUYUSDT", "CHZUSDT", "CLUSDT", "CLANKERUSDT", "CLOUSDT",
+        "COAIUSDT", "COMPUSDT", "COOKIEUSDT", "COWUSDT", "CRCLUSDT", "CROUSDT", "CROSSUSDT", "CRVUSDT",
+        "CTKUSDT", "CVCUSDT", "CVXUSDT", "CYBERUSDT", "CYSUSDT", "DASHUSDT", "DEEPUSDT", "DENTUSDT",
+        "DEXEUSDT", "DOGEUSDT", "DOLOUSDT", "DOODUSDT", "DOTUSDT", "DRIFTUSDT", "DYDXUSDT", "DYMUSDT",
+        "EGLDUSDT", "EIGENUSDT", "ENAUSDT", "ENJUSDT", "ENSUSDT", "ENSOUSDT", "EPICUSDT", "ESPUSDT",
+        "ETCUSDT", "ETHUSDT", "ETHFIUSDT", "FUSDT", "FARTCOINUSDT", "FETUSDT", "FFUSDT", "FIDAUSDT",
+        "FILUSDT", "FLOKIUSDT", "FLUIDUSDT", "FOGOUSDT", "FOLKSUSDT", "FORMUSDT", "GALAUSDT", "GASUSDT",
+        "GIGGLEUSDT", "GLMUSDT", "GMTUSDT", "GMXUSDT", "GOATUSDT", "GPSUSDT", "GRASSUSDT", "GUSDT",
+        "GRIFFAINUSDT", "GRTUSDT", "GUNUSDT", "GWEIUSDT", "HUSDT", "HBARUSDT", "HEIUSDT", "HEMIUSDT",
+        "HMSTRUSDT", "HOLOUSDT", "HOMEUSDT", "HYPEUSDT", "HYPERUSDT", "ICNTUSDT", "ICPUSDT", "IDOLUSDT",
+        "ILVUSDT", "IMXUSDT", "INITUSDT", "INJUSDT", "INXUSDT", "IOUSDT", "IOTAUSDT", "IOTXUSDT",
+        "IPUSDT", "JASMYUSDT", "JCTUSDT", "JSTUSDT", "JTOUSDT", "JUPUSDT", "KAIAUSDT", "KAITOUSDT",
+        "KASUSDT", "KAVAUSDT", "kBONKUSDT", "KERNELUSDT", "KGENUSDT", "KITEUSDT", "kPEPEUSDT", "kSHIBUSDT",
+        "LAUSDT", "LABUSDT", "LAYERUSDT", "LDOUSDT", "LIGHTUSDT", "LINEAUSDT", "LINKUSDT", "LITUSDT",
+        "LPTUSDT", "LSKUSDT", "LTCUSDT", "LUNAUSDT", "LUNCUSDT", "LYNUSDT", "MUSDT", "MAGICUSDT",
+        "MAGMAUSDT", "MANAUSDT", "MANTAUSDT", "MANTRAUSDT", "MASKUSDT", "MAVUSDT", "MAVIAUSDT", "MBOXUSDT",
+        "MEUSDT", "MEGAUSDT", "MELANIAUSDT", "MEMEUSDT", "MERLUSDT", "METUSDT", "METAUSDT", "MEWUSDT",
+        "MINAUSDT", "MMTUSDT", "MNTUSDT", "MONUSDT", "MOODENGUSDT", "MORPHOUSDT", "MOVEUSDT", "MOVRUSDT",
+        "MUUSDT", "MUBARAKUSDT", "MYXUSDT", "NAORISUSDT", "NEARUSDT", "NEIROCTOUSDT", "NEOUSDT", "NEWTUSDT",
+        "NILUSDT", "NMRUSDT", "NOMUSDT", "NOTUSDT", "NXPCUSDT", "ONDOUSDT", "ONGUSDT", "ONTUSDT",
+        "OPUSDT", "OPENUSDT", "OPNUSDT", "ORCAUSDT", "ORDIUSDT", "OXTUSDT", "PARTIUSDT", "PENDLEUSDT",
+        "PENGUUSDT", "PEOPLEUSDT", "PEPEUSDT", "PHAUSDT", "PIEVERSEUSDT", "PIPPINUSDT", "PLUMEUSDT", "PNUTUSDT",
+        "POLUSDT", "POLYXUSDT", "POPCATUSDT", "POWERUSDT", "PROMPTUSDT", "PROVEUSDT", "PUMPUSDT", "PURRUSDT",
+        "PYTHUSDT", "QUSDT", "QNTUSDT", "RAVEUSDT", "RAYUSDT", "RECALLUSDT", "RENDERUSDT", "RESOLVUSDT",
+        "REZUSDT", "RIVERUSDT", "ROBOUSDT", "ROSEUSDT", "RPLUSDT", "RSRUSDT", "RUNEUSDT", "SUSDT",
+        "SAGAUSDT", "SAHARAUSDT", "SANDUSDT", "SAPIENUSDT", "SEIUSDT", "SENTUSDT", "SHIBUSDT", "SIGNUSDT",
+        "SIRENUSDT", "SKHYNIXUSDT", "SKRUSDT", "SKYUSDT", "SKYAIUSDT", "SLPUSDT", "SNXUSDT", "SOLUSDT",
+        "SOMIUSDT", "SONICUSDT", "SOONUSDT", "SOPHUSDT", "SPACEUSDT", "SPKUSDT", "SPXUSDT", "SQDUSDT",
+        "SSVUSDT", "STBLUSDT", "STEEMUSDT", "STOUSDT", "STRKUSDT", "STXUSDT", "SUIUSDT", "SUNUSDT",
+        "SUPERUSDT", "SUSHIUSDT", "SYRUPUSDT", "TUSDT", "TACUSDT", "TAGUSDT", "TAIKOUSDT", "TAOUSDT",
+        "THEUSDT", "THETAUSDT", "TIAUSDT", "TNSRUSDT", "TONUSDT", "TOSHIUSDT", "TOWNSUSDT", "TRBUSDT",
+        "TRIAUSDT", "TRUMPUSDT", "TRXUSDT", "TURBOUSDT", "UAIUSDT", "UBUSDT", "UMAUSDT", "UNIUSDT",
+        "USUSDT", "USDKRWUSDT", "USELESSUSDT", "USUALUSDT", "VANAUSDT", "VANRYUSDT", "VETUSDT", "VINEUSDT",
+        "VIRTUALUSDT", "VTHOUSDT", "VVVUSDT", "WUSDT", "WALUSDT", "WAXPUSDT", "WCTUSDT", "WETUSDT",
+        "WIFUSDT", "WLDUSDT", "WLFIUSDT", "WOOUSDT", "WTIUSDT", "XAIUSDT", "XCUUSDT", "XDCUSDT",
+        "XLMUSDT", "XMRUSDT", "XPDUSDT", "XPINUSDT", "XPLUSDT", "XRPUSDT", "XTZUSDT", "XVGUSDT",
+        "YGGUSDT", "YZYUSDT", "ZAMAUSDT", "ZBTUSDT", "ZECUSDT", "ZENUSDT", "ZEREBROUSDT", "ZETAUSDT",
+        "ZILUSDT", "ZKUSDT", "ZKCUSDT", "ZKJUSDT", "ZKPUSDT", "ZORAUSDT", "ZROUSDT",
+    },
+
+    # ── Stock Token Blacklist ──────────────────────────────────────────
+    # Token saham tokenized Bitget — tidak ada di Binance/Bybit futures
+    # (diambil dari working scanner v16 + tambahan dari log run pertama)
+    "stock_token_blacklist": {
+        "HOODUSDT","COINUSDT","MSTRUSDT","NVDAUSDT","AAPLUSDT",
+        "GOOGLUSDT","AMZNUSDT","METAUSDT","QQQUSDT","BZUSDT",
+        "MCDUSDT","JCTUSDT","NOMUSDT","ASTERUSDT","POLYXUSDT",
+        "TSLAUSDT","CRCLUSDT","SPYUSDT","GLDUSDT","MSFTUSDT",
+        "PLTRUSDT","INTCUSDT","XAUSDT","USDCUSDT","SKHYNIXUSDT",
+        "XAGUSDT","WTIUSDT","XPDUSDT","USDKRWUSDT",
+    },
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -160,7 +226,7 @@ class ClzData:
     @property
     def has_ohlcv(self) -> bool:   return len(self.ohlcv) >= 6
     @property
-    def has_oi(self) -> bool:      return len(self.oi) >= 7
+    def has_oi(self) -> bool:      return len(self.oi) >= 9  # butuh -8 index
     @property
     def has_funding(self) -> bool: return len(self.funding_hist) >= 3
 
@@ -603,128 +669,256 @@ class BitgetClient:
 #  COINALYZE CLIENT
 # ══════════════════════════════════════════════════════════════════════
 class CoinalyzeClient:
-    BASE_URL   = "https://api.coinalyze.net/v1"
-    _last_call = 0.0
+    """
+    Client Coinalyze dengan API yang sudah terverifikasi dari scanner v16.
+
+    Perbedaan kritis dari versi sebelumnya (semuanya menyebabkan 0 markets):
+    - Endpoint: future-markets (bukan markets)
+    - Exchange kode: "A"=Binance, "6"=Bybit (bukan string "binance_futures")
+    - Field mapping: symbol_on_exchange → bitget_symbol (bukan field "symbol")
+    - OI params: from/to timestamps + convert_to_usd=true (bukan limit)
+    - OI interval: 1hour (bukan 1H)
+    """
+    BASE_URL      = "https://api.coinalyze.net/v1"
+    _last_call    = 0.0
+    BATCH_SIZE    = 5   # max symbols per request
+    RATE_WAIT     = 1.2 # detik antar request
 
     def __init__(self, api_key: str):
-        self.api_key = api_key
+        self.api_key       = api_key
+        self._bn_map:  Dict[str, str] = {}  # bitget_sym → clz_sym (Binance)
+        self._by_map:  Dict[str, str] = {}  # bitget_sym → clz_sym (Bybit)
 
-    def _get(self, path: str, params: dict = None) -> dict:
-        """Rate-limited GET. Min 0.5s antar request."""
-        wait = 0.5 - (time.time() - CoinalyzeClient._last_call)
-        if wait > 0:
-            time.sleep(wait)
+    def _wait(self) -> None:
+        elapsed = time.time() - CoinalyzeClient._last_call
+        if elapsed < self.RATE_WAIT:
+            time.sleep(self.RATE_WAIT - elapsed)
         CoinalyzeClient._last_call = time.time()
 
-        try:
-            p    = {"api_key": self.api_key, **(params or {})}
-            resp = requests.get(f"{self.BASE_URL}/{path}", params=p, timeout=20)
-            if resp.status_code == 429:
-                log.warning("  Coinalyze rate limit — wait 61s")
-                time.sleep(61)
-                resp = requests.get(f"{self.BASE_URL}/{path}", params=p, timeout=20)
-            return resp.json()
-        except Exception as e:
-            log.warning("Coinalyze error [%s]: %s", path, e)
-            return {}
+    def _get(self, endpoint: str, params: dict = None) -> Optional[Any]:
+        """Rate-limited GET dengan retry 3x dan Retry-After handling."""
+        p = {"api_key": self.api_key, **(params or {})}
+        headers = {"User-Agent": f"NexusPB/{VERSION}"}
+        for attempt in range(3):
+            self._wait()
+            try:
+                resp = requests.get(
+                    f"{self.BASE_URL}/{endpoint}", params=p,
+                    headers=headers, timeout=20,
+                )
+                if resp.status_code == 429:
+                    ra = resp.headers.get("Retry-After", "5")
+                    try:    wait = int(float(ra)) + 1
+                    except: wait = 6
+                    log.warning("  Coinalyze rate limit — wait %ds (attempt %d/3)", wait, attempt+1)
+                    time.sleep(wait + 1.5)
+                    continue
+                if resp.status_code != 200:
+                    log.warning("  Coinalyze %s HTTP %d", endpoint, resp.status_code)
+                    return None
+                data = resp.json()
+                if isinstance(data, dict) and "error" in data:
+                    log.warning("  Coinalyze error: %s", data["error"])
+                    return None
+                return data
+            except Exception as e:
+                log.warning("  Coinalyze request error (attempt %d): %s", attempt+1, e)
+                if attempt < 2:
+                    time.sleep(3)
+        return None
 
-    def get_markets(self) -> list:
-        """Fetch semua market dari Binance + Bybit futures."""
-        data = self._get("markets", {"exchanges": "binance_futures,bybit_futures"})
-        return data if isinstance(data, list) else []
+    def build_symbol_maps(self, bitget_symbols: List[str]) -> None:
+        """
+        Buat mapping bitget_symbol → coinalyze_symbol dari future-markets.
 
-    def get_oi_history(self, symbols: List[str]) -> dict:
-        """OI history 1H untuk list symbol (format Binance/Bybit)."""
-        if not symbols:
-            return {}
-        data = self._get("open-interest-history", {
-            "symbols":  ",".join(symbols),
-            "interval": "1H",
-            "limit":    10,
-        })
-        result = {}
-        if isinstance(data, list):
-            for item in data:
-                sym = item.get("symbol", "")
-                result[sym] = item.get("history", [])
+        Exchange kode (terverifikasi dari API):
+          "A" = Binance Futures (data OI, funding, liquidation)
+          "6" = Bybit (data L/S ratio)
+
+        Symbol normalization: handles 1000BONKUSDT → BONKUSDT di Coinalyze.
+        """
+        log.info("  Loading Coinalyze future-markets...")
+        data = self._get("future-markets", {})
+        markets = data if isinstance(data, list) else []
+        log.info("  Got %d Coinalyze future-markets", len(markets))
+
+        if not markets:
+            if isinstance(data, dict):
+                log.warning("  future-markets error: %s", str(data)[:200])
+            return
+
+        # Build lookup: symbol_on_exchange → clz_symbol per exchange
+        bn_lookup: Dict[str, str] = {}  # Binance: symbol_on_exchange → clz_sym
+        by_lookup: Dict[str, str] = {}  # Bybit: symbol_on_exchange → clz_sym
+
+        for m in markets:
+            exc     = m.get("exchange", "")
+            sym_exc = m.get("symbol_on_exchange", "")  # e.g. "BTCUSDT"
+            clz_sym = m.get("symbol", "")              # e.g. "BTCUSDT.6" or "BTCUSDT.A"
+            is_perp = m.get("is_perpetual", False)
+            quote   = m.get("quote_asset", "").upper()
+
+            if not (is_perp and quote == "USDT" and clz_sym and sym_exc):
+                continue
+            if exc == "A":   # Binance Futures
+                bn_lookup[sym_exc] = clz_sym
+            elif exc == "6": # Bybit
+                by_lookup[sym_exc] = clz_sym
+
+        def _candidates(sym: str) -> List[str]:
+            """Generate variasi nama untuk matching (termasuk 1000X prefix)."""
+            base = sym.replace("USDT", "")
+            cands = [sym]
+            if base.startswith("1000"):
+                cands.append(base[4:] + "USDT")   # 1000BONKUSDT → BONKUSDT
+            elif base.startswith("10000"):
+                cands.append(base[5:] + "USDT")
+            return cands
+
+        mapped_bn = mapped_by = 0
+        for sym in bitget_symbols:
+            for cand in _candidates(sym):
+                if cand in bn_lookup and sym not in self._bn_map:
+                    self._bn_map[sym] = bn_lookup[cand]
+                    mapped_bn += 1
+                if cand in by_lookup and sym not in self._by_map:
+                    self._by_map[sym] = by_lookup[cand]
+                    mapped_by += 1
+
+        n_reject = len(bitget_symbols) - len(self._bn_map)
+        log.info(
+            "  Mapping: %d/%d Binance | %d/%d Bybit | %d no proxy → REJECT",
+            mapped_bn, len(bitget_symbols),
+            mapped_by, len(bitget_symbols),
+            n_reject,
+        )
+
+    def _batch_fetch(self, endpoint: str, symbols: List[str], params: dict) -> Dict[str, list]:
+        """Fetch endpoint dalam batch BATCH_SIZE. Return {clz_symbol: history_list}."""
+        result: Dict[str, list] = {}
+        for i in range(0, len(symbols), self.BATCH_SIZE):
+            batch = symbols[i: i + self.BATCH_SIZE]
+            try:
+                p = dict(params)
+                p["symbols"] = ",".join(batch)
+                data = self._get(endpoint, p)
+                if data and isinstance(data, list):
+                    for item in data:
+                        sym  = item.get("symbol", "")
+                        hist = item.get("history", [])
+                        if hist:
+                            hist = sorted(hist, key=lambda x: x.get("t", 0))
+                        if sym and hist:
+                            result[sym] = hist
+            except Exception as e:
+                log.warning("  _batch_fetch %s batch %d error: %s", endpoint, i//self.BATCH_SIZE+1, e)
         return result
 
-    def get_funding_history(self, symbols: List[str]) -> dict:
-        """Funding rate history 1H untuk list symbol."""
-        if not symbols:
-            return {}
-        data = self._get("funding-rate-history", {
-            "symbols":  ",".join(symbols),
-            "interval": "1H",
-            "limit":    6,
-        })
-        result = {}
-        if isinstance(data, list):
-            for item in data:
-                result[item.get("symbol", "")] = item.get("history", [])
+    def fetch_oi_and_funding(self, bitget_symbols: List[str]) -> Dict[str, ClzData]:
+        """
+        Fetch OI history dan funding rate.
+
+        Strategi dua lapis:
+        1. Coinalyze (lebih kaya data) — bisa gagal jika IP di-block (403)
+        2. Binance Futures API langsung (free, no key, no IP restriction) — fallback
+
+        Coinalyze params yang benar:
+          interval = 1hour | from/to = unix timestamps | convert_to_usd = true
+        """
+        result  = {sym: ClzData() for sym in bitget_symbols}
+        now_ts  = int(time.time())
+        from_ts = now_ts - 12 * 3600
+
+        bn_syms = [self._bn_map[s] for s in bitget_symbols if s in self._bn_map]
+        bn_rev  = {v: k for k, v in self._bn_map.items()}
+        coinalyze_ok = 0
+
+        if bn_syms:
+            log.info("  Fetching OI via Coinalyze (%d syms)...", len(bn_syms))
+            oi_raw = self._batch_fetch(
+                "open-interest-history", bn_syms,
+                {"interval": "1hour", "from": from_ts, "to": now_ts, "convert_to_usd": "true"},
+            )
+            for clz_sym, hist in oi_raw.items():
+                bsym = bn_rev.get(clz_sym)
+                if bsym:
+                    result[bsym].oi             = hist
+                    result[bsym].proxy_exchange = "coinalyze_binance"
+                    coinalyze_ok += 1
+
+            fund_raw = self._batch_fetch(
+                "funding-rate-history", bn_syms,
+                {"interval": "1hour", "from": from_ts, "to": now_ts},
+            )
+            for clz_sym, hist in fund_raw.items():
+                bsym = bn_rev.get(clz_sym)
+                if bsym:
+                    result[bsym].funding_hist = hist
+
+        # Fallback: Binance Futures API langsung untuk coin yang belum dapat OI
+        # Aktif jika Coinalyze gagal (IP allowlist block = HTTP 403)
+        need_fallback = [s for s in bitget_symbols if not result[s].oi]
+        if need_fallback:
+            log.info(
+                "  Coinalyze OI: %d/%d OK | Binance direct fallback untuk %d sym...",
+                coinalyze_ok, len(bitget_symbols), len(need_fallback),
+            )
+            fallback_ok = self._fetch_oi_binance_direct(need_fallback, result)
+            log.info("  Binance direct OI: %d/%d OK", fallback_ok, len(need_fallback))
+
+        total_oi = sum(1 for s in bitget_symbols if result[s].oi)
+        log.info("  Total symbol dengan OI: %d/%d", total_oi, len(bitget_symbols))
         return result
 
+    def _fetch_oi_binance_direct(
+        self,
+        bitget_symbols: List[str],
+        result: Dict[str, ClzData],
+    ) -> int:
+        """
+        Fallback: OI history dari Binance Futures public API.
+        Tidak butuh API key, tidak ada IP restriction.
 
-# ══════════════════════════════════════════════════════════════════════
-#  COINALYZE PROXY MAPPING
-#  BUG-09 FIX: tambah Bybit fallback. v2 hanya map Binance.
-#
-#  PERINGATAN #5 SKILL:
-#  Bitget tidak ada di Coinalyze. Pakai Binance/Bybit sebagai proxy.
-#  Format:
-#    Bitget BTCUSDT   → Binance BTCUSDT_PERP   | Bybit BTCUSDT
-#    Bitget BLESSUSDT → Binance BLESSUSDT_PERP | Bybit BLESSUSDT
-#  Aturan: Binance dulu → fallback Bybit → tidak ada keduanya = REJECT.
-# ══════════════════════════════════════════════════════════════════════
-def build_coinalyze_map(
-    all_markets: list,
-    cand_syms:   List[str],
-) -> Dict[str, Tuple[str, str]]:
-    """
-    Buat mapping: bitget_symbol → (coinalyze_symbol, exchange_name).
+        Endpoint: fapi.binance.com/futures/data/openInterestHist
+        Format output disamakan dengan Coinalyze: {"t": ts_sec, "c": oi_value}
+        agar validate_oi_buildup() tidak perlu diubah.
+        """
+        BINANCE_BASE = "https://fapi.binance.com"
+        ok_count     = 0
 
-    Return: {bitget_sym: (clz_symbol, "binance"/"bybit")}
-    Coin yang tidak ada di Binance maupun Bybit tidak masuk result → REJECT.
-    """
-    binance_map: Dict[str, str] = {}
-    bybit_map:   Dict[str, str] = {}
-
-    for mkt in all_markets:
-        clz_sym = mkt.get("symbol", "")
-        exch    = mkt.get("exchange", "").lower()
-
-        # Normalisasi ke base asset
-        base       = (clz_sym
-                      .replace("_PERP", "")
-                      .replace("-PERP", "")
-                      .replace("USDT", ""))
-        bitget_sym = base + "USDT"
-
-        if bitget_sym not in cand_syms:
-            continue
-
-        if "binance_futures" in exch and bitget_sym not in binance_map:
-            binance_map[bitget_sym] = clz_sym
-        elif "bybit" in exch and bitget_sym not in bybit_map:
-            bybit_map[bitget_sym] = clz_sym
-
-    # Gabungkan: Binance prioritas, Bybit fallback
-    result: Dict[str, Tuple[str, str]] = {}
-    for sym in cand_syms:
-        if sym in binance_map:
-            result[sym] = (binance_map[sym], "binance")
-        elif sym in bybit_map:
-            result[sym] = (bybit_map[sym], "bybit")
-        # else: tidak ada di keduanya → tidak masuk result → REJECT di Phase 2
-
-    n_binance = sum(1 for _, ex in result.values() if ex == "binance")
-    n_bybit   = sum(1 for _, ex in result.values() if ex == "bybit")
-    n_reject  = len(cand_syms) - len(result)
-    log.info(
-        "  Coinalyze map: %d Binance + %d Bybit fallback | %d no proxy → REJECT",
-        n_binance, n_bybit, n_reject,
-    )
-    return result
+        for sym in bitget_symbols:
+            # kBONKUSDT (Bitget prefix) → 1000BONKUSDT (Binance format)
+            bn_sym = "1000" + sym[1:] if (sym.startswith("k") and len(sym) > 1 and sym[1].isupper()) else sym
+            try:
+                resp = requests.get(
+                    f"{BINANCE_BASE}/futures/data/openInterestHist",
+                    params={"symbol": bn_sym, "period": "1h", "limit": 12},
+                    headers={"User-Agent": f"NexusPB/{VERSION}"},
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    log.debug("  Binance OI %s: HTTP %d", sym, resp.status_code)
+                    continue
+                data = resp.json()
+                if not isinstance(data, list) or not data:
+                    continue
+                hist = []
+                for item in data:
+                    try:
+                        hist.append({
+                            "t": int(item["timestamp"]) // 1000,
+                            "c": float(item["sumOpenInterest"]),
+                        })
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                if len(hist) >= 9:
+                    result[sym].oi             = hist
+                    result[sym].proxy_exchange = "binance_direct"
+                    ok_count += 1
+                time.sleep(0.1)
+            except Exception as e:
+                log.debug("  Binance direct OI %s: %s", sym, e)
+        return ok_count
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -969,15 +1163,17 @@ def validate_oi_buildup(clz: ClzData) -> Tuple[bool, dict]:
         }
 
     oi_data = clz.oi
-    if len(oi_data) < 7:
+    if len(oi_data) < 9:
         return False, {
             "reason": "insufficient_oi_history",
             "proxy":  clz.proxy_exchange,
         }
 
     try:
-        oi_now = float(oi_data[-1].get("c", 0) or 0)
-        oi_6h  = float(oi_data[-7].get("c", 0) or 0)
+        # NO-LOOKAHEAD: pakai [-2] karena bar terbaru mungkin belum complete
+        # (mengikuti pattern working scanner v16)
+        oi_now = float(oi_data[-2].get("c", 0) or 0)
+        oi_6h  = float(oi_data[-8].get("c", 0) or 0)
     except (ValueError, TypeError):
         return False, {"reason": "oi_parse_error", "proxy": clz.proxy_exchange}
 
@@ -1295,21 +1491,25 @@ def main() -> None:
     btc_chg_1h  = get_chg_from_candles(btc_candles, 1) if btc_candles else 0.0
     btc_chg_4h  = get_chg_from_candles(btc_candles, 4) if btc_candles else 0.0
     btc_price   = float(tickers.get("BTCUSDT", {}).get("lastPr", 0) or 0)
-    log.info("  BTC: $%,.0f | 1h: %+.2f%% | 4h: %+.2f%%",
-             btc_price, btc_chg_1h, btc_chg_4h)
+    log.info("  BTC: $%s | 1h: %+.2f%% | 4h: %+.2f%%",
+             f"{btc_price:,.0f}", btc_chg_1h, btc_chg_4h)
 
     # ── Step 4: Phase 1 — Pre-filter ──────────────────────────────────
     log.info("🔍 Phase 1: Pre-filtering symbols...")
     candidates = []
 
     for sym, ticker in tickers.items():
-        if not sym.endswith("USDT") or sym == "BTCUSDT":
+        if sym not in CONFIG["whitelist"]:
+            continue
+        if sym == "BTCUSDT":
+            continue
+        if sym in CONFIG["stock_token_blacklist"]:
             continue
         if is_on_cooldown(sym):
             continue
 
         try:
-            vol_24h = float(ticker.get("usdtVolume", 0) or 0)
+            vol_24h = float(ticker.get("quoteVolume", 0) or 0)
             price   = float(ticker.get("lastPr", 0) or 0)
             raw_chg = float(ticker.get("change24h", 0) or 0)
             # Bitget v2 API: change24h = desimal (0.084 = 8.4%)
@@ -1348,30 +1548,15 @@ def main() -> None:
         log.info("══════════════════════════════════════════════════════════")
         return
 
-    # ── Step 5: Coinalyze proxy mapping ───────────────────────────────
-    log.info("🗺️  Building Coinalyze proxy map...")
-    clz_client  = CoinalyzeClient(CONFIG["coinalyze_key"])
-    all_markets = clz_client.get_markets()
-    log.info("  Coinalyze markets fetched: %d", len(all_markets))
+    # ── Step 5: Build Coinalyze symbol map ───────────────────────────
+    log.info("🗺️  Building Coinalyze symbol maps...")
+    clz_client = CoinalyzeClient(CONFIG["coinalyze_key"])
+    cand_syms  = [s for s, *_ in candidates]
+    clz_client.build_symbol_maps(cand_syms)
 
-    cand_syms   = [s for s, *_ in candidates]
-    # BUG-09 FIX: build_coinalyze_map include Bybit fallback
-    clz_sym_map = build_coinalyze_map(all_markets, cand_syms)
-
-    # ── Step 6: Fetch OI + Funding dari Coinalyze ─────────────────────
+    # ── Step 6: Fetch OI + Funding ────────────────────────────────────
     log.info("📈 Fetching Coinalyze OI & funding...")
-    all_clz_syms  = [clz_sym for clz_sym, _ in clz_sym_map.values()]
-    oi_data_raw   = clz_client.get_oi_history(all_clz_syms)
-    fund_data_raw = clz_client.get_funding_history(all_clz_syms)
-
-    # Build ClzData per bitget symbol
-    clz_map: Dict[str, ClzData] = {}
-    for bitget_sym, (clz_sym, exchange) in clz_sym_map.items():
-        clz                = ClzData()
-        clz.oi             = oi_data_raw.get(clz_sym, [])
-        clz.funding_hist   = fund_data_raw.get(clz_sym, [])
-        clz.proxy_exchange = exchange
-        clz_map[bitget_sym] = clz
+    clz_map: Dict[str, ClzData] = clz_client.fetch_oi_and_funding(cand_syms)
 
     # ── Step 7: Phase 2 — Full analysis ───────────────────────────────
     log.info("🎯 Phase 2: Full NEXUS-PB analysis (%d candidates)...", len(candidates))
