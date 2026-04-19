@@ -1,51 +1,46 @@
-name: Pre-Pump Scanner
+name: NEXUS-PB Scanner
 
 on:
   schedule:
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy requests python-dotenv
+        run: pip install requests
 
-      - name: Run scanner
+      - name: Update outcomes
+        run: python nexus_outcome_analyzer.py --hours 48 || true
         env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python scanner.py
+          COINALYZE_API_KEY: ${{ secrets.COINALYZE_API_KEY }}
 
-      - name: Save state files
-        if: always()
+      - name: Run NEXUS-PB scanner
+        run: python scanner.py
+        env:
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+          COINALYZE_API_KEY: ${{ secrets.COINALYZE_API_KEY }}
+
+      - name: Track pump events
+        run: python nexus_pump_tracker.py || true
+
+      - name: Commit DB
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          for file in cooldown.json funding.json; do
-            if [ -f "$file" ]; then
-              git add "$file"
-            fi
-          done
-          
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update scanner state [skip ci]"
-            git push
-          fi
+          git config user.name  "NEXUS-PB"
+          git config user.email "nexus@scanner.bot"
+          git add -f nexus_pb_history.db
+          git diff --staged --quiet || git commit -m "DB $(date -u +%Y-%m-%dT%H:%M:%SZ)" && git push
