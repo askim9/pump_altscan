@@ -88,10 +88,17 @@ CONFIG: Dict = {
 
     # ── Phase 1: Bitget pre-filter ─────────────────────────────────────
     # Basis: riset empiris 1.362 pump events + 51 sinyal
+    # AUDIT FIX: chg_24h window diperlebar ke bawah (-10%) agar menangkap
+    # coin yang sedang recovery dari koreksi (chg_24h negatif tapi mulai naik).
+    # chg_24h_max dikecilkan ke +8% — coin >8% 24h sudah dalam proses pump
+    # (territory scanner v16), bukan pre-breakout.
+    # chg_4h ditambahkan di Phase 1 untuk eliminasi coin yang sedang pump aktif.
     "min_vol_24h_usd":        2_000_000,   # T6: $2M min — illiquid di bawah ini
-    "chg_24h_min":            3.0,          # T3: momentum pertama harus sudah ada
-    "chg_24h_max":            20.0,         # T3: belum terlambat
-    "chg_1h_max":             8.0,          # T3: tidak sedang pump cepat
+    "chg_24h_min":           -10.0,         # AUDIT: izinkan coin masih recovery
+    "chg_24h_max":             8.0,         # AUDIT: >8% 24h = sudah pump, bukan pre
+    "chg_1h_max":              5.0,         # AUDIT: turun dari 8% — >5% 1h = pump aktif
+    "chg_4h_max":              5.0,         # AUDIT BARU: coin chg4h >5% = pump sedang jalan
+    "chg_4h_min":             -5.0,         # AUDIT BARU: -5% 4h = dump aktif, skip
 
     # ── BBW Squeeze ────────────────────────────────────────────────────
     # Basis: T1 median konsolidasi 9.8 jam, sweet spot 4-24 jam
@@ -1529,6 +1536,12 @@ def main() -> None:
             chg_4h = get_chg_from_candles(candles, 4)
 
             if chg_1h > CONFIG["chg_1h_max"]:
+                continue
+
+            # AUDIT FIX: tambah chg_4h gate di Phase 1
+            # chg_4h > 5% = pump sedang berjalan (bukan pre-breakout, ini v16 territory)
+            # chg_4h < -5% = dump aktif, EMA cross tidak akan sustainable
+            if not (CONFIG["chg_4h_min"] <= chg_4h <= CONFIG["chg_4h_max"]):
                 continue
 
             # Quick BBW pre-check — BUG-08 FIX: pakai candles[:-1]
