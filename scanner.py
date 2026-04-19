@@ -104,13 +104,16 @@ CONFIG: Dict = {
     # Basis: T1 median konsolidasi 9.8 jam, sweet spot 4-24 jam
     "bbw_squeeze_threshold":  0.08,         # BBW < 8% = squeeze aktif
     "bbw_squeeze_min_candles": 6,           # minimum 6 jam (dari riset T1)
-    "bbw_squeeze_max_candles": 48,          # max 48 jam (lebih = stale setup)
+    "bbw_squeeze_max_candles": 72,          # MARKET FIX: 48→72 jam
+    # Bear market April 2026: semua coin squeeze 53+ jam karena volatility rendah.
+    # 72 jam = upper bound yang masih reasonable sebelum setup benar-benar stale.
     # Toleransi: 1 candle spike diizinkan agar squeeze panjang tidak terpotong
 
     # ── EMA Conditions ─────────────────────────────────────────────────
     # Basis: 5 kondisi valid dari riset (lihat SKILL — 5 Kondisi EMA Cross)
     "ema200_slope_min":       -0.30,        # EMA200 tidak boleh turun > 0.3%/candle
-    "dist_to_ema200_min":     8.0,          # min 8% di bawah EMA200
+    "dist_to_ema200_min":     5.0,          # MARKET FIX: 8%→5% di bawah EMA200
+    # Bear market: banyak coin hanya 5-8% di bawah EMA200 setelah recovery parsial
     "dist_to_ema200_max":     30.0,         # max 30% di bawah EMA200
     "cross_max_candles_ago":  2,            # cross baru (max 2 closed candle lalu)
     "cross_min_vol_ratio":    1.5,          # volume cross min 1.5x avg 10 candle
